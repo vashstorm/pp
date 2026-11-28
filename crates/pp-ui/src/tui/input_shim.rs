@@ -411,20 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn translator_rewrites_modify_other_keys_into_csi_u() {
-        // tmux 默认格式：Shift + Enter、Alt + Enter、Ctrl + C、Shift + Tab。
+    fn translator_rewrites_modify_other_keys_and_preserves_malformed() {
         assert_eq!(translated(&[b"\x1b[27;2;13~"]), b"\x1b[13;2u");
         assert_eq!(translated(&[b"\x1b[27;3;13~"]), b"\x1b[13;3u");
         assert_eq!(translated(&[b"\x1b[27;5;99~"]), b"\x1b[99;5u");
         assert_eq!(translated(&[b"\x1b[27;2;9~"]), b"\x1b[9;2u");
-        // Meta + Shift 转成 Kitty 的对应位，不会被读成 Super + Shift。
         assert_eq!(translated(&[b"\x1b[27;10;65~"]), b"\x1b[65;34u");
-        // 多字节键码保持完整。
         assert_eq!(translated(&[b"\x1b[27;2;233~"]), b"\x1b[233;2u");
-    }
-
-    #[test]
-    fn translator_keeps_other_bytes_and_split_sequences_intact() {
         assert_eq!(translated(&[b"ab\xc3\xa9c"]), b"ab\xc3\xa9c");
         assert_eq!(translated(&[b"\x1b[A\x1b\r"]), b"\x1b[A\x1b\r");
         assert_eq!(
@@ -432,15 +425,22 @@ mod tests {
             b"\x1b[200~paste\x1b[201~"
         );
         assert_eq!(translated(&[b"\x1b[<0;4;5M"]), b"\x1b[<0;4;5M");
-        // 序列跨读取边界时仍能完整改写。
         assert_eq!(translated(&[b"\x1b[27;", b"2;", b"13~"]), b"\x1b[13;2u");
-        // 单独按下的 Esc 在前缀超时后放行，连续 Esc 不被合并。
         assert_eq!(translated(&[b"\x1b"]), b"\x1b");
         assert_eq!(translated(&[b"\x1b\x1b"]), b"\x1b\x1b");
+        for sequence in [
+            &b"\x1b[27;~"[..],
+            b"\x1b[27;2~",
+            b"\x1b[27;1;13~",
+            b"\x1b[27;2;13;4~",
+            b"\x1b[4;2;13~",
+        ] {
+            assert_eq!(translated(&[sequence]), sequence, "{sequence:?}");
+        }
     }
 
     #[test]
-    fn translator_holds_incomplete_sequences_for_the_next_read() {
+    fn translator_holds_incomplete_sequences_and_strings() {
         let mut translator = Translator::default();
         assert!(translator.push(b"\x1b").is_empty());
         assert!(translator.has_pending());
@@ -448,13 +448,27 @@ mod tests {
         assert!(!translator.has_pending());
         assert!(translator.push(b"\x1b[27;").is_empty());
         assert_eq!(translator.push(b"2;13~"), b"\x1b[13;2u");
-        // 完整序列与普通字节不进入待完成缓冲。
         assert_eq!(translator.push(b"ok\x1b[A"), b"ok\x1b[A");
         assert!(!translator.has_pending());
+
+        let mut osc = Translator::default();
+        assert!(osc.push(b"\x1b]11;rgb:").is_empty() && osc.has_pending());
+        assert!(osc.push(b"0000/0000/0000\x07").is_empty() && !osc.has_pending());
+        let mut capped = Translator::default();
+        let overflow = vec![b'x'; MAX_STRING_SEQUENCE];
+        assert!(capped.push(b"\x1b_G").is_empty());
+        for _ in 0..3 {
+            assert!(capped.push(&overflow).is_empty());
+            assert!(
+                capped.pending.len() <= MAX_STRING_SEQUENCE && capped.take_pending().is_empty()
+            );
+        }
+        assert!(capped.push(b"\x1b").is_empty());
+        assert_eq!(capped.push(b"\\ok"), b"ok");
     }
 
     #[test]
-    fn translator_drops_terminal_replies() {
+    fn translator_drops_terminal_replies_and_keeps_paste() {
         for reply in [
             &b"\x1b_Gi=31;OK\x1b\\"[..],
             b"\x1b[?62;22;52c",
@@ -465,7 +479,6 @@ mod tests {
             b"\x1b]11;rgb:0000/0000/0000\x07",
         ] {
             assert!(translated(&[reply]).is_empty(), "{reply:?}");
-            // 输入线程会在两次读取间检查待处理字节，分片不能因此被提前放行。
             for split in 2..reply.len() {
                 let mut translator = Translator::default();
                 assert!(translator.push(&reply[..split]).is_empty());
@@ -474,13 +487,8 @@ mod tests {
                 assert_eq!(translator.push(b"x"), b"x");
             }
         }
-        // 回复之间的真实按键仍然透传。
         assert_eq!(translated(&[b"\x1b_Gi=31;OK\x1b\\a\x1b[?62;22;52c"]), b"a");
-    }
 
-    #[test]
-    fn translator_drops_ghostty_replies_reencoded_by_tmux() {
-        // 从 Ghostty＋tmux（extended-keys-format csi-u）实际采集的回复。
         for replies in [
             &b"\x1b[95;3uGi=31;OK\x1b[92;3u\x1b[91;3u?62;22;52c\x1b[91;3u6;40;20t\x1b[91;3u0n"[..],
             b"\x1b[27;3;95~Gi=31;OK\x1b[27;3;92~\x1b[27;3;91~?62;22;52c\x1b[27;3;91~6;40;20t\x1b[27;3;91~0n",
@@ -489,56 +497,18 @@ mod tests {
             let chunks: Vec<_> = replies.chunks(1).collect();
             assert!(translated(&chunks).is_empty());
         }
-        // 普通 Alt 快捷键与真实按键不会被当成终端回复。
         assert_eq!(
             translated(&[b"\x1b[112;3ux\x1b[27;3;113~"]),
             b"\x1b[112;3ux\x1b[113;3u"
         );
-    }
 
-    #[test]
-    fn translator_passes_bracketed_paste_content_through() {
         let paste = b"\x1b[200~\x1b_Gi=1;OK\x1b\\\x1b[?62;22;52c\x1b[27;2;13~\x1b[201~";
         assert_eq!(translated(&[paste]), paste);
-        // 粘贴正文含未闭合控制字符串、结束标记跨读取时，同样逐字节保留。
         let paste = b"\x1b[200~\x1b_Gunfinished\x1b]also unfinished\x1b[201~";
         for split in 0..paste.len() {
             assert_eq!(translated(&[&paste[..split], &paste[split..]]), paste);
         }
         let paste = b"\x1b[200~\x1b[95;3uGi=31;OK\x1b[92;3u\x1b[201~";
         assert_eq!(translated(&paste.chunks(1).collect::<Vec<_>>()), paste);
-    }
-
-    #[test]
-    fn translator_holds_control_strings_until_their_terminator() {
-        let mut translator = Translator::default();
-        assert!(translator.push(b"\x1b]11;rgb:").is_empty());
-        assert!(translator.has_pending());
-        assert!(translator.push(b"0000/0000/0000\x07").is_empty());
-        assert!(!translator.has_pending());
-        // 超长的未闭合字符串不无限占用内存，也不能把尾部泄漏成输入。
-        let mut translator = Translator::default();
-        let overflow = vec![b'x'; MAX_STRING_SEQUENCE];
-        assert!(translator.push(b"\x1b_G").is_empty());
-        for _ in 0..3 {
-            assert!(translator.push(&overflow).is_empty());
-            assert!(translator.pending.len() <= MAX_STRING_SEQUENCE);
-            assert!(translator.take_pending().is_empty());
-        }
-        assert!(translator.push(b"\x1b").is_empty());
-        assert_eq!(translator.push(b"\\ok"), b"ok");
-    }
-
-    #[test]
-    fn translator_passes_malformed_modify_other_keys_through() {
-        for sequence in [
-            &b"\x1b[27;~"[..],
-            b"\x1b[27;2~",
-            b"\x1b[27;1;13~",
-            b"\x1b[27;2;13;4~",
-            b"\x1b[4;2;13~",
-        ] {
-            assert_eq!(translated(&[sequence]), sequence, "{sequence:?}");
-        }
     }
 }

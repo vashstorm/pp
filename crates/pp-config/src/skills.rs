@@ -498,370 +498,371 @@ mod tests {
         path
     }
     #[test]
-    fn skill_uri_encoding_enablement_and_resource_isolation() {
-        let (_home, dir) = fixture();
-        for (index, name) in ["rust", "团队 rust", "team/rust", "a:b", "100%", "a", "a/b"]
-            .into_iter()
-            .enumerate()
+    fn skill_uri_discovery_symlinks_and_config_roots() {
         {
-            skill(&dir.join("skills"), &index.to_string(), name, "body");
-        }
-        let mut skills = Skills::from_dir(&dir);
-        for entry in &skills.entries {
-            let target = skills.resolve_uri(&entry.uri()).unwrap();
-            assert_eq!(target.path, entry.path);
-            assert_eq!(target.base_dir, entry.path.parent().unwrap());
+            let (_home, dir) = fixture();
+            for (index, name) in ["rust", "团队 rust", "team/rust", "a:b", "100%", "a", "a/b"]
+                .into_iter()
+                .enumerate()
+            {
+                skill(&dir.join("skills"), &index.to_string(), name, "body");
+            }
+            let mut skills = Skills::from_dir(&dir);
+            for entry in &skills.entries {
+                let target = skills.resolve_uri(&entry.uri()).unwrap();
+                assert_eq!(target.path, entry.path);
+                assert_eq!(target.base_dir, entry.path.parent().unwrap());
+                assert_eq!(
+                    skills
+                        .resolve_uri(&format!("{}/", entry.uri()))
+                        .unwrap()
+                        .path,
+                    entry.path
+                );
+            }
+            let root = skills.resolve_uri("skill://a/.").unwrap().path;
+            fs::write(root.join("b"), "resource").unwrap();
             assert_eq!(
-                skills
-                    .resolve_uri(&format!("{}/", entry.uri()))
-                    .unwrap()
-                    .path,
-                entry.path
+                skills.resolve_uri("skill://a/b").unwrap().path,
+                root.join("b")
             );
-        }
-        let root = skills.resolve_uri("skill://a/.").unwrap().path;
-        fs::write(root.join("b"), "resource").unwrap();
-        assert_eq!(
-            skills.resolve_uri("skill://a/b").unwrap().path,
-            root.join("b")
-        );
-        assert_ne!(
-            skills.resolve_uri("skill://a%2Fb").unwrap().path,
-            root.join("b")
-        );
-        for uri in [
-            "skill://",
-            "skill://rust%",
-            "skill://rust/%GG",
-            "skill://%FF",
-            "skill://rust/%00",
-            "skill://rust?x",
-            "skill://rust/#x",
-        ] {
+            assert_ne!(
+                skills.resolve_uri("skill://a%2Fb").unwrap().path,
+                root.join("b")
+            );
+            for uri in [
+                "skill://",
+                "skill://rust%",
+                "skill://rust/%GG",
+                "skill://%FF",
+                "skill://rust/%00",
+                "skill://rust?x",
+                "skill://rust/#x",
+            ] {
+                assert_eq!(
+                    skills.resolve_uri(uri).unwrap_err().to_string(),
+                    "Invalid skill URI",
+                    "{uri}"
+                );
+            }
+            for uri in ["skill://a/%2e%2e/out", "skill://a/%2Ftmp"] {
+                assert_eq!(
+                    skills.resolve_uri(uri).unwrap_err().to_string(),
+                    "Skill resource path must stay within its skill directory"
+                );
+            }
+            let outside = dir.join("canary");
+            fs::write(&outside, "outside").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("outside")).unwrap();
+            std::os::unix::fs::symlink(root.join("b"), root.join("inside")).unwrap();
+            assert!(skills.resolve_uri("skill://a/outside").is_err());
             assert_eq!(
-                skills.resolve_uri(uri).unwrap_err().to_string(),
-                "Invalid skill URI",
-                "{uri}"
+                skills.resolve_uri("skill://a/inside").unwrap().path,
+                root.join("b")
             );
-        }
-        for uri in ["skill://a/%2e%2e/out", "skill://a/%2Ftmp"] {
-            assert_eq!(
-                skills.resolve_uri(uri).unwrap_err().to_string(),
-                "Skill resource path must stay within its skill directory"
-            );
-        }
-        let outside = dir.join("canary");
-        fs::write(&outside, "outside").unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("outside")).unwrap();
-        std::os::unix::fs::symlink(root.join("b"), root.join("inside")).unwrap();
-        assert!(skills.resolve_uri("skill://a/outside").is_err());
-        assert_eq!(
-            skills.resolve_uri("skill://a/inside").unwrap().path,
-            root.join("b")
-        );
-        assert!(skills.resolve_uri("skill://a/missing").is_err());
-        skills
-            .entries
-            .iter_mut()
-            .find(|entry| entry.name == "a")
-            .unwrap()
-            .enabled = false;
-        assert_eq!(
-            skills.resolve_uri("skill://a").unwrap_err().to_string(),
-            "Skill does not exist or is disabled"
-        );
-    }
-
-    #[test]
-    fn inherited_sources_preview_precedence_and_selection_are_transactional() {
-        let (home, dir) = fixture();
-        skill(&dir.join("skills"), "native", "same", "pp version");
-        skill(
-            &home.path().join(".claude/skills"),
-            "same",
-            "same",
-            "claude version",
-        );
-        skill(
-            &home.path().join(".claude/skills"),
-            "a",
-            "claude-only",
-            "claude body",
-        );
-        skill(
-            &home.path().join(".agents/skills"),
-            "a",
-            "codex-only",
-            "codex body",
-        );
-        skill(
-            &home.path().join(".codex/skills"),
-            "a",
-            "codex-legacy",
-            "legacy body",
-        );
-        let path = dir.join("settings.yml");
-        fs::write(
-            &path,
-            "# 保留注释\ndebug: true\ndisabled_skills: [not-installed]\n",
-        )
-        .unwrap();
-        let mut skills = Skills::from_dir(&dir);
-        assert_eq!(skills.entries.len(), 1);
-        let selection = Selection {
-            sources: vec![SkillSource::Codex, SkillSource::Claude, SkillSource::Codex],
-            skills: vec![("claude-only".into(), false)],
-        };
-        let preview = skills.preview(&selection).unwrap();
-        assert_eq!(preview.sources, SkillSource::ALL);
-        assert_eq!(preview.entries.len(), 4);
-        assert_eq!(preview.diagnostics.len(), 1);
-        assert_eq!(
-            preview.resolve_uri("skill://same").unwrap().path,
-            dir.join("skills/native/SKILL.md").canonicalize().unwrap()
-        );
-        assert!(preview.resolve_uri("skill://claude-only").is_err());
-        assert!(preview.resolve_uri("skill://codex-only").is_ok());
-        assert!(preview.resolve_uri("skill://codex-legacy").is_ok());
-        assert_eq!(skills.entries.len(), 1);
-        assert!(!fs::read_to_string(&path).unwrap().contains("skill_sources"));
-        skills.save_management(&selection).unwrap();
-        let persisted = fs::read_to_string(&path).unwrap();
-        assert!(persisted.contains("# 保留注释"));
-        assert!(persisted.contains("debug: true"));
-        assert!(persisted.contains("not-installed"));
-        let mut restored = Skills::from_dir(&dir);
-        assert!(restored.resolve_uri("skill://claude-only").is_err());
-        restored.save_source(SkillSource::Claude, false).unwrap();
-        assert!(
-            !restored
+            assert!(skills.resolve_uri("skill://a/missing").is_err());
+            skills
                 .entries
-                .iter()
-                .any(|skill| skill.name == "claude-only")
-        );
-        restored.save_source(SkillSource::Claude, true).unwrap();
-        assert!(restored.resolve_uri("skill://claude-only").is_err());
-        fs::write(&path, "invalid yaml").unwrap();
-        assert!(skills.save_management(&Selection::default()).is_err());
-        assert_eq!(skills.entries.len(), 4);
-        assert_eq!(skills.sources, SkillSource::ALL);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn inherited_symlinked_sources_share_one_definition() {
-        use std::os::unix::fs::symlink;
-        let (home, dir) = fixture();
-        skill(&home.path().join(".claude/skills"), "a", "shared", "body");
-        fs::create_dir_all(home.path().join(".agents")).unwrap();
-        symlink(
-            home.path().join(".claude/skills"),
-            home.path().join(".agents/skills"),
-        )
-        .unwrap();
-        fs::write(dir.join("settings.yml"), "skill_sources: [claude, codex]\n").unwrap();
-        let skills = Skills::from_dir(&dir);
-        assert_eq!(skills.entries.len(), 1);
-        assert!(skills.diagnostics.is_empty());
-    }
-
-    #[test]
-    fn discovery_defaults_metadata_duplicates_nested_roots_and_errors() {
-        let (_home, dir) = fixture();
-        // 默认根不存在：静默为空，不产生诊断。
-        let mut skills = Skills::from_dir(&dir);
-        assert!(skills.entries.is_empty());
-        assert!(skills.diagnostics.is_empty());
-        assert!(!dir.join("skills").exists());
-
-        let first = skill(
-            &dir.join("skills"),
-            "a",
-            "rust",
-            "private full instructions",
-        );
-        skill(&dir.join("skills"), "b", "rust", "duplicate");
-        skill(
-            first.parent().unwrap(),
-            "resources/nested",
-            "ignored",
-            "ignored",
-        );
-        fs::create_dir_all(dir.join("skills/bad")).unwrap();
-        fs::write(dir.join("skills/bad/SKILL.md"), "---\nname: bad\n---").unwrap();
-        // reload 发现新增技能：保留首个定义、忽略嵌套目录、坏 frontmatter 只记诊断。
-        skills.reload().unwrap();
-        assert_eq!(skills.entries.len(), 1);
-        assert_eq!(skills.entries[0].name, "rust");
-        assert!(skills.entries[0].enabled);
-        assert!(skills.entries[0].description.contains("YAML 多行说明"));
-        assert_eq!(skills.diagnostics.len(), 2);
-        assert!(!skills.summary().contains("private full instructions"));
-        assert_eq!(
-            skills.resolve_uri("skill://rust").unwrap().path,
-            first.canonicalize().unwrap()
-        );
-        assert!(skills.resolve_uri("skill://../rust").is_err());
-
-        // 根存在但不是目录：仍然告警，不静默当成空目录。
-        let (_home, other) = fixture();
-        fs::write(other.join("skills"), "not a directory").unwrap();
-        let broken = Skills::from_dir(&other);
-        assert!(broken.entries.is_empty());
-        assert_eq!(broken.diagnostics.len(), 1);
-    }
-    #[test]
-    fn configurable_roots_order_relative_absolute_tilde_and_disabled() {
-        let (home, dir) = fixture();
-        skill(&dir.join("relative"), "z", "same", "first");
-        skill(&home.path().join("other"), "a", "same", "second");
-        skill(&home.path().join("other"), "b", "other", "third");
-        fs::write(dir.join("settings.yml"), json!({"skill_dirs":["relative", "~/other", home.path().join("other"), "missing"],"disabled_skills":["same"]}).to_string()).unwrap();
-        let skills = Skills::from_dir(&dir);
-        assert_eq!(skills.entries.len(), 2);
-        assert!(!skills.entries[0].enabled);
-        assert!(
-            skills.entries[0]
-                .path
-                .starts_with(fs::canonicalize(dir.join("relative")).unwrap())
-        );
-        assert!(skills.resolve_uri("skill://same").is_err());
-        assert!(!skills.summary().contains("same"));
-        assert!(skills.summary().contains("other"));
-        assert_eq!(skills.diagnostics.len(), 1);
-        fs::write(dir.join("settings.yml"), r#"{"skill_dirs":[]}"#).unwrap();
-        let mut skills = skills;
-        skills.reload().unwrap();
-        assert!(skills.entries.is_empty());
-        assert!(skills.diagnostics.is_empty());
-    }
-    #[cfg(unix)]
-    #[test]
-    fn symlinks_are_deduplicated_and_cycles_terminate() {
-        use std::os::unix::fs::symlink;
-        let (_home, dir) = fixture();
-        skill(&dir.join("skills"), "real", "linked", "body");
-        symlink(dir.join("skills"), dir.join("skills/cycle")).unwrap();
-        symlink(dir.join("skills/real"), dir.join("skills/alias")).unwrap();
-        let skills = Skills::from_dir(&dir);
-        assert_eq!(skills.entries.len(), 1);
-        assert!(skills.diagnostics.is_empty());
-    }
-    #[test]
-    fn saves_preserve_comments_other_fields_permissions_and_unknown_disabled_names() {
-        let (_home, dir) = fixture();
-        skill(&dir.join("skills"), "a", "rust", "body");
-        let path = dir.join("settings.yml");
-        fs::write(
-            &path,
-            "# 保留此注释\ndebug: true\ndisabled_skills: [not-installed] # 保留行尾注释\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
-        }
-        let mut skills = Skills::from_dir(&dir);
-        skills.save_selection(&[("rust".into(), false)]).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
+                .iter_mut()
+                .find(|entry| entry.name == "a")
+                .unwrap()
+                .enabled = false;
             assert_eq!(
-                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o640
+                skills.resolve_uri("skill://a").unwrap_err().to_string(),
+                "Skill does not exist or is disabled"
             );
         }
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("# 保留此注释"));
-        assert!(text.contains("# 保留行尾注释"));
-        assert!(text.contains("debug: true"));
-        let settings = config::read_settings(&path).unwrap();
-        assert_eq!(settings.disabled_skills, ["not-installed", "rust"]);
-        assert!(!skills.entries[0].enabled);
-        assert!(!Skills::from_dir(&dir).entries[0].enabled);
-        skills.save_selection(&[("rust".into(), true)]).unwrap();
-        assert!(Skills::from_dir(&dir).entries[0].enabled);
-    }
-    #[test]
-    fn missing_settings_is_created_and_failed_save_or_reload_does_not_mutate_catalog() {
-        let (_home, dir) = fixture();
-        skill(&dir.join("skills"), "a", "rust", "body");
-        let mut skills = Skills::from_dir(&dir);
-        skills.save_selection(&[("rust".into(), false)]).unwrap();
-        assert!(dir.join("settings.yml").is_file());
-        fs::write(dir.join("settings.yml"), "invalid yaml").unwrap();
-        assert!(skills.save_selection(&[("rust".into(), true)]).is_err());
-        assert!(skills.reload().is_err());
-        assert!(!skills.entries[0].enabled);
-        assert_eq!(
-            fs::read_to_string(dir.join("settings.yml")).unwrap(),
-            "invalid yaml"
-        );
-        assert!(skills.resolve_uri("skill://rust").is_err());
-    }
-    #[test]
-    fn invalid_metadata_utf8_and_deleted_skill_are_local_failures() {
-        let (_home, dir) = fixture();
-        let path = skill(&dir.join("skills"), "a", "rust", "body");
-        let skills = Skills::from_dir(&dir);
-        fs::remove_file(&path).unwrap();
-        assert!(skills.resolve_uri("skill://rust").is_err());
-        fs::write(&path, [0xff]).unwrap();
-        assert!(Skills::from_dir(&dir).entries.is_empty());
-        for text in [
-            "body",
-            "---\nname: rust",
-            "---\nname: ''\ndescription: test\n---",
-            "---\nname: rust\ndescription: []\n---",
-        ] {
-            assert!(metadata(text).is_err(), "{text}");
+
+        {
+            let (_home, dir) = fixture();
+            let mut skills = Skills::from_dir(&dir);
+            assert!(skills.entries.is_empty());
+            assert!(skills.diagnostics.is_empty());
+            assert!(!dir.join("skills").exists());
+
+            let first = skill(
+                &dir.join("skills"),
+                "a",
+                "rust",
+                "private full instructions",
+            );
+            skill(&dir.join("skills"), "b", "rust", "duplicate");
+            skill(
+                first.parent().unwrap(),
+                "resources/nested",
+                "ignored",
+                "ignored",
+            );
+            fs::create_dir_all(dir.join("skills/bad")).unwrap();
+            fs::write(dir.join("skills/bad/SKILL.md"), "---\nname: bad\n---").unwrap();
+            skills.reload().unwrap();
+            assert_eq!(skills.entries.len(), 1);
+            assert_eq!(skills.entries[0].name, "rust");
+            assert!(skills.entries[0].enabled);
+            assert!(skills.entries[0].description.contains("YAML 多行说明"));
+            assert_eq!(skills.diagnostics.len(), 2);
+            assert!(!skills.summary().contains("private full instructions"));
+            assert_eq!(
+                skills.resolve_uri("skill://rust").unwrap().path,
+                first.canonicalize().unwrap()
+            );
+            assert!(skills.resolve_uri("skill://../rust").is_err());
+
+            let (_home, other) = fixture();
+            fs::write(other.join("skills"), "not a directory").unwrap();
+            let broken = Skills::from_dir(&other);
+            assert!(broken.entries.is_empty());
+            assert_eq!(broken.diagnostics.len(), 1);
         }
-    }
-    #[cfg(unix)]
-    #[test]
-    fn failed_atomic_save_keeps_file_and_runtime_state_unchanged() {
-        use std::os::unix::fs::PermissionsExt;
-        let (_home, dir) = fixture();
-        skill(&dir.join("skills"), "a", "rust", "body");
-        let path = dir.join("settings.yml");
-        fs::write(&path, "{} # 原始配置\n").unwrap();
-        let mut skills = Skills::from_dir(&dir);
-        let permissions = fs::metadata(&dir).unwrap().permissions();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
-        let result = skills.save_selection(&[("rust".into(), false)]);
-        let management_result = skills.save_management(&Selection {
-            sources: vec![SkillSource::Claude],
-            skills: vec![("rust".into(), false)],
-        });
-        fs::set_permissions(&dir, permissions).unwrap();
-        assert!(result.is_err());
-        assert!(management_result.is_err());
-        assert!(skills.sources.is_empty());
-        assert!(skills.entries[0].enabled);
-        assert_eq!(fs::read_to_string(path).unwrap(), "{} # 原始配置\n");
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+
+        {
+            let (home, dir) = fixture();
+            skill(&dir.join("relative"), "z", "same", "first");
+            skill(&home.path().join("other"), "a", "same", "second");
+            skill(&home.path().join("other"), "b", "other", "third");
+            fs::write(dir.join("settings.yml"), json!({"skill_dirs":["relative", "~/other", home.path().join("other"), "missing"],"disabled_skills":["same"]}).to_string()).unwrap();
+            let skills = Skills::from_dir(&dir);
+            assert_eq!(skills.entries.len(), 2);
+            assert!(!skills.entries[0].enabled);
+            assert!(
+                skills.entries[0]
+                    .path
+                    .starts_with(fs::canonicalize(dir.join("relative")).unwrap())
+            );
+            assert!(skills.resolve_uri("skill://same").is_err());
+            assert!(!skills.summary().contains("same"));
+            assert!(skills.summary().contains("other"));
+            assert_eq!(skills.diagnostics.len(), 1);
+            fs::write(dir.join("settings.yml"), r#"{"skill_dirs":[]}"#).unwrap();
+            let mut skills = skills;
+            skills.reload().unwrap();
+            assert!(skills.entries.is_empty());
+            assert!(skills.diagnostics.is_empty());
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let (_home, dir) = fixture();
+            skill(&dir.join("skills"), "real", "linked", "body");
+            symlink(dir.join("skills"), dir.join("skills/cycle")).unwrap();
+            symlink(dir.join("skills/real"), dir.join("skills/alias")).unwrap();
+            let skills = Skills::from_dir(&dir);
+            assert_eq!(skills.entries.len(), 1);
+            assert!(skills.diagnostics.is_empty());
+        }
     }
 
     #[test]
-    fn from_settings_discovers_from_the_caller_snapshot_without_reparsing() {
-        let (_home, dir) = fixture();
-        skill(&dir.join("skills"), "a", "rust", "body");
-        fs::write(dir.join("settings.yml"), "disabled_skills: [rust]\n").unwrap();
-        let settings = config::read_settings(&dir.join("settings.yml")).unwrap();
-        // 同一份 settings 快照与按需重读的入口得到同一发现结果。
-        let snapshot = Skills::from_settings(&settings, &dir);
-        let reread = Skills::from_dir(&dir);
-        assert_eq!(snapshot.entries.len(), reread.entries.len());
-        assert_eq!(snapshot.entries[0].path, reread.entries[0].path);
-        assert!(!snapshot.entries[0].enabled);
-        assert!(snapshot.diagnostics.is_empty());
-        // 发现依据是调用方的快照：随后损坏的文件不影响本次结果，也不产生诊断；
-        // 按需重读的入口仍看到损坏配置并如实报告。
-        fs::write(dir.join("settings.yml"), "invalid yaml").unwrap();
-        let again = Skills::from_settings(&settings, &dir);
-        assert!(!again.entries[0].enabled);
-        assert!(again.diagnostics.is_empty());
-        assert_eq!(Skills::from_dir(&dir).diagnostics.len(), 1);
+    fn skill_inherited_sources_and_preview_transactions() {
+        {
+            let (home, dir) = fixture();
+            skill(&dir.join("skills"), "native", "same", "pp version");
+            skill(
+                &home.path().join(".claude/skills"),
+                "same",
+                "same",
+                "claude version",
+            );
+            skill(
+                &home.path().join(".claude/skills"),
+                "a",
+                "claude-only",
+                "claude body",
+            );
+            skill(
+                &home.path().join(".agents/skills"),
+                "a",
+                "codex-only",
+                "codex body",
+            );
+            skill(
+                &home.path().join(".codex/skills"),
+                "a",
+                "codex-legacy",
+                "legacy body",
+            );
+            let path = dir.join("settings.yml");
+            fs::write(
+                &path,
+                "# 保留注释\ndebug: true\ndisabled_skills: [not-installed]\n",
+            )
+            .unwrap();
+            let mut skills = Skills::from_dir(&dir);
+            assert_eq!(skills.entries.len(), 1);
+            let selection = Selection {
+                sources: vec![SkillSource::Codex, SkillSource::Claude, SkillSource::Codex],
+                skills: vec![("claude-only".into(), false)],
+            };
+            let preview = skills.preview(&selection).unwrap();
+            assert_eq!(preview.sources, SkillSource::ALL);
+            assert_eq!(preview.entries.len(), 4);
+            assert_eq!(preview.diagnostics.len(), 1);
+            assert_eq!(
+                preview.resolve_uri("skill://same").unwrap().path,
+                dir.join("skills/native/SKILL.md").canonicalize().unwrap()
+            );
+            assert!(preview.resolve_uri("skill://claude-only").is_err());
+            assert!(preview.resolve_uri("skill://codex-only").is_ok());
+            assert!(preview.resolve_uri("skill://codex-legacy").is_ok());
+            assert_eq!(skills.entries.len(), 1);
+            assert!(!fs::read_to_string(&path).unwrap().contains("skill_sources"));
+            skills.save_management(&selection).unwrap();
+            let persisted = fs::read_to_string(&path).unwrap();
+            assert!(persisted.contains("# 保留注释"));
+            assert!(persisted.contains("debug: true"));
+            assert!(persisted.contains("not-installed"));
+            let mut restored = Skills::from_dir(&dir);
+            assert!(restored.resolve_uri("skill://claude-only").is_err());
+            restored.save_source(SkillSource::Claude, false).unwrap();
+            assert!(
+                !restored
+                    .entries
+                    .iter()
+                    .any(|skill| skill.name == "claude-only")
+            );
+            restored.save_source(SkillSource::Claude, true).unwrap();
+            assert!(restored.resolve_uri("skill://claude-only").is_err());
+            fs::write(&path, "invalid yaml").unwrap();
+            assert!(skills.save_management(&Selection::default()).is_err());
+            assert_eq!(skills.entries.len(), 4);
+            assert_eq!(skills.sources, SkillSource::ALL);
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let (home, dir) = fixture();
+            skill(&home.path().join(".claude/skills"), "a", "shared", "body");
+            fs::create_dir_all(home.path().join(".agents")).unwrap();
+            symlink(
+                home.path().join(".claude/skills"),
+                home.path().join(".agents/skills"),
+            )
+            .unwrap();
+            fs::write(dir.join("settings.yml"), "skill_sources: [claude, codex]\n").unwrap();
+            let skills = Skills::from_dir(&dir);
+            assert_eq!(skills.entries.len(), 1);
+            assert!(skills.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn skill_saves_atomicity_and_comments_preservation() {
+        {
+            let (_home, dir) = fixture();
+            skill(&dir.join("skills"), "a", "rust", "body");
+            let path = dir.join("settings.yml");
+            fs::write(
+                &path,
+                "# 保留此注释\ndebug: true\ndisabled_skills: [not-installed] # 保留行尾注释\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            }
+            let mut skills = Skills::from_dir(&dir);
+            skills.save_selection(&[("rust".into(), false)]).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                    0o640
+                );
+            }
+            let text = fs::read_to_string(&path).unwrap();
+            assert!(text.contains("# 保留此注释"));
+            assert!(text.contains("# 保留行尾注释"));
+            assert!(text.contains("debug: true"));
+            let settings = config::read_settings(&path).unwrap();
+            assert_eq!(settings.disabled_skills, ["not-installed", "rust"]);
+            assert!(!skills.entries[0].enabled);
+            assert!(!Skills::from_dir(&dir).entries[0].enabled);
+            skills.save_selection(&[("rust".into(), true)]).unwrap();
+            assert!(Skills::from_dir(&dir).entries[0].enabled);
+        }
+
+        {
+            let (_home, dir) = fixture();
+            skill(&dir.join("skills"), "a", "rust", "body");
+            let mut skills = Skills::from_dir(&dir);
+            skills.save_selection(&[("rust".into(), false)]).unwrap();
+            assert!(dir.join("settings.yml").is_file());
+            fs::write(dir.join("settings.yml"), "invalid yaml").unwrap();
+            assert!(skills.save_selection(&[("rust".into(), true)]).is_err());
+            assert!(skills.reload().is_err());
+            assert!(!skills.entries[0].enabled);
+            assert_eq!(
+                fs::read_to_string(dir.join("settings.yml")).unwrap(),
+                "invalid yaml"
+            );
+            assert!(skills.resolve_uri("skill://rust").is_err());
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (_home, dir) = fixture();
+            skill(&dir.join("skills"), "a", "rust", "body");
+            let path = dir.join("settings.yml");
+            fs::write(&path, "{} # 原始配置\n").unwrap();
+            let mut skills = Skills::from_dir(&dir);
+            let permissions = fs::metadata(&dir).unwrap().permissions();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+            let result = skills.save_selection(&[("rust".into(), false)]);
+            let management_result = skills.save_management(&Selection {
+                sources: vec![SkillSource::Claude],
+                skills: vec![("rust".into(), false)],
+            });
+            fs::set_permissions(&dir, permissions).unwrap();
+            assert!(result.is_err());
+            assert!(management_result.is_err());
+            assert!(skills.sources.is_empty());
+            assert!(skills.entries[0].enabled);
+            assert_eq!(fs::read_to_string(path).unwrap(), "{} # 原始配置\n");
+            assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        }
+    }
+
+    #[test]
+    fn skill_invalid_metadata_and_snapshot_discovery() {
+        {
+            let (_home, dir) = fixture();
+            let path = skill(&dir.join("skills"), "a", "rust", "body");
+            let skills = Skills::from_dir(&dir);
+            fs::remove_file(&path).unwrap();
+            assert!(skills.resolve_uri("skill://rust").is_err());
+            fs::write(&path, [0xff]).unwrap();
+            assert!(Skills::from_dir(&dir).entries.is_empty());
+            for text in [
+                "body",
+                "---\nname: rust",
+                "---\nname: ''\ndescription: test\n---",
+                "---\nname: rust\ndescription: []\n---",
+            ] {
+                assert!(metadata(text).is_err(), "{text}");
+            }
+        }
+
+        {
+            let (_home, dir) = fixture();
+            skill(&dir.join("skills"), "a", "rust", "body");
+            fs::write(dir.join("settings.yml"), "disabled_skills: [rust]\n").unwrap();
+            let settings = config::read_settings(&dir.join("settings.yml")).unwrap();
+            let snapshot = Skills::from_settings(&settings, &dir);
+            let reread = Skills::from_dir(&dir);
+            assert_eq!(snapshot.entries.len(), reread.entries.len());
+            assert_eq!(snapshot.entries[0].path, reread.entries[0].path);
+            assert!(!snapshot.entries[0].enabled);
+            assert!(snapshot.diagnostics.is_empty());
+            fs::write(dir.join("settings.yml"), "invalid yaml").unwrap();
+            let again = Skills::from_settings(&settings, &dir);
+            assert!(!again.entries[0].enabled);
+            assert!(again.diagnostics.is_empty());
+            assert_eq!(Skills::from_dir(&dir).diagnostics.len(), 1);
+        }
     }
 }

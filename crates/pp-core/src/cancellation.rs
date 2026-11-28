@@ -151,33 +151,35 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn maps_typed_errors_to_semantic_exit_codes() {
-        assert_eq!(
-            exit_code_for_error(&anyhow::Error::new(UsageError("bad arg".into()))),
-            2
-        );
-        assert_eq!(
-            exit_code_for_error(&anyhow::Error::new(MaxTurnsExceeded { limit: 4 })),
-            3
-        );
-        assert_eq!(
-            exit_code_for_error(
-                &anyhow::Error::new(TimedOut {
-                    duration: Duration::from_secs(5),
-                })
-                .context("outer"),
-            ),
-            124
-        );
-        assert_eq!(
-            exit_code_for_error(&anyhow::Error::new(SignalCancelled { signal: 2 })),
-            130
-        );
-        assert_eq!(
-            exit_code_for_error(&anyhow::Error::new(SignalCancelled { signal: 15 })),
-            143
-        );
-        assert_eq!(exit_code_for_error(&anyhow::anyhow!("boom")), 1);
+    fn exit_codes_and_cleanup_merge_semantics() {
+        {
+            assert_eq!(
+                exit_code_for_error(&anyhow::Error::new(UsageError("bad arg".into()))),
+                2
+            );
+            assert_eq!(
+                exit_code_for_error(&anyhow::Error::new(MaxTurnsExceeded { limit: 4 })),
+                3
+            );
+            assert_eq!(
+                exit_code_for_error(
+                    &anyhow::Error::new(TimedOut {
+                        duration: Duration::from_secs(5),
+                    })
+                    .context("outer"),
+                ),
+                124
+            );
+            assert_eq!(
+                exit_code_for_error(&anyhow::Error::new(SignalCancelled { signal: 2 })),
+                130
+            );
+            assert_eq!(
+                exit_code_for_error(&anyhow::Error::new(SignalCancelled { signal: 15 })),
+                143
+            );
+            assert_eq!(exit_code_for_error(&anyhow::anyhow!("boom")), 1);
+        }
     }
 
     fn cleanup_failure() -> anyhow::Error {
@@ -185,109 +187,108 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_failure_keeps_semantic_exit_codes() {
-        let cases: [(&str, anyhow::Error, u8); 5] = [
-            ("usage", anyhow::Error::new(UsageError("bad arg".into())), 2),
-            (
-                "max turns",
-                anyhow::Error::new(MaxTurnsExceeded { limit: 4 }),
-                3,
-            ),
-            (
-                "timeout",
-                anyhow::Error::new(TimedOut {
-                    duration: Duration::from_secs(5),
-                }),
-                124,
-            ),
-            (
-                "sigint",
-                anyhow::Error::new(SignalCancelled { signal: 2 }),
-                130,
-            ),
-            (
-                "sigterm",
-                anyhow::Error::new(SignalCancelled { signal: 15 }),
-                143,
-            ),
-        ];
-        for (case, original, expected) in cases {
-            let original_text = format!("{original:#}");
-            let merged = merge_cleanup_result(Err(original), Err(cleanup_failure()), "stopping")
-                .expect_err("cleanup failure must surface");
-            assert_eq!(exit_code_for_error(&merged), expected, "case {case}");
-            assert!(
-                merged.is::<CleanupError>(),
-                "case {case}: cleanup stays the outer error"
-            );
+    fn cleanup_failure_precedence_and_single_sided_passthrough() {
+        {
+            let cases: [(&str, anyhow::Error, u8); 5] = [
+                ("usage", anyhow::Error::new(UsageError("bad arg".into())), 2),
+                (
+                    "max turns",
+                    anyhow::Error::new(MaxTurnsExceeded { limit: 4 }),
+                    3,
+                ),
+                (
+                    "timeout",
+                    anyhow::Error::new(TimedOut {
+                        duration: Duration::from_secs(5),
+                    }),
+                    124,
+                ),
+                (
+                    "sigint",
+                    anyhow::Error::new(SignalCancelled { signal: 2 }),
+                    130,
+                ),
+                (
+                    "sigterm",
+                    anyhow::Error::new(SignalCancelled { signal: 15 }),
+                    143,
+                ),
+            ];
+            for (case, original, expected) in cases {
+                let original_text = format!("{original:#}");
+                let merged =
+                    merge_cleanup_result(Err(original), Err(cleanup_failure()), "stopping")
+                        .expect_err("cleanup failure must surface");
+                assert_eq!(exit_code_for_error(&merged), expected, "case {case}");
+                assert!(
+                    merged.is::<CleanupError>(),
+                    "case {case}: cleanup stays the outer error"
+                );
+                let rendered = format!("{merged:#}");
+                assert!(rendered.contains(&original_text), "case {case}: {rendered}");
+                assert!(
+                    rendered.contains("mcp client did not exit"),
+                    "case {case}: {rendered}"
+                );
+            }
+        }
+        {
+            let merged = merge_cleanup_result(
+                Err(anyhow::anyhow!("provider exploded")),
+                Err(cleanup_failure()),
+                "stopping MCP servers",
+            )
+            .expect_err("cleanup failure must surface");
+            assert_eq!(exit_code_for_error(&merged), 1);
+            assert!(merged.is::<CleanupError>());
             let rendered = format!("{merged:#}");
-            assert!(rendered.contains(&original_text), "case {case}: {rendered}");
+            assert!(rendered.contains("provider exploded"), "{rendered}");
+            assert!(rendered.contains("mcp client did not exit"), "{rendered}");
+
+            let plain = merge_cleanup_result(
+                Err(anyhow::Error::new(TimedOut {
+                    duration: Duration::from_secs(1),
+                })),
+                Err(anyhow::anyhow!("kill failed")),
+                "stopping language servers",
+            )
+            .expect_err("cleanup failure must surface");
+            assert_eq!(exit_code_for_error(&plain), 124);
+            assert!(plain.downcast_ref::<CleanupError>().is_none());
+            let rendered = format!("{plain:#}");
+            assert!(rendered.contains("Timed out after 1s."), "{rendered}");
             assert!(
-                rendered.contains("mcp client did not exit"),
-                "case {case}: {rendered}"
+                rendered.contains("stopping language servers: kill failed"),
+                "{rendered}"
             );
         }
-    }
+        {
+            assert!(merge_cleanup_result(Ok(()), Ok(()), "stopping").is_ok());
 
-    #[test]
-    fn cleanup_failure_controls_the_outer_error_only_for_cleanup_errors() {
-        let merged = merge_cleanup_result(
-            Err(anyhow::anyhow!("provider exploded")),
-            Err(cleanup_failure()),
-            "stopping MCP servers",
-        )
-        .expect_err("cleanup failure must surface");
-        assert_eq!(exit_code_for_error(&merged), 1);
-        assert!(merged.is::<CleanupError>());
-        let rendered = format!("{merged:#}");
-        assert!(rendered.contains("provider exploded"), "{rendered}");
-        assert!(rendered.contains("mcp client did not exit"), "{rendered}");
+            let result_only = merge_cleanup_result(
+                Err(anyhow::Error::new(TimedOut {
+                    duration: Duration::from_secs(1),
+                })),
+                Ok(()),
+                "stopping",
+            )
+            .expect_err("run failure must surface");
+            assert_eq!(exit_code_for_error(&result_only), 124);
 
-        let plain = merge_cleanup_result(
-            Err(anyhow::Error::new(TimedOut {
-                duration: Duration::from_secs(1),
-            })),
-            Err(anyhow::anyhow!("kill failed")),
-            "stopping language servers",
-        )
-        .expect_err("cleanup failure must surface");
-        assert_eq!(exit_code_for_error(&plain), 124);
-        assert!(plain.downcast_ref::<CleanupError>().is_none());
-        let rendered = format!("{plain:#}");
-        assert!(rendered.contains("Timed out after 1s."), "{rendered}");
-        assert!(
-            rendered.contains("stopping language servers: kill failed"),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn single_sided_failures_pass_through() {
-        assert!(merge_cleanup_result(Ok(()), Ok(()), "stopping").is_ok());
-
-        let result_only = merge_cleanup_result(
-            Err(anyhow::Error::new(TimedOut {
-                duration: Duration::from_secs(1),
-            })),
-            Ok(()),
-            "stopping",
-        )
-        .expect_err("run failure must surface");
-        assert_eq!(exit_code_for_error(&result_only), 124);
-
-        let cleanup_only = merge_cleanup_result(Ok(()), Err(cleanup_failure()), "stopping")
-            .expect_err("cleanup failure must surface");
-        assert!(cleanup_only.is::<CleanupError>());
-        assert_eq!(exit_code_for_error(&cleanup_only), 1);
-        let rendered = format!("{cleanup_only:#}");
-        assert!(
-            rendered.starts_with("Failed to stop: mcp client did not exit"),
-            "{rendered}"
-        );
-
-        let plain_cleanup_only =
-            merge_cleanup_result(Ok(()), Err(anyhow::anyhow!("kill failed")), "stopping")
+            let cleanup_only = merge_cleanup_result(Ok(()), Err(cleanup_failure()), "stopping")
                 .expect_err("cleanup failure must surface");
-        assert_eq!(format!("{plain_cleanup_only:#}"), "kill failed");
+            assert!(cleanup_only.is::<CleanupError>());
+            assert_eq!(exit_code_for_error(&cleanup_only), 1);
+            let rendered = format!("{cleanup_only:#}");
+            assert!(
+                rendered.starts_with("Failed to stop: mcp client did not exit"),
+                "{rendered}"
+            );
+
+            let plain_cleanup_only =
+                merge_cleanup_result(Ok(()), Err(anyhow::anyhow!("kill failed")), "stopping")
+                    .expect_err("cleanup failure must surface");
+            assert_eq!(format!("{plain_cleanup_only:#}"), "kill failed");
+        }
     }
 }

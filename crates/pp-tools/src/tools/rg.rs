@@ -523,160 +523,161 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn rg_native_regex_paths_and_ranges() {
-        let d = tempfile::tempdir().unwrap();
-        fs::create_dir(d.path().join("src")).unwrap();
-        fs::write(
-            d.path().join("src/a.rs"),
-            "first\nfetchProvider(\nfoobar\nfooquux\nlast\n",
-        )
-        .unwrap();
-        fs::write(d.path().join("src/b.txt"), "foobar\n").unwrap();
-        fs::write(d.path().join("4"), "unrelated\n").unwrap();
-        fs::write(d.path().join("txt}"), "unrelated\n").unwrap();
-        fs::create_dir(d.path().join("src/nested")).unwrap();
-        fs::write(d.path().join("src/nested/deep.rs"), "foobar\n").unwrap();
-        let mut store = hashline::Store::default();
-        let a = execute(
-            d.path(),
-            json!({"pattern":"foo(?=bar)","path":"src/*.rs"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert!(a["content"].as_str().unwrap().contains("*3|foobar"), "{a}");
-        assert!(!a["content"].as_str().unwrap().contains("deep.rs"), "{a}");
-        let braces = execute(
-            d.path(),
-            json!({"pattern":"foobar", "path":"src/*.{rs,txt}"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert_eq!(braces["details"]["fileCount"], 2, "{braces}");
-        let recursive = execute(
-            d.path(),
-            json!({"pattern":"foobar", "path":"src/**/*.rs"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert!(
-            recursive["content"].as_str().unwrap().contains("deep.rs"),
-            "{recursive}"
-        );
-        let b = execute(
-            d.path(),
-            json!({"pattern":"fetchProvider(","path":"src/a.rs:2-2"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert!(
-            b["content"].as_str().unwrap().contains("*2|fetchProvider("),
-            "{b}"
-        );
-        assert!(!b["content"].as_str().unwrap().contains("foobar"));
-        let onward = execute(
-            d.path(),
-            json!({"pattern":"foo", "path":"src/a.rs:4"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert!(
-            onward["content"].as_str().unwrap().contains("*4|fooquux"),
-            "{onward}"
-        );
-        assert!(
-            !onward["content"].as_str().unwrap().contains("foobar"),
-            "{onward}"
-        );
-        let ranged = execute(
-            d.path(),
-            json!({"pattern":"foo", "path":"src/a.rs:L3..L4"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert_eq!(ranged["details"]["matchCount"], 2, "{ranged}");
-        let disjoint = execute(
-            d.path(),
-            json!({"pattern":"foo", "path":"src/a.rs:3,4"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert_eq!(disjoint["details"]["matchCount"], 2, "{disjoint}");
-        let c = execute(
-            d.path(),
-            json!({"pattern":"foo\\nbar", "path":"src/a.rs"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert_eq!(c["ok"], true);
-    }
-    #[test]
-    fn rg_file_pagination_and_hashline_seen() {
-        let d = tempfile::tempdir().unwrap();
-        for i in 0..22 {
-            fs::write(d.path().join(format!("{i:02}.txt")), "needle\nother\n").unwrap();
+    fn rg_native_regex_pagination_and_hashline_tags() {
+        {
+            let d = tempfile::tempdir().unwrap();
+            fs::create_dir(d.path().join("src")).unwrap();
+            fs::write(
+                d.path().join("src/a.rs"),
+                "first\nfetchProvider(\nfoobar\nfooquux\nlast\n",
+            )
+            .unwrap();
+            fs::write(d.path().join("src/b.txt"), "foobar\n").unwrap();
+            fs::write(d.path().join("4"), "unrelated\n").unwrap();
+            fs::write(d.path().join("txt}"), "unrelated\n").unwrap();
+            fs::create_dir(d.path().join("src/nested")).unwrap();
+            fs::write(d.path().join("src/nested/deep.rs"), "foobar\n").unwrap();
+            let mut store = hashline::Store::default();
+            let a = execute(
+                d.path(),
+                json!({"pattern":"foo(?=bar)","path":"src/*.rs"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert!(a["content"].as_str().unwrap().contains("*3|foobar"), "{a}");
+            assert!(!a["content"].as_str().unwrap().contains("deep.rs"), "{a}");
+            let braces = execute(
+                d.path(),
+                json!({"pattern":"foobar", "path":"src/*.{rs,txt}"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert_eq!(braces["details"]["fileCount"], 2, "{braces}");
+            let recursive = execute(
+                d.path(),
+                json!({"pattern":"foobar", "path":"src/**/*.rs"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert!(
+                recursive["content"].as_str().unwrap().contains("deep.rs"),
+                "{recursive}"
+            );
+            let b = execute(
+                d.path(),
+                json!({"pattern":"fetchProvider(","path":"src/a.rs:2-2"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert!(
+                b["content"].as_str().unwrap().contains("*2|fetchProvider("),
+                "{b}"
+            );
+            assert!(!b["content"].as_str().unwrap().contains("foobar"));
+            let onward = execute(
+                d.path(),
+                json!({"pattern":"foo", "path":"src/a.rs:4"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert!(
+                onward["content"].as_str().unwrap().contains("*4|fooquux"),
+                "{onward}"
+            );
+            assert!(
+                !onward["content"].as_str().unwrap().contains("foobar"),
+                "{onward}"
+            );
+            let ranged = execute(
+                d.path(),
+                json!({"pattern":"foo", "path":"src/a.rs:L3..L4"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert_eq!(ranged["details"]["matchCount"], 2, "{ranged}");
+            let disjoint = execute(
+                d.path(),
+                json!({"pattern":"foo", "path":"src/a.rs:3,4"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert_eq!(disjoint["details"]["matchCount"], 2, "{disjoint}");
+            let c = execute(
+                d.path(),
+                json!({"pattern":"foo\\nbar", "path":"src/a.rs"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert_eq!(c["ok"], true);
         }
-        let mut store = hashline::Store::default();
-        let page = execute(
-            d.path(),
-            json!({"pattern":"needle"}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert_eq!(page["details"]["fileCount"], 20, "{page}");
-        assert!(page["content"].as_str().unwrap().contains("skip=20"));
-        let second = execute(
-            d.path(),
-            json!({"pattern":"needle","skip":20}),
-            EditMode::Replace,
-            &mut store,
-        );
-        assert_eq!(second["details"]["fileCount"], 2);
-        let file = execute(
-            d.path(),
-            json!({"pattern":"needle","path":"00.txt"}),
-            EditMode::Hashline,
-            &mut store,
-        );
-        assert!(
-            file["content"].as_str().unwrap().contains("[00.txt#"),
-            "{file}"
-        );
-    }
 
-    #[test]
-    fn rg_hashline_header_tag_matches_disk_bytes_with_one_computation() {
-        let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("file"), "hello\n").unwrap();
-        let mut store = hashline::Store::default();
-        hashline::take_tag_computations();
-        let result = execute(
-            d.path(),
-            json!({"pattern":"hello","path":"file"}),
-            EditMode::Hashline,
-            &mut store,
-        );
-        // 上游向量：file_hash("hello\n") == 5BF9。标签必须来自磁盘字节，且一次写入只算一次。
-        assert!(
-            result["content"]
-                .as_str()
-                .unwrap()
-                .starts_with("[file#5BF9]\n"),
-            "{result}"
-        );
-        assert_eq!(hashline::take_tag_computations(), 1, "{result}");
-        // 快照正文等于磁盘当前字节：已展示行可编，未展示行不可。
-        let shown = hashline::parse("[file#5BF9]\nCUT 1.=1").unwrap();
-        let hidden = hashline::parse("[file#5BF9]\nCUT 2.=2").unwrap();
-        assert!(
-            store
-                .validate(Path::new("file"), "5BF9", "hello\n", &shown.edits)
-                .is_ok()
-        );
-        assert!(
-            store
-                .validate(Path::new("file"), "5BF9", "hello\n", &hidden.edits)
-                .is_err()
-        );
+        {
+            let d = tempfile::tempdir().unwrap();
+            for i in 0..22 {
+                fs::write(d.path().join(format!("{i:02}.txt")), "needle\nother\n").unwrap();
+            }
+            let mut store = hashline::Store::default();
+            let page = execute(
+                d.path(),
+                json!({"pattern":"needle"}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert_eq!(page["details"]["fileCount"], 20, "{page}");
+            assert!(page["content"].as_str().unwrap().contains("skip=20"));
+            let second = execute(
+                d.path(),
+                json!({"pattern":"needle","skip":20}),
+                EditMode::Replace,
+                &mut store,
+            );
+            assert_eq!(second["details"]["fileCount"], 2);
+            let file = execute(
+                d.path(),
+                json!({"pattern":"needle","path":"00.txt"}),
+                EditMode::Hashline,
+                &mut store,
+            );
+            assert!(
+                file["content"].as_str().unwrap().contains("[00.txt#"),
+                "{file}"
+            );
+        }
+
+        {
+            let d = tempfile::tempdir().unwrap();
+            fs::write(d.path().join("file"), "hello\n").unwrap();
+            let mut store = hashline::Store::default();
+            hashline::take_tag_computations();
+            let result = execute(
+                d.path(),
+                json!({"pattern":"hello","path":"file"}),
+                EditMode::Hashline,
+                &mut store,
+            );
+            // 上游向量：file_hash("hello\n") == 5BF9。标签必须来自磁盘字节，且一次写入只算一次。
+            assert!(
+                result["content"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("[file#5BF9]\n"),
+                "{result}"
+            );
+            assert_eq!(hashline::take_tag_computations(), 1, "{result}");
+            // 快照正文等于磁盘当前字节：已展示行可编，未展示行不可。
+            let shown = hashline::parse("[file#5BF9]\nCUT 1.=1").unwrap();
+            let hidden = hashline::parse("[file#5BF9]\nCUT 2.=2").unwrap();
+            assert!(
+                store
+                    .validate(Path::new("file"), "5BF9", "hello\n", &shown.edits)
+                    .is_ok()
+            );
+            assert!(
+                store
+                    .validate(Path::new("file"), "5BF9", "hello\n", &hidden.edits)
+                    .is_err()
+            );
+        }
     }
 }
 
@@ -698,104 +699,105 @@ mod boundary_tests {
         .unwrap()
     }
     #[test]
-    fn rg_hidden_ignore_exclusions_and_literal_filename() {
-        let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join(".ignore"), "ignored.txt\n").unwrap();
-        fs::write(d.path().join("ignored.txt"), "need\n").unwrap();
-        fs::write(d.path().join(".hidden"), "need\n").unwrap();
-        fs::write(d.path().join("literal[1].txt"), "need\n").unwrap();
-        fs::create_dir(d.path().join("vendor")).unwrap();
-        fs::write(d.path().join("vendor/a.txt"), "need\n").unwrap();
-        let r = query(d.path(), json!({"pattern":"need","path":".;!vendor"}));
-        let text = r["content"].as_str().unwrap();
-        assert!(text.contains(".hidden"), "{text}");
-        assert!(!text.contains("ignored.txt"));
-        assert!(!text.contains("vendor"));
-        let exact = query(d.path(), json!({"pattern":"need","path":"literal[1].txt"}));
-        assert!(exact["content"].as_str().unwrap().contains("*1|need"));
-        let no_ignore = query(d.path(), json!({"pattern":"need","gitignore":false}));
-        assert!(
-            no_ignore["content"]
-                .as_str()
-                .unwrap()
-                .contains("ignored.txt")
-        );
-    }
-    #[test]
-    fn rg_multiline_and_long_line_window() {
-        let d = tempfile::tempdir().unwrap();
-        fs::write(
-            d.path().join("file"),
-            format!("foo\nbar\n{}needle-end\n", "中".repeat(1000)),
-        )
-        .unwrap();
-        let cross = query(d.path(), json!({"pattern":"foo\\nbar","path":"file"}));
-        assert!(
-            cross["content"].as_str().unwrap().contains("*1|foo"),
-            "{cross}"
-        );
-        let long = query(d.path(), json!({"pattern":"needle","path":"file"}));
-        let text = long["content"].as_str().unwrap();
-        assert!(
-            text.contains("needle-end") && text.contains("[col 1001]"),
-            "{text}"
-        );
-        assert_eq!(long["details"]["linesTruncated"], true);
-    }
-    #[test]
-    fn rg_symlink_scope_and_pre_cancelled_are_rejected() {
-        use std::os::unix::fs::symlink;
-        let d = tempfile::tempdir().unwrap();
-        fs::write(d.path().join("target"), "needle").unwrap();
-        symlink("target", d.path().join("link")).unwrap();
-        let cwd = d.path().canonicalize().unwrap();
-        let workspace = save::Workspace::open(&cwd).unwrap();
-        let call = |path: &str, token: &CancellationToken| {
-            run(
-                &cwd,
-                RgSettings::default(),
-                EditMode::Replace,
-                &workspace,
-                &mut hashline::Store::default(),
-                &json!({"pattern":"needle","path":path}).to_string(),
-                token,
-                None,
-            )
-        };
-        assert!(call("link", &CancellationToken::new()).is_err());
-        let t = CancellationToken::new();
-        t.cancel();
-        assert!(
-            call("target", &t)
-                .unwrap_err()
-                .downcast_ref::<pp_core::cancellation::Cancelled>()
-                .is_some()
-        );
-    }
+    fn rg_walk_boundaries_multiline_symlinks_and_large_files() {
+        {
+            let d = tempfile::tempdir().unwrap();
+            fs::write(d.path().join(".ignore"), "ignored.txt\n").unwrap();
+            fs::write(d.path().join("ignored.txt"), "need\n").unwrap();
+            fs::write(d.path().join(".hidden"), "need\n").unwrap();
+            fs::write(d.path().join("literal[1].txt"), "need\n").unwrap();
+            fs::create_dir(d.path().join("vendor")).unwrap();
+            fs::write(d.path().join("vendor/a.txt"), "need\n").unwrap();
+            let r = query(d.path(), json!({"pattern":"need","path":".;!vendor"}));
+            let text = r["content"].as_str().unwrap();
+            assert!(text.contains(".hidden"), "{text}");
+            assert!(!text.contains("ignored.txt"));
+            assert!(!text.contains("vendor"));
+            let exact = query(d.path(), json!({"pattern":"need","path":"literal[1].txt"}));
+            assert!(exact["content"].as_str().unwrap().contains("*1|need"));
+            let no_ignore = query(d.path(), json!({"pattern":"need","gitignore":false}));
+            assert!(
+                no_ignore["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("ignored.txt")
+            );
+        }
 
-    #[test]
-    fn rg_large_file_direct_search_streams_but_directory_reports_partial_coverage() {
-        let d = tempfile::tempdir().unwrap();
-        let mut content = "padding\n".repeat(524_289);
-        content.push_str("needle-at-end\n");
-        fs::write(d.path().join("large.txt"), content).unwrap();
-        let direct = query(
-            d.path(),
-            json!({"pattern":"needle-at-end", "path":"large.txt"}),
-        );
-        assert!(
-            direct["content"]
-                .as_str()
-                .unwrap()
-                .contains("needle-at-end"),
-            "{direct}"
-        );
-        let directory = query(d.path(), json!({"pattern":"needle-at-end"}));
-        let text = directory["content"].as_str().unwrap();
-        assert!(
-            text.contains("No matches found") && text.contains("first 4 MiB"),
-            "{text}"
-        );
+        {
+            let d = tempfile::tempdir().unwrap();
+            fs::write(
+                d.path().join("file"),
+                format!("foo\nbar\n{}needle-end\n", "中".repeat(1000)),
+            )
+            .unwrap();
+            let cross = query(d.path(), json!({"pattern":"foo\\nbar","path":"file"}));
+            assert!(
+                cross["content"].as_str().unwrap().contains("*1|foo"),
+                "{cross}"
+            );
+            let long = query(d.path(), json!({"pattern":"needle","path":"file"}));
+            let text = long["content"].as_str().unwrap();
+            assert!(
+                text.contains("needle-end") && text.contains("[col 1001]"),
+                "{text}"
+            );
+            assert_eq!(long["details"]["linesTruncated"], true);
+        }
+
+        {
+            use std::os::unix::fs::symlink;
+            let d = tempfile::tempdir().unwrap();
+            fs::write(d.path().join("target"), "needle").unwrap();
+            symlink("target", d.path().join("link")).unwrap();
+            let cwd = d.path().canonicalize().unwrap();
+            let workspace = save::Workspace::open(&cwd).unwrap();
+            let call = |path: &str, token: &CancellationToken| {
+                run(
+                    &cwd,
+                    RgSettings::default(),
+                    EditMode::Replace,
+                    &workspace,
+                    &mut hashline::Store::default(),
+                    &json!({"pattern":"needle","path":path}).to_string(),
+                    token,
+                    None,
+                )
+            };
+            assert!(call("link", &CancellationToken::new()).is_err());
+            let t = CancellationToken::new();
+            t.cancel();
+            assert!(
+                call("target", &t)
+                    .unwrap_err()
+                    .downcast_ref::<pp_core::cancellation::Cancelled>()
+                    .is_some()
+            );
+        }
+
+        {
+            let d = tempfile::tempdir().unwrap();
+            let mut content = "padding\n".repeat(524_289);
+            content.push_str("needle-at-end\n");
+            fs::write(d.path().join("large.txt"), content).unwrap();
+            let direct = query(
+                d.path(),
+                json!({"pattern":"needle-at-end", "path":"large.txt"}),
+            );
+            assert!(
+                direct["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("needle-at-end"),
+                "{direct}"
+            );
+            let directory = query(d.path(), json!({"pattern":"needle-at-end"}));
+            let text = directory["content"].as_str().unwrap();
+            assert!(
+                text.contains("No matches found") && text.contains("first 4 MiB"),
+                "{text}"
+            );
+        }
     }
 }
 

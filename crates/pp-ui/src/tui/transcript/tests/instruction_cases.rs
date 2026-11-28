@@ -1,123 +1,122 @@
 use super::*;
 
 #[test]
-fn instruction_reads_share_normal_groups_without_showing_bodies() {
-    let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
-    transcript.progress(AgentEvent::ProjectInstructionsLoaded {
-        path: "/project/crates/pp-runtime/AGENTS.md".into(),
-        content: "# Rules\n**literal guidance**\nlast-rule".into(),
-    });
-    for (id, path) in [("file", "file.rs"), ("skill", "skill://rust")] {
-        tool(&mut transcript, id, "read", json!({"path":path}));
-        transcript.progress(AgentEvent::ToolFinished {
-            id: id.into(),
-            result: json!({"ok":true,"source":path,"path":"/skills/rust/SKILL.md","content":format!("{id}-body\n{id}-tail")}),
+fn instruction_reads_groups_errors_and_control_safety() {
+    {
+        let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/project/crates/pp-runtime/AGENTS.md".into(),
+            content: "# Rules\n**literal guidance**\nlast-rule".into(),
         });
+        for (id, path) in [("file", "file.rs"), ("skill", "skill://rust")] {
+            tool(&mut transcript, id, "read", json!({"path":path}));
+            transcript.progress(AgentEvent::ToolFinished {
+                id: id.into(),
+                result: json!({"ok":true,"source":path,"path":"/skills/rust/SKILL.md","content":format!("{id}-body\n{id}-tail")}),
+            });
+        }
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("Read (3)"), "{text}");
+        for path in ["crates/pp-runtime/AGENTS.md", "file.rs", "skill://rust"] {
+            assert!(text.contains(path), "{text}");
+        }
+        assert!(!text.contains("/project/"), "{text}");
+        assert_eq!(
+            transcript.entries[0].arguments["path"],
+            "/project/crates/pp-runtime/AGENTS.md"
+        );
+        assert!(
+            !text.contains("Rules") && !text.contains("skill-body"),
+            "{text}"
+        );
+        assert!(!text.contains("Resolved path"), "{text}");
+        assert!(
+            transcript
+                .entries
+                .iter()
+                .all(|entry| entry.kind == EntryKind::Data)
+        );
+        transcript.toggle_tool_output();
+        assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
+        tool(
+            &mut transcript,
+            "future",
+            "read",
+            json!({"path":"future.rs"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "future".into(),
+            result: json!({"ok":true,"content":"future-body"}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(
+            text.contains("Read (4)") && text.contains("future.rs"),
+            "{text}"
+        );
+        assert!(!text.contains("future-body"), "{text}");
     }
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert!(text.contains("Read (3)"), "{text}");
-    for path in ["crates/pp-runtime/AGENTS.md", "file.rs", "skill://rust"] {
-        assert!(text.contains(path), "{text}");
+
+    {
+        let mut transcript = Transcript::new();
+        transcript.display.read_preview = true;
+        let content = "first\nsecond\nthird\nfourth\nfifth";
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/project/AGENTS.md".into(),
+            content: content.into(),
+        });
+        tool(
+            &mut transcript,
+            "skill",
+            "read",
+            json!({"path":"skill://rust"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "skill".into(),
+            result: json!({"ok":true,"content":content}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(text.contains("Read (2)"), "{text}");
+        assert!(
+            !text.contains("first") && !text.contains("Ctrl + O"),
+            "{text}"
+        );
+        transcript.toggle_tool_output();
+        assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
     }
-    assert!(!text.contains("/project/"), "{text}");
-    assert_eq!(
-        transcript.entries[0].arguments["path"],
-        "/project/crates/pp-runtime/AGENTS.md"
-    );
-    assert!(
-        !text.contains("Rules") && !text.contains("skill-body"),
-        "{text}"
-    );
-    assert!(!text.contains("Resolved path"), "{text}");
-    assert!(
-        transcript
-            .entries
-            .iter()
-            .all(|entry| entry.kind == EntryKind::Data)
-    );
-    transcript.toggle_tool_output();
-    assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
-    tool(
-        &mut transcript,
-        "future",
-        "read",
-        json!({"path":"future.rs"}),
-    );
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "future".into(),
-        result: json!({"ok":true,"content":"future-body"}),
-    });
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert!(
-        text.contains("Read (4)") && text.contains("future.rs"),
-        "{text}"
-    );
-    assert!(!text.contains("future-body"), "{text}");
-}
 
-#[test]
-fn instruction_reads_ignore_body_preview_setting() {
-    let mut transcript = Transcript::new();
-    transcript.display.read_preview = true;
-    let content = "first\nsecond\nthird\nfourth\nfifth";
-    transcript.progress(AgentEvent::ProjectInstructionsLoaded {
-        path: "/project/AGENTS.md".into(),
-        content: content.into(),
-    });
-    tool(
-        &mut transcript,
-        "skill",
-        "read",
-        json!({"path":"skill://rust"}),
-    );
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "skill".into(),
-        result: json!({"ok":true,"content":content}),
-    });
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert!(text.contains("Read (2)"), "{text}");
-    assert!(
-        !text.contains("first") && !text.contains("Ctrl + O"),
-        "{text}"
-    );
-    transcript.toggle_tool_output();
-    assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
-}
+    {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "skill",
+            "read",
+            json!({"path":"skill://missing"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "skill".into(),
+            result: json!({"ok":false,"error":"skill not found: missing"}),
+        });
+        let text = screen(&render(&mut transcript, 100, 20));
+        assert!(
+            text.contains("skill://missing") && text.contains("skill not found: missing"),
+            "{text}"
+        );
+        assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
+        assert_eq!(transcript.entries[0].kind, EntryKind::Data);
+        assert!(!text.contains("Resolved path"), "{text}");
+    }
 
-#[test]
-fn failed_skill_reads_keep_errors_and_normal_read_style() {
-    let mut transcript = Transcript::new();
-    tool(
-        &mut transcript,
-        "skill",
-        "read",
-        json!({"path":"skill://missing"}),
-    );
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "skill".into(),
-        result: json!({"ok":false,"error":"skill not found: missing"}),
-    });
-    let text = screen(&render(&mut transcript, 100, 20));
-    assert!(
-        text.contains("skill://missing") && text.contains("skill not found: missing"),
-        "{text}"
-    );
-    assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
-    assert_eq!(transcript.entries[0].kind, EntryKind::Data);
-    assert!(!text.contains("Resolved path"), "{text}");
-}
-
-#[test]
-fn instruction_reads_neutralize_controls_at_narrow_widths() {
-    let mut transcript = Transcript::new();
-    transcript.progress(AgentEvent::ProjectInstructionsLoaded {
-        path: "/project/\u{1b}[31mAGENTS.md".into(),
-        content: "plain\n\u{1b}[31mred\u{1b}[0m\nlast".into(),
-    });
-    transcript.toggle_tool_output();
-    let text = screen(&render(&mut transcript, 8, 40));
-    assert!(!text.contains('\u{1b}'), "{text}");
-    assert!(text.contains('\u{fffd}'), "{text}");
+    {
+        let mut transcript = Transcript::new();
+        transcript.progress(AgentEvent::ProjectInstructionsLoaded {
+            path: "/project/\u{1b}[31mAGENTS.md".into(),
+            content: "plain\n\u{1b}[31mred\u{1b}[0m\nlast".into(),
+        });
+        transcript.toggle_tool_output();
+        let text = screen(&render(&mut transcript, 8, 40));
+        assert!(!text.contains('\u{1b}'), "{text}");
+        assert!(text.contains('\u{fffd}'), "{text}");
+    }
 }
 
 #[test]

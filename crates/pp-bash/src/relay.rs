@@ -305,73 +305,71 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_relay_forwards_bytes_and_propagates_eof() {
-        let stream = detached_stream(1);
-        let stop = Arc::new(AtomicBool::new(false));
-        let edge = spawn(stream.clone(), stop).expect("spawn relay");
-        let (mut reader, mut writer, mut relay) = split(edge);
+    fn pipeline_relay_eof_downstream_close_and_interrupt() {
+        {
+            let stream = detached_stream(1);
+            let stop = Arc::new(AtomicBool::new(false));
+            let edge = spawn(stream.clone(), stop).expect("spawn relay");
+            let (mut reader, mut writer, mut relay) = split(edge);
 
-        writer
-            .write_all(b"hello pipeline\n")
-            .expect("write upstream");
-        drop(writer);
+            writer
+                .write_all(b"hello pipeline\n")
+                .expect("write upstream");
+            drop(writer);
 
-        let mut forwarded = Vec::new();
-        reader.read_to_end(&mut forwarded).expect("read downstream");
+            let mut forwarded = Vec::new();
+            reader.read_to_end(&mut forwarded).expect("read downstream");
 
-        assert_eq!(forwarded, b"hello pipeline\n");
-        assert!(wait_until(|| relay.is_done()), "relay must observe EOF");
-        relay.join();
-        assert_eq!(stream.close_reason(), Some(CloseReason::Eof));
-        assert_eq!(stream.retained(), b"hello pipeline\n".to_vec());
-    }
+            assert_eq!(forwarded, b"hello pipeline\n");
+            assert!(wait_until(|| relay.is_done()), "relay must observe EOF");
+            relay.join();
+            assert_eq!(stream.close_reason(), Some(CloseReason::Eof));
+            assert_eq!(stream.retained(), b"hello pipeline\n".to_vec());
+        }
+        {
+            let stream = detached_stream(2);
+            let stop = Arc::new(AtomicBool::new(false));
+            let edge = spawn(stream.clone(), stop).expect("spawn relay");
+            let (reader, mut writer, mut relay) = split(edge);
 
-    #[test]
-    fn pipeline_relay_releases_upstream_when_downstream_closes() {
-        let stream = detached_stream(2);
-        let stop = Arc::new(AtomicBool::new(false));
-        let edge = spawn(stream.clone(), stop).expect("spawn relay");
-        let (reader, mut writer, mut relay) = split(edge);
+            // 下游 reader 关闭后，中继在没有任何新上游字节的情况下也必须退出。
+            drop(reader);
+            assert!(
+                wait_until(|| relay.is_done()),
+                "relay must notice a closed downstream without new upstream data"
+            );
+            relay.join();
+            assert_eq!(stream.close_reason(), Some(CloseReason::DownstreamClosed));
 
-        // 下游 reader 关闭后，中继在没有任何新上游字节的情况下也必须退出。
-        drop(reader);
-        assert!(
-            wait_until(|| relay.is_done()),
-            "relay must notice a closed downstream without new upstream data"
-        );
-        relay.join();
-        assert_eq!(stream.close_reason(), Some(CloseReason::DownstreamClosed));
+            // 上游读端已释放，后续写入获得 EPIPE，而不是无限背压。
+            let error = writer
+                .write_all(b"after close")
+                .expect_err("upstream read end is gone");
+            assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        }
+        {
+            let stream = detached_stream(3);
+            let stop = Arc::new(AtomicBool::new(false));
+            let edge = spawn(stream.clone(), stop.clone()).expect("spawn relay");
+            let (_reader, mut writer, mut relay) = split(edge);
 
-        // 上游读端已释放，后续写入获得 EPIPE，而不是无限背压。
-        let error = writer
-            .write_all(b"after close")
-            .expect_err("upstream read end is gone");
-        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-    }
+            writer
+                .write_all(b"observed before cancel")
+                .expect("write upstream");
+            assert!(
+                wait_until(|| stream.retained_range().1 == b"observed before cancel".len() as u64),
+                "relay must mirror the block before it is consumed"
+            );
 
-    #[test]
-    fn pipeline_relay_interrupt_keeps_observed_bytes() {
-        let stream = detached_stream(3);
-        let stop = Arc::new(AtomicBool::new(false));
-        let edge = spawn(stream.clone(), stop.clone()).expect("spawn relay");
-        let (_reader, mut writer, mut relay) = split(edge);
-
-        writer
-            .write_all(b"observed before cancel")
-            .expect("write upstream");
-        assert!(
-            wait_until(|| stream.retained_range().1 == b"observed before cancel".len() as u64),
-            "relay must mirror the block before it is consumed"
-        );
-
-        stop.store(true, Ordering::Release);
-        assert!(
-            wait_until(|| relay.is_done()),
-            "relay must stop cooperatively"
-        );
-        relay.join();
-        assert_eq!(stream.close_reason(), Some(CloseReason::Interrupted));
-        assert_eq!(stream.retained(), b"observed before cancel".to_vec());
+            stop.store(true, Ordering::Release);
+            assert!(
+                wait_until(|| relay.is_done()),
+                "relay must stop cooperatively"
+            );
+            relay.join();
+            assert_eq!(stream.close_reason(), Some(CloseReason::Interrupted));
+            assert_eq!(stream.retained(), b"observed before cancel".to_vec());
+        }
     }
 
     #[test]

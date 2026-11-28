@@ -126,7 +126,7 @@ impl McpManager {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::{POLL, ServerConfig, StdioConfig, TransportConfig};
     use super::*;
     use std::collections::BTreeSet;

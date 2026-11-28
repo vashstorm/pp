@@ -284,7 +284,7 @@ fn slimming_partial_retry_tools_and_terminal_snapshots_do_not_change_native_hist
 }
 
 #[test]
-fn slimming_thinking_only_empty_cancel_crash_and_snapshot_failure() {
+fn slimming_thinking_optional_and_inherited_states() {
     for thinking in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut journal = SessionJournal::new(dir.path().into());
@@ -352,10 +352,7 @@ fn slimming_thinking_only_empty_cancel_crash_and_snapshot_failure() {
         assert_eq!(restored.journal.check().unwrap_err().to_string(), first);
         assert_eq!(fs::read(&path).unwrap(), before);
     }
-}
 
-#[test]
-fn slimming_optional_states_validate_every_baseline_and_keep_full_same_length_replacements() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let mut journal = SessionJournal::new(dir.path().into());
@@ -432,10 +429,7 @@ fn slimming_optional_states_validate_every_baseline_and_keep_full_same_length_re
         });
         assert!(load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).is_err());
     }
-}
 
-#[test]
-fn slimming_omitted_state_inherits_tools_instructions_thinking_and_append_for_all_readers() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let mut journal = SessionJournal::new(dir.path().into());

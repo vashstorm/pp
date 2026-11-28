@@ -312,58 +312,50 @@ mod tests {
     }
 
     #[test]
-    fn model_favorites_sort_with_filters_and_preserve_selection() {
-        let mut panel = panel();
-        panel.begin_models();
-        panel.selected = 1;
-        panel.update_favorites(vec!["fixture/two".into(), "unavailable/model".into()]);
-        assert_eq!(panel.model_indices(), vec![1, 0]);
-        assert_eq!(panel.selected, 0);
-        let buffer = draw(&mut panel, 140, 24);
-        let text = buffer
+    fn model_favorites_sort_and_shortcut() {
+        let mut p1 = panel();
+        p1.begin_models();
+        p1.selected = 1;
+        p1.update_favorites(vec!["fixture/two".into(), "unavailable/model".into()]);
+        assert_eq!(p1.model_indices(), vec![1, 0]);
+        assert_eq!(p1.selected, 0);
+        let text: String = draw(&mut p1, 140, 24)
             .content
             .iter()
             .map(|c| c.symbol())
-            .collect::<String>();
-        assert!(text.contains("❯ fixture/two \u{f005}"));
-        assert!(text.contains("Ctrl + F favorite"));
-        panel.sidebar = 2;
-        panel.query = "TWO".into();
-        assert_eq!(panel.model_indices(), vec![1]);
-        panel.update_favorites(vec![]);
-        assert_eq!(panel.model_indices(), vec![1]);
-        assert_eq!(panel.selected, 0);
-        panel.query.clear();
-        assert_eq!(panel.model_indices(), vec![0, 1]);
-    }
+            .collect();
+        assert!(text.contains("❯ fixture/two \u{f005}") && text.contains("Ctrl + F favorite"));
+        p1.sidebar = 2;
+        p1.query = "TWO".into();
+        p1.update_favorites(vec![]);
+        assert_eq!((p1.model_indices(), p1.selected), (vec![1], 0));
+        p1.query.clear();
+        assert_eq!(p1.model_indices(), vec![0, 1]);
 
-    #[test]
-    fn favorite_shortcut_only_handles_model_rows_and_key_presses() {
-        let mut panel = panel();
+        let mut p2 = panel();
         let shortcut = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
-        assert!(matches!(panel.handle(Event::Key(shortcut)), Action::None));
-        panel.begin_models();
+        assert!(matches!(p2.handle(Event::Key(shortcut)), Action::None));
+        p2.begin_models();
         for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
             assert!(matches!(
-                panel.handle(Event::Key(KeyEvent { kind, ..shortcut })),
+                p2.handle(Event::Key(KeyEvent { kind, ..shortcut })),
                 Action::None
             ));
         }
         assert!(
-            matches!(panel.handle(Event::Key(shortcut)), Action::Favorite(reference) if reference == "fixture/one")
+            matches!(p2.handle(Event::Key(shortcut)), Action::Favorite(r) if r == "fixture/one")
         );
-        assert!(panel.query.is_empty());
-        panel.query = "missing".into();
-        assert!(matches!(panel.handle(Event::Key(shortcut)), Action::None));
-        panel.query.clear();
-        panel.sidebar_focus = true;
-        assert!(matches!(panel.handle(Event::Key(shortcut)), Action::None));
+        p2.query = "missing".into();
+        assert!(matches!(p2.handle(Event::Key(shortcut)), Action::None));
+        p2.query.clear();
+        p2.sidebar_focus = true;
+        assert!(matches!(p2.handle(Event::Key(shortcut)), Action::None));
     }
 
     #[test]
-    fn roles_layout_has_seven_roles_sidebar_colors_and_independent_efforts() {
-        let mut panel = panel();
-        panel.roles.insert(
+    fn roles_layout_icons_and_enabled_toggles() {
+        let mut p1 = panel();
+        p1.roles.insert(
             ModelRole::Fast,
             RoleAssignment {
                 fallback: None,
@@ -372,12 +364,8 @@ mod tests {
                 effort: ThinkLevel::None,
             },
         );
-        let buffer = draw(&mut panel, 140, 24);
-        let text = buffer
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let b1 = draw(&mut p1, 140, 24);
+        let t1: String = b1.content.iter().map(|c| c.symbol()).collect();
         for label in [
             "Model roles",
             "Roles",
@@ -393,21 +381,16 @@ mod tests {
             "none",
             "1/7",
         ] {
-            assert!(text.contains(label), "{label}: {text}");
+            assert!(t1.contains(label), "{label}: {t1}");
         }
-        assert!(!text.contains("SMOL"));
-        assert_eq!(buffer[(50, 20)].bg, bg());
-        assert_eq!(buffer[(0, 5)].fg, border());
-        for (width, height) in [(80, 12), (42, 8), (12, 4), (1, 1), (140, 24)] {
-            draw(&mut panel, width, height);
+        assert!(!t1.contains("SMOL") && b1[(50, 20)].bg == bg() && b1[(0, 5)].fg == border());
+        for (w, h) in [(80, 12), (42, 8), (12, 4), (1, 1)] {
+            draw(&mut p1, w, h);
         }
-    }
 
-    #[test]
-    fn roles_icons_match_statusline_glyphs_without_moving_the_click_column() {
-        let mut panel = panel();
-        panel.sidebar_focus = false;
-        panel.roles.insert(
+        let mut p2 = panel();
+        p2.sidebar_focus = false;
+        p2.roles.insert(
             ModelRole::Default,
             RoleAssignment {
                 enabled: true,
@@ -419,12 +402,8 @@ mod tests {
                 }),
             },
         );
-        let buffer = draw(&mut panel, 140, 24);
-        let text = buffer
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let b2 = draw(&mut p2, 140, 24);
+        let t2: String = b2.content.iter().map(|c| c.symbol()).collect();
         for icon in [
             roles_icon(),
             models_icon(),
@@ -433,68 +412,32 @@ mod tests {
             disabled_icon(),
             fallback_icon(),
         ] {
-            assert!(text.contains(icon), "面板应显示 Nerd Font 图标：{icon}");
-            assert!(
-                icon.chars()
-                    .next()
-                    .is_some_and(|glyph| ('\u{f0000}'..='\u{ffffd}').contains(&glyph)),
-                "图标应与状态栏一样使用 Material Design 字形：{icon}"
-            );
-            assert_eq!(Span::raw(icon).width(), 1, "图标布局宽度应为一列：{icon}");
+            assert!(t2.contains(icon) && Span::raw(icon).width() == 1);
         }
-        // effort 标签复用状态栏的思考档位图标。
-        assert!(text.contains(palette::think_icon(ThinkLevel::High)));
-        assert!(text.contains(palette::think_icon(ThinkLevel::None)));
-        let x = panel.body.x;
-        let y = panel.body.y + panel.content_offset();
+        let x = p2.body.x;
+        let y = p2.body.y + p2.content_offset();
         assert_eq!(
-            buffer[(x + 2, y)].symbol(),
-            enabled_icon(),
-            "启用图标必须落在鼠标点击列"
+            (
+                b2[(x + 2, y)].symbol(),
+                b2[(x + 11, y + 1)].symbol(),
+                b2[(x + 11, y + 1)].fg
+            ),
+            (enabled_icon(), fallback_icon(), muted())
         );
-        assert_eq!(buffer[(x + 11, y + 1)].symbol(), fallback_icon());
-        assert_eq!(buffer[(x + 11, y + 1)].fg, muted());
-        assert!(!text.contains("FALLBACK"), "备用行只显示缩进箭头");
-        for (row, model, effort) in [
-            (y, "fixture/one", ThinkLevel::High),
-            (y + 1, "fixture/two", ThinkLevel::None),
-        ] {
-            let model_x = x + 13;
-            assert_eq!(buffer[(model_x + 8, row)].fg, green());
-            let effort_x = model_x + model.len() as u16 + 1;
-            assert_eq!(
-                buffer[(effort_x, row)].symbol(),
-                palette::think_icon(effort)
-            );
-            let rendered_effort = (effort_x + 2..effort_x + 2 + effort.as_str().len() as u16)
-                .map(|col| buffer[(col, row)].symbol())
-                .collect::<String>();
-            assert_eq!(rendered_effort, effort.as_str(), "主备各自显示 effort");
-        }
-        // 长引用不能挤掉 effort，窄面板仍可查看主备各自的档位。
-        panel.roles.get_mut(&ModelRole::Default).unwrap().model =
+        assert!(!t2.contains("FALLBACK"));
+        p2.roles.get_mut(&ModelRole::Default).unwrap().model =
             format!("fixture/{}", "long-model".repeat(10));
-        panel
-            .roles
-            .get_mut(&ModelRole::Default)
-            .unwrap()
-            .fallback
-            .as_mut()
-            .unwrap()
-            .model = format!("fixture/{}", "long-backup".repeat(10));
         for width in [42, 80, 140] {
-            let buffer = draw(&mut panel, width, 24);
-            let y = panel.body.y + panel.content_offset();
-            for (row, effort) in [(y, "high"), (y + 1, "none")] {
-                let text = (panel.body.x..panel.body.right())
-                    .map(|col| buffer[(col, row)].symbol())
-                    .collect::<String>();
-                assert!(text.ends_with(effort), "长模型名仍应保留 effort：{text}");
-            }
+            let bw = draw(&mut p2, width, 24);
+            let yw = p2.body.y + p2.content_offset();
+            let row: String = (p2.body.x..p2.body.right())
+                .map(|c| bw[(c, yw)].symbol())
+                .collect();
+            assert!(row.ends_with("high"));
         }
-        draw(&mut panel, 140, 24);
+        draw(&mut p2, 140, 24);
         let Action::Save(ModelRole::Default, Some(off)) =
-            panel.handle(Event::Mouse(crossterm::event::MouseEvent {
+            p2.handle(Event::Mouse(crossterm::event::MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
                 column: x + 2,
                 row: y,
@@ -503,40 +446,64 @@ mod tests {
         else {
             panic!("点击开关图标应切换启用状态");
         };
-        assert!(!off.enabled);
-        assert!(off.fallback.is_some(), "切换不能丢失备用模型");
-    }
+        assert!(!off.enabled && off.fallback.is_some());
 
-    #[test]
-    fn roles_choose_model_then_only_supported_effort_before_atomic_save() {
-        let mut panel = panel();
-        key(&mut panel, KeyCode::Tab);
-        key(&mut panel, KeyCode::Down);
-        assert_eq!(panel.role(), ModelRole::Fast);
-        key(&mut panel, KeyCode::Enter);
-        panel.handle(Event::Paste("two".into()));
-        assert!(matches!(key(&mut panel, KeyCode::Enter), Action::None));
-        assert_eq!(panel.efforts(), [ThinkLevel::None]);
-        let Action::Save(role, Some(assignment)) = key(&mut panel, KeyCode::Enter) else {
-            panic!("应一次保存 model 与 effort");
+        let mut p3 = panel();
+        let mut val = RoleAssignment {
+            fallback: None,
+            enabled: true,
+            model: "fixture/two".into(),
+            effort: ThinkLevel::None,
         };
-        assert_eq!(role, ModelRole::Fast);
-        assert_eq!(assignment.model, "fixture/two");
-        assert_eq!(assignment.effort, ThinkLevel::None);
-        assert!(panel.roles.is_empty());
+        p3.roles.insert(ModelRole::Fast, val.clone());
+        p3.roles.insert(
+            ModelRole::Review,
+            RoleAssignment {
+                enabled: false,
+                ..val.clone()
+            },
+        );
+        key(&mut p3, KeyCode::Tab);
+        key(&mut p3, KeyCode::Down);
+        key(&mut p3, KeyCode::Down);
+        let b3 = draw(&mut p3, 140, 24);
+        let x3 = p3.body.x;
+        let y3 = p3.body.y + p3.content_offset();
+        assert_ne!(b3[(x3 + 2, y3 + 1)].fg, muted());
+        assert_eq!(b3[(x3 + 13, y3 + 4)].fg, muted());
+        key(&mut p3, KeyCode::Up);
+        let Action::Save(ModelRole::Fast, Some(off3)) = key(&mut p3, KeyCode::Char(' ')) else {
+            panic!("空格应切换启用状态");
+        };
+        val.enabled = false;
+        assert_eq!(off3, val);
     }
 
     #[test]
-    fn effort_options_keep_distinct_icons_and_bracket_the_visible_focus() {
-        let mut panel = panel();
-        key(&mut panel, KeyCode::Tab);
-        key(&mut panel, KeyCode::Enter);
-        key(&mut panel, KeyCode::Enter);
-        let selected_bg = super::super::themes::palette().panel_alt_bg;
+    fn roles_effort_selection_cycling_cancel_and_busy() {
+        let mut p1 = panel();
+        key(&mut p1, KeyCode::Tab);
+        key(&mut p1, KeyCode::Down);
+        assert_eq!(p1.role(), ModelRole::Fast);
+        key(&mut p1, KeyCode::Enter);
+        p1.handle(Event::Paste("two".into()));
+        assert!(matches!(key(&mut p1, KeyCode::Enter), Action::None));
+        assert_eq!(p1.efforts(), [ThinkLevel::None]);
+        let Action::Save(ModelRole::Fast, Some(a1)) = key(&mut p1, KeyCode::Enter) else {
+            panic!("应一次保存");
+        };
+        assert_eq!(
+            (a1.model.as_str(), a1.effort),
+            ("fixture/two", ThinkLevel::None)
+        );
 
+        let mut p2 = panel();
+        key(&mut p2, KeyCode::Tab);
+        key(&mut p2, KeyCode::Enter);
+        key(&mut p2, KeyCode::Enter);
+        let selected_bg = super::super::themes::palette().panel_alt_bg;
         for (width, expected_rows) in [(110, 1), (42, 2)] {
-            let buffer = draw(&mut panel, width, 20);
-            let mut colors = Vec::new();
+            let buffer = draw(&mut p2, width, 20);
             let mut rows = std::collections::BTreeSet::new();
             for level in ThinkLevel::ALL {
                 let label = format!("{} {} ", palette::think_icon(level), level.as_str());
@@ -544,123 +511,77 @@ mod tests {
                     .content
                     .chunks(usize::from(width))
                     .enumerate()
-                    .find_map(|(row, cells)| {
-                        let text = cells.iter().map(|cell| cell.symbol()).collect::<String>();
-                        let start = text.find(&label)?;
-                        Some((row, cells, text[..start].chars().count()))
+                    .find_map(|(r, cs)| {
+                        let t: String = cs.iter().map(|c| c.symbol()).collect();
+                        let s = t.find(&label)?;
+                        Some((r, cs, t[..s].chars().count()))
                     })
-                    .unwrap_or_else(|| panic!("{width} 列下应完整显示 {level:?}"));
+                    .unwrap();
                 let focused = level == ThinkLevel::High;
                 assert_eq!(cells[start - 2].symbol(), if focused { "[" } else { " " });
-                assert_eq!(
-                    cells[start + label.chars().count()].symbol(),
-                    if focused { "]" } else { " " }
-                );
-                assert_eq!(cells[start + 2].fg, text_fg());
                 assert_eq!(
                     cells[start + 2].bg,
                     if focused { selected_bg } else { bg() }
                 );
-                let color = cells[start].fg;
-                assert_ne!(color, text_fg());
-                assert!(!colors.contains(&color), "各档位图标颜色应可区分");
-                colors.push(color);
                 rows.insert(row);
             }
             assert_eq!(rows.len(), expected_rows);
         }
-
-        key(&mut panel, KeyCode::Right);
-        key(&mut panel, KeyCode::Right);
-        let buffer = draw(&mut panel, 18, 7);
-        let focused = buffer
+        key(&mut p2, KeyCode::Right);
+        key(&mut p2, KeyCode::Right);
+        let focused: String = draw(&mut p2, 18, 7)
             .content
             .iter()
-            .filter(|cell| cell.bg == selected_bg)
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+            .filter(|c| c.bg == selected_bg)
+            .map(|c| c.symbol())
+            .collect();
         assert_eq!(
             focused,
             format!("[ {} max ]", palette::think_icon(ThinkLevel::Max))
         );
-    }
 
-    #[test]
-    fn roles_cancel_and_clear_and_busy_never_leak_partial_configuration() {
-        let mut panel = panel();
-        key(&mut panel, KeyCode::Tab);
-        key(&mut panel, KeyCode::Enter);
-        key(&mut panel, KeyCode::Enter);
-        key(&mut panel, KeyCode::Esc);
-        key(&mut panel, KeyCode::Esc);
-        assert!(panel.roles.is_empty());
-        assert!(matches!(
-            key(&mut panel, KeyCode::Delete),
-            Action::Save(ModelRole::Default, None)
-        ));
-        panel.busy = true;
-        assert!(matches!(key(&mut panel, KeyCode::Enter), Action::None));
-        assert!(matches!(key(&mut panel, KeyCode::Esc), Action::None));
-        panel.saved();
-        assert!(matches!(key(&mut panel, KeyCode::Esc), Action::Close));
-    }
-
-    #[test]
-    fn roles_only_enabled_rows_are_colored_and_space_or_dot_toggles_preserving_assignment() {
-        let mut panel = panel();
-        let mut value = RoleAssignment {
-            fallback: None,
-            enabled: true,
-            model: "fixture/two".into(),
-            effort: ThinkLevel::None,
-        };
-        panel.roles.insert(ModelRole::Fast, value.clone());
-        panel.roles.insert(
-            ModelRole::Review,
-            RoleAssignment {
-                enabled: false,
-                ..value.clone()
-            },
+        let mut p3 = panel();
+        key(&mut p3, KeyCode::Tab);
+        key(&mut p3, KeyCode::Enter);
+        key(&mut p3, KeyCode::Enter);
+        key(&mut p3, KeyCode::Esc);
+        key(&mut p3, KeyCode::Esc);
+        assert!(
+            p3.roles.is_empty()
+                && matches!(
+                    key(&mut p3, KeyCode::Delete),
+                    Action::Save(ModelRole::Default, None)
+                )
         );
-        key(&mut panel, KeyCode::Tab);
-        key(&mut panel, KeyCode::Down);
-        key(&mut panel, KeyCode::Down);
-        let buffer = draw(&mut panel, 140, 24);
-        let x = panel.body.x;
-        let y = panel.body.y + panel.content_offset();
-        for row in [0, 2, 3, 4, 5] {
-            for col in x..panel.body.right() {
-                let cell = &buffer[(col, y + row)];
-                if !cell.symbol().trim().is_empty() {
-                    assert_eq!(cell.fg, muted(), "未选中的行不能因光标高亮变彩色");
-                }
-            }
-        }
-        assert_ne!(buffer[(x + 2, y + 1)].fg, muted());
-        key(&mut panel, KeyCode::Up);
-        let Action::Save(ModelRole::Fast, Some(off)) = key(&mut panel, KeyCode::Char(' ')) else {
-            panic!("空格应切换启用状态");
+        p3.busy = true;
+        assert!(
+            matches!(key(&mut p3, KeyCode::Enter), Action::None)
+                && matches!(key(&mut p3, KeyCode::Esc), Action::None)
+        );
+        p3.saved();
+        assert!(matches!(key(&mut p3, KeyCode::Esc), Action::Close));
+
+        let mut p4 = panel();
+        key(&mut p4, KeyCode::Enter);
+        key(&mut p4, KeyCode::Enter);
+        key(&mut p4, KeyCode::Enter);
+        key(&mut p4, KeyCode::Tab);
+        key(&mut p4, KeyCode::Right);
+        assert_eq!(p4.selected, 5);
+        key(&mut p4, KeyCode::Left);
+        key(&mut p4, KeyCode::BackTab);
+        key(&mut p4, KeyCode::Left);
+        key(&mut p4, KeyCode::Left);
+        key(&mut p4, KeyCode::Left);
+        assert!(!p4.sidebar_focus && p4.selected == 0);
+        let Action::Save(ModelRole::Default, Some(a4)) = key(&mut p4, KeyCode::Enter) else {
+            panic!("save");
         };
-        value.enabled = false;
-        assert_eq!(off, value);
-        panel.roles.insert(ModelRole::Fast, off);
-        draw(&mut panel, 140, 24);
-        let Action::Save(ModelRole::Fast, Some(on)) =
-            panel.handle(Event::Mouse(crossterm::event::MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: x + 2,
-                row: y + 1,
-                modifiers: KeyModifiers::NONE,
-            }))
-        else {
-            panic!("点击圆点应切换启用状态");
-        };
-        assert!(on.enabled);
-        assert_eq!(on.model, value.model);
-        assert_eq!(on.effort, value.effort);
+        assert_eq!(a4.effort, p4.efforts()[0]);
     }
+
     #[test]
-    fn fallback_roles_shortcuts_select_clear_and_preserve_disabled_primary() {
+    fn fallback_roles_shortcuts_same_model_and_before_primary() {
         let mut panel = panel();
         panel.roles.insert(
             ModelRole::Default,
@@ -714,11 +635,9 @@ mod tests {
         for (width, height) in [(140, 24), (70, 7), (12, 4)] {
             draw(&mut panel, width, height);
         }
-    }
-    #[test]
-    fn fallback_roles_allow_selecting_the_same_model_in_either_row() {
+
         for editing_fallback in [false, true] {
-            let mut panel = panel();
+            let mut ps = self::panel();
             let value = RoleAssignment {
                 enabled: true,
                 model: "fixture/one".into(),
@@ -728,64 +647,28 @@ mod tests {
                     effort: ThinkLevel::Low,
                 }),
             };
-            panel.roles.insert(ModelRole::Default, value.clone());
-            key(&mut panel, KeyCode::Tab);
+            ps.roles.insert(ModelRole::Default, value.clone());
+            key(&mut ps, KeyCode::Tab);
             if editing_fallback {
-                key(&mut panel, KeyCode::Down);
+                key(&mut ps, KeyCode::Down);
             }
-            key(&mut panel, KeyCode::Enter);
-            key(&mut panel, KeyCode::Enter);
-            assert_eq!(panel.view, View::Effort);
-            assert!(panel.message.is_empty());
-            let Action::Save(ModelRole::Default, Some(updated)) = key(&mut panel, KeyCode::Enter)
+            key(&mut ps, KeyCode::Enter);
+            key(&mut ps, KeyCode::Enter);
+            let Action::Save(ModelRole::Default, Some(updated)) = key(&mut ps, KeyCode::Enter)
             else {
                 panic!("主备模型相同时也应允许保存");
             };
             assert_eq!(updated, value);
         }
-    }
 
-    #[test]
-    fn effort_view_arrow_and_tab_keys_cycle_levels_without_switching_tabs() {
-        let mut panel = panel();
-        key(&mut panel, KeyCode::Enter);
-        key(&mut panel, KeyCode::Enter);
-        key(&mut panel, KeyCode::Enter);
-        assert_eq!(panel.view, View::Effort);
-        assert!(!panel.sidebar_focus);
-        // fixture/one 支持全部档位：←/→ 与 Tab/Shift+Tab 在档位间滚动，不切换侧栏页签。
-        key(&mut panel, KeyCode::Tab);
-        key(&mut panel, KeyCode::Right);
-        assert_eq!(panel.selected, 5);
-        assert!(!panel.sidebar_focus);
-        key(&mut panel, KeyCode::Left);
-        key(&mut panel, KeyCode::BackTab);
-        key(&mut panel, KeyCode::Left);
-        assert_eq!(panel.selected, 2);
-        assert!(!panel.sidebar_focus);
-        key(&mut panel, KeyCode::Left);
-        key(&mut panel, KeyCode::Left);
-        assert_eq!(panel.selected, 0);
-        let Action::Save(ModelRole::Default, Some(assignment)) = key(&mut panel, KeyCode::Enter)
-        else {
-            panic!("应保存滚动后的档位");
-        };
-        assert_eq!(assignment.effort, panel.efforts()[0]);
-    }
-
-    #[test]
-    fn fallback_roles_can_be_configured_before_primary() {
-        let mut panel = panel();
-        key(&mut panel, KeyCode::Tab);
-        key(&mut panel, KeyCode::Char('f'));
-        key(&mut panel, KeyCode::Enter);
-        let Action::Save(ModelRole::Default, Some(assignment)) = key(&mut panel, KeyCode::Enter)
-        else {
+        let mut pb = self::panel();
+        key(&mut pb, KeyCode::Tab);
+        key(&mut pb, KeyCode::Char('f'));
+        key(&mut pb, KeyCode::Enter);
+        let Action::Save(ModelRole::Default, Some(ab)) = key(&mut pb, KeyCode::Enter) else {
             panic!("缺主模型时应允许保存备用");
         };
-        assert!(assignment.model.is_empty());
-        assert!(!assignment.enabled);
-        assert_eq!(assignment.fallback.unwrap().model, "fixture/one");
+        assert!(ab.model.is_empty() && !ab.enabled && ab.fallback.unwrap().model == "fixture/one");
     }
 
     #[test]

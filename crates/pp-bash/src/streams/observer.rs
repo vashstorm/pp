@@ -278,228 +278,224 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn pipeline_card_preview_is_bounded_and_decodes_partial_utf8() {
-        let run = unique_run(&PipeStore::default());
-        let pipeline = run.observer().begin(None, 3, false, false).unwrap();
-        let stream = Arc::new(StreamState::new(
-            1,
-            pipeline,
-            1,
-            2,
-            "producer",
-            "cat",
-            Arc::new(|_| {}),
-        ));
-        run.state.push_stream(stream.clone());
-        stream.observe(b"\x1b[31mA\xff\xe4");
-        assert_eq!(run.preview().as_deref(), Some("A�"));
-        stream.observe(b"\xb8\xad\x1b[0m");
-        assert_eq!(run.preview().as_deref(), Some("A�中"));
-        let duplicate = Arc::new(StreamState::new(
-            2,
-            pipeline,
-            2,
-            3,
-            "cat",
-            "tail",
-            Arc::new(|_| {}),
-        ));
-        duplicate.observe(b"duplicate");
-        run.state.push_stream(duplicate);
-        let nested = run
-            .observer()
-            .begin(Some(pipeline), 2, false, false)
-            .unwrap();
-        let nested_stream = Arc::new(StreamState::new(
-            3,
-            nested,
-            1,
-            2,
-            "nested",
-            "cat",
-            Arc::new(|_| {}),
-        ));
-        nested_stream.observe(b"nested");
-        run.state.push_stream(nested_stream);
-        assert_eq!(run.preview().as_deref(), Some("A�中"));
-        stream.observe("中".repeat(PREVIEW_BYTES as usize).as_bytes());
-        let preview = run.preview().unwrap();
-        assert!(preview.len() <= PREVIEW_BYTES as usize);
-        assert!(preview.chars().all(|ch| ch == '中'));
-        run.observer().begin(None, 2, false, false).unwrap();
-        assert_eq!(run.preview(), None, "新管道不能沿用旧管道的预览");
-    }
-
-    #[test]
-    fn pipeline_stream_ids_are_run_local_and_monotonic() {
-        let store = PipeStore::new();
-        let first = unique_run(&store);
-        let second = unique_run(&store);
-
-        let (_, producer_a) = edge(&first, 1, 1);
-        let (_, producer_b) = edge(&first, 1, 2);
-        let (_, producer_c) = edge(&second, 1, 1);
-        drop((producer_a, producer_b, producer_c));
-
-        let first_info = first.snapshot();
-        let second_info = second.snapshot();
-        assert_eq!(
-            first_info.streams.iter().map(|s| s.id).collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert_eq!(
-            second_info.streams.iter().map(|s| s.id).collect::<Vec<_>>(),
-            vec![1]
-        );
-        assert!(store.snapshot(first.id()).is_ok());
-        assert!(store.snapshot("missing-run").is_err());
-        first.finish(RunEnd::exited(Some(0)));
-        second.finish(RunEnd::exited(Some(0)));
-    }
-
-    #[test]
-    fn pipeline_run_untapped_when_all_slots_are_open() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        let pipeline = run
-            .observer()
-            .begin(None, MAX_STREAMS_PER_RUN + 2, false, false)
-            .unwrap();
-        // 保持解释器侧端点存活，确保这些流始终是 open 流。
-        let mut live = Vec::new();
-        for stream in 1..=MAX_STREAMS_PER_RUN {
-            let pair = run
+    fn pipeline_preview_ids_and_open_slot_quota() {
+        {
+            let run = unique_run(&PipeStore::default());
+            let pipeline = run.observer().begin(None, 3, false, false).unwrap();
+            let stream = Arc::new(StreamState::new(
+                1,
+                pipeline,
+                1,
+                2,
+                "producer",
+                "cat",
+                Arc::new(|_| {}),
+            ));
+            run.state.push_stream(stream.clone());
+            stream.observe(b"\x1b[31mA\xff\xe4");
+            assert_eq!(run.preview().as_deref(), Some("A�"));
+            stream.observe(b"\xb8\xad\x1b[0m");
+            assert_eq!(run.preview().as_deref(), Some("A�中"));
+            let duplicate = Arc::new(StreamState::new(
+                2,
+                pipeline,
+                2,
+                3,
+                "cat",
+                "tail",
+                Arc::new(|_| {}),
+            ));
+            duplicate.observe(b"duplicate");
+            run.state.push_stream(duplicate);
+            let nested = run
                 .observer()
-                .pipe(pipeline, stream, "yes", "head")
-                .expect("capture edge")
-                .unwrap_or_else(|| panic!("stream {stream} must be captured"));
-            live.push(pair);
+                .begin(Some(pipeline), 2, false, false)
+                .unwrap();
+            let nested_stream = Arc::new(StreamState::new(
+                3,
+                nested,
+                1,
+                2,
+                "nested",
+                "cat",
+                Arc::new(|_| {}),
+            ));
+            nested_stream.observe(b"nested");
+            run.state.push_stream(nested_stream);
+            assert_eq!(run.preview().as_deref(), Some("A�中"));
+            stream.observe("中".repeat(PREVIEW_BYTES as usize).as_bytes());
+            let preview = run.preview().unwrap();
+            assert!(preview.len() <= PREVIEW_BYTES as usize);
+            assert!(preview.chars().all(|ch| ch == '中'));
+            run.observer().begin(None, 2, false, false).unwrap();
+            assert_eq!(run.preview(), None, "新管道不能沿用旧管道的预览");
         }
-        // 所有槽位都是 open 流：第 17 条边直接不捕获，不淘汰任何 open 流。
-        let rejected = run
-            .observer()
-            .pipe(pipeline, MAX_STREAMS_PER_RUN + 1, "yes", "head")
-            .expect("quota rejection is not an execution error");
-        assert!(rejected.is_none());
+        {
+            let store = PipeStore::new();
+            let first = unique_run(&store);
+            let second = unique_run(&store);
 
-        let info = run.snapshot();
-        assert_eq!(info.streams.len(), MAX_STREAMS_PER_RUN);
-        assert_eq!(info.untapped_edges, 1);
-        assert!(info.incomplete);
-        assert!(info.streams.iter().all(|stream| stream.open));
-        // 配额拒绝也不占用 stream id：仍保持单调递增。
-        let mut ids = info
-            .streams
-            .iter()
-            .map(|stream| stream.id)
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        assert_eq!(ids, (1..=MAX_STREAMS_PER_RUN as u64).collect::<Vec<_>>());
-        drop(live);
-        run.finish(RunEnd::exited(Some(0)));
-    }
+            let (_, producer_a) = edge(&first, 1, 1);
+            let (_, producer_b) = edge(&first, 1, 2);
+            let (_, producer_c) = edge(&second, 1, 1);
+            drop((producer_a, producer_b, producer_c));
 
-    #[test]
-    fn pipeline_sequential_pipelines_do_not_accumulate_relay_handles() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        let mut peak = 0usize;
-        for index in 0..48u64 {
-            let pipeline = run.observer().begin(None, 2, false, false).unwrap();
-            let (consumer, producer) = edge(&run, pipeline, 1);
-            let mut writer = producer_writer(producer);
-            writer.write_all(b"stage body\n").expect("write edge");
-            drop(writer);
-            let stream_id = index + 1;
-            assert!(
-                wait_for(|| store
-                    .read(run.id(), stream_id, None)
-                    .is_ok_and(|read| !read.open && !read.data.is_empty())),
-                "iteration {index}: stream {stream_id} must close"
+            let first_info = first.snapshot();
+            let second_info = second.snapshot();
+            assert_eq!(
+                first_info.streams.iter().map(|s| s.id).collect::<Vec<_>>(),
+                vec![1, 2]
             );
-            drop(consumer);
-            // 已封存流的中继句柄必须在下一次登记时被回收，而不是只堆积到 run 结束。
-            peak = peak.max(run.relay_handle_count());
-            assert!(
-                run.relay_handle_count() <= MAX_CLOSED_STREAMS_PER_RUN + 1,
-                "iteration {index}: {} live relay handles",
-                run.relay_handle_count()
+            assert_eq!(
+                second_info.streams.iter().map(|s| s.id).collect::<Vec<_>>(),
+                vec![1]
             );
+            assert!(store.snapshot(first.id()).is_ok());
+            assert!(store.snapshot("missing-run").is_err());
+            first.finish(RunEnd::exited(Some(0)));
+            second.finish(RunEnd::exited(Some(0)));
         }
-        assert!(
-            peak <= MAX_CLOSED_STREAMS_PER_RUN + 1,
-            "sequential pipelines accumulated {peak} relay handles"
-        );
-        run.finish(RunEnd::exited(Some(0)));
-        assert_eq!(run.relay_handle_count(), 0);
-    }
+        {
+            let store = PipeStore::new();
+            let run = unique_run(&store);
+            let pipeline = run
+                .observer()
+                .begin(None, MAX_STREAMS_PER_RUN + 2, false, false)
+                .unwrap();
+            // 保持解释器侧端点存活，确保这些流始终是 open 流。
+            let mut live = Vec::new();
+            for stream in 1..=MAX_STREAMS_PER_RUN {
+                let pair = run
+                    .observer()
+                    .pipe(pipeline, stream, "yes", "head")
+                    .expect("capture edge")
+                    .unwrap_or_else(|| panic!("stream {stream} must be captured"));
+                live.push(pair);
+            }
+            // 所有槽位都是 open 流：第 17 条边直接不捕获，不淘汰任何 open 流。
+            let rejected = run
+                .observer()
+                .pipe(pipeline, MAX_STREAMS_PER_RUN + 1, "yes", "head")
+                .expect("quota rejection is not an execution error");
+            assert!(rejected.is_none());
 
-    /// 用真实 brush 解释器验证 observer 接缝：begin/label/pipe/stage_done/finish
-    /// 都由解释器触发，且返回的端点确实被上游/下游阶段使用。
-    #[test]
-    fn pipeline_observer_captures_real_shell_pipeline() {
-        use brush_builtins::{BuiltinSet, default_builtins};
-        use brush_core::extensions::DefaultShellExtensions;
-        use brush_core::{ProfileLoadBehavior, RcLoadBehavior, Shell, SourceInfo};
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap();
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        let observer = run.observer();
-        runtime.block_on(async move {
-            let mut shell = Shell::builder()
-                .builtins(default_builtins::<DefaultShellExtensions>(
-                    BuiltinSet::BashMode,
-                ))
-                .profile(ProfileLoadBehavior::Skip)
-                .rc(RcLoadBehavior::Skip)
-                .command_string_mode(true)
-                .build()
-                .await
-                .expect("creating shell");
-            shell.start_command_string_mode();
-            let mut params = shell.default_exec_params();
-            params.set_pipeline_observer(observer);
-            let source = SourceInfo::from("-c");
-            let result = shell
-                .run_string("printf 'hi\\n' | cat", &source, &params)
-                .await
-                .expect("running pipeline");
-            assert_eq!(u8::from(result.exit_code), 0);
-            let _ = shell.end_command_string_mode();
-        });
-
-        let info = run.finish(RunEnd::exited(Some(0)));
-        assert_eq!(info.pipelines.len(), 1);
-        let pipeline = &info.pipelines[0];
-        assert_eq!(pipeline.stage_count, 2);
-        assert_eq!(pipeline.status, Some(0));
-        assert_eq!(
-            pipeline
-                .stages
+            let info = run.snapshot();
+            assert_eq!(info.streams.len(), MAX_STREAMS_PER_RUN);
+            assert_eq!(info.untapped_edges, 1);
+            assert!(info.incomplete);
+            assert!(info.streams.iter().all(|stream| stream.open));
+            // 配额拒绝也不占用 stream id：仍保持单调递增。
+            let mut ids = info
+                .streams
                 .iter()
-                .map(|stage| (stage.index, stage.state, stage.status))
-                .collect::<Vec<_>>(),
-            vec![
-                (1, StageState::Exited, Some(0)),
-                (2, StageState::Exited, Some(0))
-            ]
-        );
-        assert_eq!(pipeline.stages[0].command, "printf 'hi\\n'");
-        assert_eq!(pipeline.stages[1].command, "cat");
-        assert_eq!(info.streams.len(), 1);
-        let stream = &info.streams[0];
-        assert_eq!((stream.producer_stage, stream.consumer_stage), (1, 2));
-        assert_eq!(stream.close_reason.as_deref(), Some("eof"));
-        assert_eq!(stream.total_bytes, 3);
-        let read = store
-            .read(run.id(), stream.id, None)
-            .expect("read captured bytes");
-        assert_eq!(read.data, b"hi\n");
-        assert!(!read.open);
+                .map(|stream| stream.id)
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            assert_eq!(ids, (1..=MAX_STREAMS_PER_RUN as u64).collect::<Vec<_>>());
+            drop(live);
+            run.finish(RunEnd::exited(Some(0)));
+        }
+    }
+
+    #[test]
+    fn pipeline_relay_cleanup_and_real_shell_observer() {
+        {
+            let store = PipeStore::new();
+            let run = unique_run(&store);
+            let mut peak = 0usize;
+            for index in 0..48u64 {
+                let pipeline = run.observer().begin(None, 2, false, false).unwrap();
+                let (consumer, producer) = edge(&run, pipeline, 1);
+                let mut writer = producer_writer(producer);
+                writer.write_all(b"stage body\n").expect("write edge");
+                drop(writer);
+                let stream_id = index + 1;
+                assert!(
+                    wait_for(|| store
+                        .read(run.id(), stream_id, None)
+                        .is_ok_and(|read| !read.open && !read.data.is_empty())),
+                    "iteration {index}: stream {stream_id} must close"
+                );
+                drop(consumer);
+                // 已封存流的中继句柄必须在下一次登记时被回收，而不是只堆积到 run 结束。
+                peak = peak.max(run.relay_handle_count());
+                assert!(
+                    run.relay_handle_count() <= MAX_CLOSED_STREAMS_PER_RUN + 1,
+                    "iteration {index}: {} live relay handles",
+                    run.relay_handle_count()
+                );
+            }
+            assert!(
+                peak <= MAX_CLOSED_STREAMS_PER_RUN + 1,
+                "sequential pipelines accumulated {peak} relay handles"
+            );
+            run.finish(RunEnd::exited(Some(0)));
+            assert_eq!(run.relay_handle_count(), 0);
+        }
+        {
+            use brush_builtins::{BuiltinSet, default_builtins};
+            use brush_core::extensions::DefaultShellExtensions;
+            use brush_core::{ProfileLoadBehavior, RcLoadBehavior, Shell, SourceInfo};
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .enable_time()
+                .build()
+                .unwrap();
+            let store = PipeStore::new();
+            let run = unique_run(&store);
+            let observer = run.observer();
+            runtime.block_on(async move {
+                let mut shell = Shell::builder()
+                    .builtins(default_builtins::<DefaultShellExtensions>(
+                        BuiltinSet::BashMode,
+                    ))
+                    .profile(ProfileLoadBehavior::Skip)
+                    .rc(RcLoadBehavior::Skip)
+                    .command_string_mode(true)
+                    .build()
+                    .await
+                    .expect("creating shell");
+                shell.start_command_string_mode();
+                let mut params = shell.default_exec_params();
+                params.set_pipeline_observer(observer);
+                let source = SourceInfo::from("-c");
+                let result = shell
+                    .run_string("printf 'hi\\n' | cat", &source, &params)
+                    .await
+                    .expect("running pipeline");
+                assert_eq!(u8::from(result.exit_code), 0);
+                let _ = shell.end_command_string_mode();
+            });
+
+            let info = run.finish(RunEnd::exited(Some(0)));
+            assert_eq!(info.pipelines.len(), 1);
+            let pipeline = &info.pipelines[0];
+            assert_eq!(pipeline.stage_count, 2);
+            assert_eq!(pipeline.status, Some(0));
+            assert_eq!(
+                pipeline
+                    .stages
+                    .iter()
+                    .map(|stage| (stage.index, stage.state, stage.status))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (1, StageState::Exited, Some(0)),
+                    (2, StageState::Exited, Some(0))
+                ]
+            );
+            assert_eq!(pipeline.stages[0].command, "printf 'hi\\n'");
+            assert_eq!(pipeline.stages[1].command, "cat");
+            assert_eq!(info.streams.len(), 1);
+            let stream = &info.streams[0];
+            assert_eq!((stream.producer_stage, stream.consumer_stage), (1, 2));
+            assert_eq!(stream.close_reason.as_deref(), Some("eof"));
+            assert_eq!(stream.total_bytes, 3);
+            let read = store
+                .read(run.id(), stream.id, None)
+                .expect("read captured bytes");
+            assert_eq!(read.data, b"hi\n");
+            assert!(!read.open);
+        }
     }
 }

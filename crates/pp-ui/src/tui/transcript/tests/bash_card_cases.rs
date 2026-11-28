@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn bash_background_snapshot_counts_only_output_rows() {
+fn bash_background_snapshot_and_stream_colors() {
     for name in ["bash", "bash_task"] {
         for count in [0_usize, 3, 20] {
             let mut transcript = Transcript::new();
@@ -28,10 +28,7 @@ fn bash_background_snapshot_counts_only_output_rows() {
             );
         }
     }
-}
 
-#[test]
-fn bash_card_keeps_stdout_gray_and_stderr_red_and_marks_failed_status() {
     let mut transcript = Transcript::new();
     tool(
         &mut transcript,
@@ -57,7 +54,10 @@ fn bash_card_keeps_stdout_gray_and_stderr_red_and_marks_failed_status() {
         .position(|line| line.contains("compiler diagnostic"))
         .unwrap() as u16;
     assert_eq!(live[(2, row)].fg, palette::removed());
-    transcript.progress(AgentEvent::ToolFinished { id: "b".into(), result: json!({"ok":false,"exit_code":1,"stdout":"checking crate\n","stderr":"compiler diagnostic\n"}) });
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "b".into(),
+        result: json!({"ok":false,"exit_code":1,"stdout":"checking crate\n","stderr":"compiler diagnostic\n"}),
+    });
     let failed = render(&mut transcript, 80, 20);
     let text = screen(&failed);
     assert!(text.contains("Bash · failed") && text.contains("Exit: 1"));
@@ -79,7 +79,7 @@ fn bash_card_keeps_stdout_gray_and_stderr_red_and_marks_failed_status() {
 }
 
 #[test]
-fn bash_footer_uses_per_call_timeout_and_renders_unlimited() {
+fn bash_footer_timeout_and_elapsed_border() {
     for (seconds, expected) in [
         (0, "Timeout: none"),
         (1, "Timeout: 1s"),
@@ -104,10 +104,7 @@ fn bash_footer_uses_per_call_timeout_and_renders_unlimited() {
         let text = screen(&render(&mut transcript, 100, 20));
         assert!(text.contains(expected), "{text}");
     }
-}
 
-#[test]
-fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
     for (result, expected, border) in [
         (
             json!({"ok":true,"exit_code":0,"stdout":"done"}),
@@ -226,7 +223,7 @@ fn bash_pipeline_fragments_update_card_and_final_output_replaces_preview() {
 }
 
 #[test]
-fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
+fn bash_footer_tracks_pipes_restored_and_background_results() {
     const RUN: &str = "0123456789abcdef0123456789abcdef";
     let mut transcript = Transcript::new();
     tool(
@@ -251,7 +248,6 @@ fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
     let text = screen(&buffer);
     assert!(text.contains("Non-zero stage results: 1"), "{text}");
     assert!(text.contains("Pipes: /pipes (F8)"), "{text}");
-    // 摘要只占底部边框，不进主输出预览。
     let entry = &transcript.entries[0];
     assert!(!entry.text.contains("Non-zero") && !entry.text.contains("/pipes"));
     assert_eq!(entry.footer_warning, "Non-zero stage results: 1");
@@ -267,7 +263,6 @@ fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
         .unwrap() as u16;
     assert_eq!(buffer[(column, row)].fg, palette::accent());
 
-    // 最终 result.pipes 是权威：非零阶段归零后警示消失，入口仍在。
     transcript.progress(AgentEvent::ToolFinished {
         id: "p".into(),
         result: json!({
@@ -288,36 +283,25 @@ fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
     assert!(!text.contains("Non-zero stage results"), "{text}");
     assert!(transcript.entries[0].footer_warning.is_empty());
     assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
-}
 
-#[test]
-fn bash_footer_ignores_old_results_without_pipes() {
-    let mut transcript = Transcript::new();
-    tool(
-        &mut transcript,
-        "old",
-        "bash",
-        json!({"command":"echo old"}),
-    );
-    transcript.progress(AgentEvent::ToolFinished {
+    let mut plain = Transcript::new();
+    tool(&mut plain, "old", "bash", json!({"command":"echo old"}));
+    plain.progress(AgentEvent::ToolFinished {
         id: "old".into(),
         result: json!({"ok":true,"exit_code":0,"stdout":"old\n"}),
     });
-    let text = screen(&render(&mut transcript, 100, 20));
+    let text = screen(&render(&mut plain, 100, 20));
     assert!(text.contains("Wall:"), "{text}");
     assert!(
         !text.contains("Pipes:") && !text.contains("/pipes"),
         "{text}"
     );
-    assert!(transcript.entries[0].footer_warning.is_empty());
-}
+    assert!(plain.entries[0].footer_warning.is_empty());
 
-#[test]
-fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
-    const RUN: &str = "fedcba9876543210fedcba9876543210";
-    let mut transcript = Transcript::new();
+    const RESTORED_RUN: &str = "fedcba9876543210fedcba9876543210";
+    let mut restored = Transcript::new();
     let now = Instant::now();
-    transcript.progress_recorded(
+    restored.progress_recorded(
         AgentEvent::ToolStarted {
             id: "restored".into(),
             name: "bash".into(),
@@ -327,7 +311,7 @@ fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
         2_000,
         now,
     );
-    transcript.progress_recorded(
+    restored.progress_recorded(
         AgentEvent::ToolFinished {
             id: "restored".into(),
             result: json!({
@@ -335,8 +319,8 @@ fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
                 "exit_code": 0,
                 "stdout": "",
                 "pipes": {
-                    "run_id": RUN,
-                    "uri": format!("pipe://{RUN}"),
+                    "run_id": RESTORED_RUN,
+                    "uri": format!("pipe://{RESTORED_RUN}"),
                     "pipelines": [{"id": 1, "status": 0, "stages": []}],
                     "nonzero_stages": 1,
                     "incomplete": false,
@@ -347,7 +331,7 @@ fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
         2_000,
         now,
     );
-    let entry = &transcript.entries[0];
+    let entry = &restored.entries[0];
     assert_eq!(entry.status, EntryStatus::Complete);
     assert!(
         entry.footer.contains("Pipes: /pipes (F8)"),
@@ -356,7 +340,7 @@ fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
     );
     assert_eq!(
         entry.pipes_badge.as_ref().unwrap().status.uri,
-        format!("pipe://{RUN}")
+        format!("pipe://{RESTORED_RUN}")
     );
     assert!(
         entry.footer.contains("temporary pipe bodies unavailable"),
@@ -364,22 +348,19 @@ fn restored_bash_result_keeps_pipeline_status_but_marks_bodies_unavailable() {
         entry.footer
     );
     assert_eq!(entry.footer_warning, "Non-zero stage results: 1");
-    let text = screen(&render(&mut transcript, 140, 20));
+    let text = screen(&render(&mut restored, 140, 20));
     assert!(text.contains("Non-zero stage results: 1"), "{text}");
     assert!(text.contains("temporary pipe bodies unavailable"), "{text}");
-}
 
-#[test]
-fn background_bash_pipeline_badge_tracks_status_snapshots() {
-    const RUN: &str = "aaaabbbbccccddddaaaabbbbccccdddd";
-    let mut transcript = Transcript::new();
+    const BG_RUN: &str = "aaaabbbbccccddddaaaabbbbccccdddd";
+    let mut bg = Transcript::new();
     tool(
-        &mut transcript,
+        &mut bg,
         "bg",
         "bash",
         json!({"command":"service | tail -n 1","mode":"background"}),
     );
-    transcript.progress(AgentEvent::ToolFinished {
+    bg.progress(AgentEvent::ToolFinished {
         id: "bg".into(),
         result: json!({
             "ok": true,
@@ -387,19 +368,18 @@ fn background_bash_pipeline_badge_tracks_status_snapshots() {
             "status": "running",
             "exit_code": null,
             "pipes": {
-                "run_id": RUN,
-                "uri": format!("pipe://{RUN}"),
+                "run_id": BG_RUN,
+                "uri": format!("pipe://{BG_RUN}"),
                 "pipelines": [{"id": 1, "status": null, "stages": []}],
                 "nonzero_stages": 0,
             },
         }),
     });
-    assert!(transcript.entries[0].footer.contains("Pipes: /pipes (F8)"));
-    assert!(transcript.entries[0].footer_warning.is_empty());
+    assert!(bg.entries[0].footer.contains("Pipes: /pipes (F8)"));
+    assert!(bg.entries[0].footer_warning.is_empty());
 
-    // status/wait 快照与启动结果共用同一 badge；正文仍只有后台输出预览。
-    tool(&mut transcript, "wait", "wait", json!({}));
-    transcript.progress(AgentEvent::ToolFinished {
+    tool(&mut bg, "wait", "wait", json!({}));
+    bg.progress(AgentEvent::ToolFinished {
         id: "wait".into(),
         result: json!({
             "ok": true,
@@ -409,8 +389,8 @@ fn background_bash_pipeline_badge_tracks_status_snapshots() {
                 "exit_code": 0,
                 "output": "last\n",
                 "pipes": {
-                    "run_id": RUN,
-                    "uri": format!("pipe://{RUN}"),
+                    "run_id": BG_RUN,
+                    "uri": format!("pipe://{BG_RUN}"),
                     "pipelines": [{"id": 1, "status": 0, "stages": []}],
                     "nonzero_stages": 1,
                     "incomplete": true,
@@ -419,27 +399,24 @@ fn background_bash_pipeline_badge_tracks_status_snapshots() {
         }),
     });
     assert_eq!(
-        transcript.entries[0].footer_warning,
+        bg.entries[0].footer_warning,
         "Non-zero stage results: 1 · stage output incomplete"
     );
-    assert!(transcript.entries[0].footer.contains("Task task-1"));
-    assert!(!transcript.entries[0].text.contains("/pipes"));
-}
+    assert!(bg.entries[0].footer.contains("Task task-1"));
+    assert!(!bg.entries[0].text.contains("/pipes"));
 
-#[test]
-fn bash_background_footer_does_not_invent_a_timeout() {
-    let mut transcript = Transcript::new();
+    let mut plain_bg = Transcript::new();
     tool(
-        &mut transcript,
+        &mut plain_bg,
         "bg",
         "bash",
         json!({"command":"serve","mode":"background"}),
     );
-    transcript.progress(AgentEvent::ToolFinished {
+    plain_bg.progress(AgentEvent::ToolFinished {
         id: "bg".into(),
         result: json!({"ok":true,"task_id":"task-1","status":"running","exit_code":null}),
     });
-    let text = screen(&render(&mut transcript, 80, 20));
+    let text = screen(&render(&mut plain_bg, 80, 20));
     assert!(text.contains("Task task-1: running"));
     assert!(!text.contains("Timeout:") && !text.contains("Exit:"));
 }

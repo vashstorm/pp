@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_actions_start_focused_and_tab_reaches_input_and_body() {
+    fn plan_actions_number_keys_and_arrows_respect_enabled_options() {
         let mut panel = review_panel(PlanStatus::Ready);
         assert_eq!(
             panel.key(key_event(KeyCode::Enter)),
@@ -263,10 +263,7 @@ mod tests {
         assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
         panel.key(key_event(KeyCode::Tab));
         assert_eq!(panel.focus, Focus::Actions);
-    }
 
-    #[test]
-    fn plan_number_keys_select_all_five_actions_without_executing() {
         for (number, expected) in [
             ('1', Action::Approve(ExecutionContext::Fresh)),
             ('2', Action::Approve(ExecutionContext::Keep)),
@@ -278,29 +275,7 @@ mod tests {
             assert_eq!(panel.key(key_event(KeyCode::Char(number))), Action::None);
             assert_eq!(panel.key(key_event(KeyCode::Enter)), expected);
         }
-    }
 
-    #[test]
-    fn draft_allows_discussion_and_save_but_requires_submission_to_execute() {
-        let mut draft = review_panel(PlanStatus::Draft);
-        for index in 0..4 {
-            assert!(!draft.action_enabled(index));
-        }
-        assert!(draft.action_enabled(4));
-        assert!(!draft.action_enabled(5));
-        draft.key(key_event(KeyCode::Char('1')));
-        assert_eq!(draft.action, 4);
-        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::SaveAndLeave);
-        assert_eq!(
-            draft.key(key_event(KeyCode::Char('q'))),
-            Action::EditInput(key_event(KeyCode::Char('q')))
-        );
-        assert!(draft.input_focused());
-        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::DiscussInput);
-    }
-
-    #[test]
-    fn plan_action_arrows_only_select_enabled_options_and_stop_at_boundaries() {
         for (status, first) in [(PlanStatus::Draft, 4), (PlanStatus::Ready, 0)] {
             let mut panel = review_panel(status);
             assert_eq!(panel.action, first);
@@ -326,32 +301,40 @@ mod tests {
     }
 
     #[test]
-    fn executed_documents_are_read_only() {
-        let mut panel = review_panel(PlanStatus::Executed);
-        panel.key(key_event(KeyCode::Tab));
-        for index in 0..ACTIONS.len() {
-            assert!(!panel.action_enabled(index));
-        }
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
-    }
-
-    #[test]
-    fn esc_closes_from_input_and_keeps_ready_state() {
-        let mut panel = review_panel(PlanStatus::Ready);
-        panel.key(key_event(KeyCode::Tab));
-        assert!(panel.input_focused());
-        assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
-        assert_eq!(panel.document.status, PlanStatus::Ready);
-    }
-
-    #[test]
-    fn review_action_dispatches_for_ready_documents_only() {
-        let mut panel = review_panel(PlanStatus::Ready);
-        panel.key(key_event(KeyCode::Char('4')));
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::Review);
+    fn draft_and_executed_status_enforce_permissions_and_esc() {
         let mut draft = review_panel(PlanStatus::Draft);
+        for index in 0..4 {
+            assert!(!draft.action_enabled(index));
+        }
+        assert!(draft.action_enabled(4));
+        assert!(!draft.action_enabled(5));
+        draft.key(key_event(KeyCode::Char('1')));
         draft.key(key_event(KeyCode::Char('4')));
         assert_eq!(draft.action, 4);
+        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::SaveAndLeave);
+        assert_eq!(
+            draft.key(key_event(KeyCode::Char('q'))),
+            Action::EditInput(key_event(KeyCode::Char('q')))
+        );
+        assert!(draft.input_focused());
+        assert_eq!(draft.key(key_event(KeyCode::Enter)), Action::DiscussInput);
+
+        let mut executed = review_panel(PlanStatus::Executed);
+        executed.key(key_event(KeyCode::Tab));
+        for index in 0..ACTIONS.len() {
+            assert!(!executed.action_enabled(index));
+        }
+        assert_eq!(executed.key(key_event(KeyCode::Enter)), Action::None);
+
+        let mut ready = review_panel(PlanStatus::Ready);
+        ready.key(key_event(KeyCode::Tab));
+        assert!(ready.input_focused());
+        assert_eq!(ready.key(key_event(KeyCode::Esc)), Action::Close);
+        assert_eq!(ready.document.status, PlanStatus::Ready);
+        ready.key(key_event(KeyCode::Tab));
+        ready.key(key_event(KeyCode::Tab));
+        ready.key(key_event(KeyCode::Char('4')));
+        assert_eq!(ready.key(key_event(KeyCode::Enter)), Action::Review);
     }
 
     #[test]

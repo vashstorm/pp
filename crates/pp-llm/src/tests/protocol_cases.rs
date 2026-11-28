@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn refuses_truncated_or_invalid_batches() {
+fn chat_decode_refusals_invalid_batches_and_usage_details() {
     let call = json!({"id":"x","type":"function","function":{"name":"write","arguments":"{}"}});
     for finish in ["length", "content_filter", "unknown"] {
         assert!(decode(json!({"role":"assistant","tool_calls":[call]}), finish).is_err());
@@ -24,10 +24,7 @@ fn refuses_truncated_or_invalid_batches() {
         )
         .is_err()
     );
-}
 
-#[test]
-fn accepts_refusal_and_nullable_calls() {
     for message in [
         json!({"role":"assistant","refusal":"Cannot help"}),
         json!({"role":"assistant","content":null,"tool_calls":null,"refusal":"Cannot help"}),
@@ -43,10 +40,7 @@ fn accepts_refusal_and_nullable_calls() {
         assert!(turn.refusal);
         assert_eq!(turn.usage, None);
     }
-}
 
-#[test]
-fn context_chat_refusal_flag_requires_no_normal_content() {
     let refusal_only = decode(json!({"role":"assistant","refusal":"no"}), "stop").unwrap();
     assert!(refusal_only.refusal);
     let mixed = decode(
@@ -63,10 +57,7 @@ fn context_chat_refusal_flag_requires_no_normal_content() {
     assert!(blank_content.refusal);
     let text_only = decode(json!({"role":"assistant","content":"answer"}), "stop").unwrap();
     assert!(!text_only.refusal);
-}
 
-#[test]
-fn context_chat_cached_breakdown_preserves_unknown_and_zero() {
     for (details, expected) in [
         (None, None),
         (Some(json!({"cached_tokens":0})), Some(0)),
@@ -92,15 +83,44 @@ fn context_chat_cached_breakdown_preserves_unknown_and_zero() {
             })
         );
     }
+
+    let response = json!({
+        "id": "chatcmpl-reasoning",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "fixture-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 500,
+            "completion_tokens": 200,
+            "total_tokens": 700,
+            "prompt_tokens_details": {"cached_tokens": 300},
+            "completion_tokens_details": {"reasoning_tokens": 120}
+        }
+    });
+    let turn = into_completion_turn(serde_json::from_value(response).unwrap()).unwrap();
+    assert_eq!(
+        turn.usage,
+        Some(TokenUsage {
+            input_tokens: 500,
+            output_tokens: 200,
+            cached_tokens: Some(300),
+            cache_write_tokens: None,
+            reasoning_tokens: Some(120),
+        })
+    );
 }
 
 #[test]
-fn context_chat_usage_only_chunk_after_finish_returns_usage() {
+fn streaming_usage_extraction_across_chat_and_responses() {
     let server = TestServer::start().unwrap();
     let mut client = test_client(&format!("http://{}", server.addr()));
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            // First request: normal chunks, then a choices-empty usage-only chunk.
             let request = server
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
@@ -121,7 +141,6 @@ fn context_chat_usage_only_chunk_after_finish_returns_usage() {
                 .unwrap();
             writer.frame("[DONE]").unwrap();
             writer.finish();
-            // Second request: no usage at all; the answer still succeeds.
             let request = server
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
@@ -191,10 +210,7 @@ fn context_chat_usage_only_chunk_after_finish_returns_usage() {
             ))
         );
     });
-}
 
-#[test]
-fn context_responses_usage_extracted_and_missing_usage_is_none() {
     let server = TestServer::start().unwrap();
     let mut client = test_client(&format!("http://{}", server.addr()));
     let completed = |usage: Option<Value>| {

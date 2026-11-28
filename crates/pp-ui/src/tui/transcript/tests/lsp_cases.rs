@@ -45,7 +45,7 @@ fn late(report: DiagnosticReport) -> AgentEvent {
 }
 
 #[test]
-fn lsp_terminal_late_report_is_an_independent_card_without_touching_history() {
+fn lsp_terminal_reports_changes_and_readable_cards() {
     let mut transcript = Transcript::new();
     tool(
         &mut transcript,
@@ -75,51 +75,44 @@ fn lsp_terminal_late_report_is_an_independent_card_without_touching_history() {
         vec![diagnostic(1, 2, "mismatched types")],
     )));
     assert_eq!(transcript.entries.len(), 2);
-    let late = &transcript.entries[1];
-    assert_eq!(late.kind, EntryKind::Lsp);
-    assert!(late.tool.is_none());
-    // 旧写入卡片保持冻结，迟到报告只追加新卡片。
+    let late_entry = &transcript.entries[1];
+    assert_eq!(late_entry.kind, EntryKind::Lsp);
+    assert!(late_entry.tool.is_none());
     assert!(matches!(transcript.entries[0].body, EntryBody::Diff(_)));
     assert!(transcript.entries[0].diagnostics.is_empty());
     let text = screen(&render(&mut transcript, 100, 24));
     assert!(text.contains("LSP diagnostics (late)"), "{text}");
     assert!(text.contains("mismatched types"), "{text}");
     assert!(!before.contains("mismatched types"), "{before}");
-}
 
-#[test]
-fn lsp_terminal_inline_report_attaches_to_the_tool_call_not_a_late_card() {
-    let mut transcript = Transcript::new();
+    let mut inline = Transcript::new();
     tool(
-        &mut transcript,
+        &mut inline,
         "lsp-1",
         "lsp",
         json!({"action":"diagnostics","file":"src/a.rs"}),
     );
-    transcript.progress(AgentEvent::LspDiagnostics {
+    inline.progress(AgentEvent::LspDiagnostics {
         id: Some("lsp-1".into()),
         report: report("src/a.rs", vec![diagnostic(2, 7, "unused variable")]),
     });
-    assert_eq!(transcript.entries.len(), 1);
-    let entry = &mut transcript.entries[0];
+    assert_eq!(inline.entries.len(), 1);
+    let entry = &mut inline.entries[0];
     assert_eq!(entry.kind, EntryKind::Lsp);
     assert!(matches!(entry.body, EntryBody::Lsp(_)));
     assert_eq!(entry.diagnostics.len(), 1);
     let text = entry_text(entry, 120);
     assert!(text.contains("[warning] 7:1 unused variable"), "{text}");
-}
 
-#[test]
-fn lsp_terminal_multi_file_change_accumulates_by_path_and_shows_deletion() {
-    let mut transcript = Transcript::new();
+    let mut multi = Transcript::new();
     tool(
-        &mut transcript,
+        &mut multi,
         "lsp-2",
         "lsp",
         json!({"action":"rename_file","file":"src/old.rs"}),
     );
     for (path, deleted) in [("src/old.rs", true), ("src/new.rs", false)] {
-        transcript.progress(AgentEvent::FileChanged {
+        multi.progress(AgentEvent::FileChanged {
             id: "lsp-2".into(),
             path: path.into(),
             diff: FileDiff::Text {
@@ -131,8 +124,7 @@ fn lsp_terminal_multi_file_change_accumulates_by_path_and_shows_deletion() {
             },
         });
     }
-    // 同一路径的重复通知只替换，不追加第二份。
-    transcript.progress(AgentEvent::FileChanged {
+    multi.progress(AgentEvent::FileChanged {
         id: "lsp-2".into(),
         path: "src/new.rs".into(),
         diff: FileDiff::Text {
@@ -143,48 +135,41 @@ fn lsp_terminal_multi_file_change_accumulates_by_path_and_shows_deletion() {
             hunks: Vec::new(),
         },
     });
-    let EntryBody::Lsp(block) = &transcript.entries[0].body else {
+    let EntryBody::Lsp(block) = &multi.entries[0].body else {
         panic!("lsp card body");
     };
     assert_eq!(block.changes.len(), 2);
-    let text = entry_text(&mut transcript.entries[0], 120);
+    let text = entry_text(&mut multi.entries[0], 120);
     assert!(text.contains("Deleted · src/old.rs"), "{text}");
     assert!(text.contains("Created · src/new.rs"), "{text}");
-}
 
-#[test]
-fn lsp_terminal_late_report_collapses_and_expands_with_ctrl_o() {
-    let mut transcript = Transcript::new();
-    transcript.progress(late(report(
+    let mut folded = Transcript::new();
+    folded.progress(late(report(
         "src/a.rs",
         (1..=18)
             .map(|line| diagnostic(3, line, &format!("hint-{line}")))
             .collect(),
     )));
-    let collapsed = entry_text(&mut transcript.entries[0], 120);
-    // 标题另有 1 行；诊断正文本身折叠为 10 行（含省略提示）。
+    let collapsed = entry_text(&mut folded.entries[0], 120);
     assert!(collapsed.lines().count() <= 12, "{collapsed}");
     assert!(collapsed.contains("more diagnostic lines"), "{collapsed}");
     assert!(!collapsed.contains("hint-18"), "{collapsed}");
-    transcript.toggle_tool_output();
-    let expanded = entry_text(&mut transcript.entries[0], 120);
+    folded.toggle_tool_output();
+    let expanded = entry_text(&mut folded.entries[0], 120);
     assert!(expanded.contains("hint-18"), "{expanded}");
     assert!(
         expanded.lines().count() > collapsed.lines().count(),
         "{expanded}"
     );
-}
 
-#[test]
-fn lsp_terminal_tool_content_is_readable_not_json() {
-    let mut transcript = Transcript::new();
+    let mut hover = Transcript::new();
     tool(
-        &mut transcript,
+        &mut hover,
         "lsp-4",
         "lsp",
         json!({"action":"hover","file":"src/a.rs","line":2,"symbol":"answer"}),
     );
-    transcript.progress(AgentEvent::ToolFinished {
+    hover.progress(AgentEvent::ToolFinished {
         id: "lsp-4".into(),
         result: json!({
             "ok": true,
@@ -192,14 +177,14 @@ fn lsp_terminal_tool_content_is_readable_not_json() {
             "details": {"action": "hover", "serverName": "rust-analyzer"}
         }),
     });
-    let text = entry_text(&mut transcript.entries[0], 120);
+    let text = entry_text(&mut hover.entries[0], 120);
     assert!(text.contains("LSP · hover · src/a.rs"), "{text}");
     assert!(text.contains("fn answer() -> i32"), "{text}");
     assert!(!text.contains("\"serverName\""), "{text}");
 }
 
 #[test]
-fn lsp_terminal_symbols_keep_rows_compact_and_expand_full_signatures() {
+fn lsp_terminal_symbols_and_replay() {
     let content = format!(
         "Symbols in src/a.rs:\n  Module activity @ line 2\n    Field nested_item Vec<{}> signature_end @ line 3\n  Struct RequestContext @ line 4\n  Function capture @ line 5\n  Function hidden_item @ line 6\n  Function last_item @ line 7",
         "类型_".repeat(80),
@@ -226,7 +211,7 @@ fn lsp_terminal_symbols_keep_rows_compact_and_expand_full_signatures() {
             collapsed
                 .lines()
                 .any(|line| line == "  Module activity @ line 2"),
-            "{collapsed}",
+            "{collapsed}"
         );
         assert!(
             collapsed.contains("    Field nested_item Vec<"),
@@ -244,13 +229,10 @@ fn lsp_terminal_symbols_keep_rows_compact_and_expand_full_signatures() {
         assert!(expanded.contains("last_item"), "{expanded}");
         assert!(!expanded.contains("Ctrl + O"), "{expanded}");
     }
-}
 
-#[test]
-fn lsp_terminal_replay_rebuilds_frozen_reports_without_new_queries() {
-    let report = report("src/a.rs", vec![diagnostic(1, 4, "expected i32")]);
-    let mut transcript = Transcript::new();
-    transcript.replay(vec![
+    let rep = report("src/a.rs", vec![diagnostic(1, 4, "expected i32")]);
+    let mut replayed = Transcript::new();
+    replayed.replay(vec![
         ReplayRecord::Event(AgentEvent::ToolStarted {
             id: "lsp-3".into(),
             name: "lsp".into(),
@@ -258,18 +240,18 @@ fn lsp_terminal_replay_rebuilds_frozen_reports_without_new_queries() {
         }),
         ReplayRecord::Event(AgentEvent::LspDiagnostics {
             id: Some("lsp-3".into()),
-            report: report.clone(),
+            report: rep.clone(),
         }),
         ReplayRecord::Event(AgentEvent::ToolFinished {
             id: "lsp-3".into(),
-            result: json!({"ok":true,"content":"1 diagnostic","diagnostics":report}),
+            result: json!({"ok":true,"content":"1 diagnostic","diagnostics":rep}),
         }),
-        ReplayRecord::Event(late(report)),
+        ReplayRecord::Event(late(rep)),
     ]);
-    assert_eq!(transcript.entries.len(), 2);
-    assert_eq!(transcript.entries[0].diagnostics.len(), 1);
-    assert_eq!(transcript.entries[1].kind, EntryKind::Lsp);
-    let text = screen(&render(&mut transcript, 100, 24));
+    assert_eq!(replayed.entries.len(), 2);
+    assert_eq!(replayed.entries[0].diagnostics.len(), 1);
+    assert_eq!(replayed.entries[1].kind, EntryKind::Lsp);
+    let text = screen(&render(&mut replayed, 100, 24));
     assert!(text.contains("expected i32"), "{text}");
 }
 

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn todo_reset_clears_tasks_and_plan_source_preserving_mode() {
+fn todo_sync_reset_legacy_cache_and_rollback() {
     for protocol in ["completion", "response"] {
         for mode in [WorkMode::Execute, WorkMode::Plan] {
             for bound in [false, true] {
@@ -37,10 +37,7 @@ fn todo_reset_clears_tasks_and_plan_source_preserving_mode() {
             }
         }
     }
-}
 
-#[test]
-fn todo_sync_clears_legacy_plan_previews_and_initializes_only_execution() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -134,10 +131,71 @@ fn todo_sync_clears_legacy_plan_previews_and_initializes_only_execution() {
         assert_eq!(agent.workflow.todos[0].name, "Own");
         assert_eq!(agent.workflow.todo_plan_id, None);
     }
+
+    for protocol in ["completion", "response"] {
+        for bound in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+            agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
+            write_plan_file(&agent, PLAN_CONTENT);
+            agent.workflow.todos = pp_tools::todo::project_plan_todos(
+                agent.workflow.plan.as_ref().unwrap(),
+                &[],
+                false,
+            )
+            .unwrap();
+            agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
+            if !bound {
+                agent.workflow.plan = None;
+            }
+            seed_session(&mut agent, "legacy planning cache");
+            let id = agent.session_id().unwrap().to_owned();
+            let snapshot = crate::agent::plan_sync::sync_restored_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &[],
+            )
+            .unwrap();
+            assert!(snapshot.is_none());
+            assert!(agent.workflow.todos.is_empty());
+            assert!(agent.workflow.todo_plan_id.is_none());
+            assert_eq!(agent.workflow.plan.is_some(), bound);
+            assert_eq!(journal_workflow(dir.path(), &id), agent.workflow);
+        }
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "response", "127.0.0.1:1", "");
+        agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
+        agent.workflow.todos =
+            pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
+                .unwrap();
+        agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
+        seed_session(&mut agent, "legacy planning cache");
+        let previous = agent.workflow.clone();
+        agent.journal.use_read_only_file(
+            &dir.path()
+                .join("sessions")
+                .join(format!("{}.jsonl", agent.session_id().unwrap())),
+        );
+        assert!(
+            sync_plan_todos(
+                &agent.tools,
+                &mut agent.journal,
+                &mut agent.workflow,
+                &mut |_| {},
+                true,
+            )
+            .is_err()
+        );
+        assert_eq!(agent.workflow, previous);
+    }
 }
 
 #[test]
-fn plan_todo_sync_merges_external_checkboxes_and_preserves_runtime() {
+fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let (mut agent, first, _second) = executed_todo_fixture(dir.path(), protocol);
@@ -193,10 +251,7 @@ fn plan_todo_sync_merges_external_checkboxes_and_preserves_runtime() {
         assert_eq!(agent.workflow.plan.as_ref().unwrap().content, progress);
         assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
     }
-}
 
-#[test]
-fn plan_todo_sync_refuses_approved_vector_drift_and_keeps_trusted_runtime() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let (mut agent, first, second) = executed_todo_fixture(dir.path(), protocol);
@@ -248,10 +303,7 @@ fn plan_todo_sync_refuses_approved_vector_drift_and_keeps_trusted_runtime() {
         .unwrap();
         assert_eq!(agent.workflow.todos, trusted_todos);
     }
-}
 
-#[test]
-fn plan_todo_sync_rolls_back_on_journal_failure_and_keeps_completed_readonly() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let (mut agent, _first, _second) = executed_todo_fixture(dir.path(), protocol);
@@ -466,69 +518,4 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
             Some(plan_id.as_str())
         );
     }
-}
-
-#[test]
-fn todo_plan_restore_clears_legacy_cache_with_or_without_a_bound_plan() {
-    for protocol in ["completion", "response"] {
-        for bound in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
-            agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
-            write_plan_file(&agent, PLAN_CONTENT);
-            agent.workflow.todos = pp_tools::todo::project_plan_todos(
-                agent.workflow.plan.as_ref().unwrap(),
-                &[],
-                false,
-            )
-            .unwrap();
-            agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
-            if !bound {
-                agent.workflow.plan = None;
-            }
-            seed_session(&mut agent, "legacy planning cache");
-            let id = agent.session_id().unwrap().to_owned();
-            let snapshot = crate::agent::plan_sync::sync_restored_todos(
-                &agent.tools,
-                &mut agent.journal,
-                &mut agent.workflow,
-                &[],
-            )
-            .unwrap();
-            assert!(snapshot.is_none());
-            assert!(agent.workflow.todos.is_empty());
-            assert!(agent.workflow.todo_plan_id.is_none());
-            assert_eq!(agent.workflow.plan.is_some(), bound);
-            assert_eq!(journal_workflow(dir.path(), &id), agent.workflow);
-        }
-    }
-}
-
-#[test]
-fn todo_plan_legacy_cleanup_rolls_back_when_journal_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut agent = runtime_input_agent(dir.path(), "response", "127.0.0.1:1", "");
-    agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
-    agent.workflow.todos =
-        pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
-            .unwrap();
-    agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
-    seed_session(&mut agent, "legacy planning cache");
-    let previous = agent.workflow.clone();
-    agent.journal.use_read_only_file(
-        &dir.path()
-            .join("sessions")
-            .join(format!("{}.jsonl", agent.session_id().unwrap())),
-    );
-    assert!(
-        sync_plan_todos(
-            &agent.tools,
-            &mut agent.journal,
-            &mut agent.workflow,
-            &mut |_| {},
-            true,
-        )
-        .is_err()
-    );
-    assert_eq!(agent.workflow, previous);
 }

@@ -359,6 +359,30 @@ async fn device_login(
     github_user_url: &str,
     show: impl FnOnce(&str, &str),
 ) -> Result<Credential> {
+    device_login_with_poll_unit(
+        client,
+        provider,
+        device_url,
+        token_url,
+        client_id,
+        github_user_url,
+        Duration::from_secs(1),
+        show,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn device_login_with_poll_unit(
+    client: &reqwest::Client,
+    provider: Provider,
+    device_url: &str,
+    token_url: &str,
+    client_id: &str,
+    github_user_url: &str,
+    poll_unit: Duration,
+    show: impl FnOnce(&str, &str),
+) -> Result<Credential> {
     let kimi = provider == Provider::KimiCode;
     let device_id = if kimi { Some(random_id()?) } else { None };
     let headers = headers(provider, None, device_id.as_deref())?;
@@ -384,7 +408,7 @@ async fn device_login(
     let deadline = Instant::now() + Duration::from_secs(duration);
     let mut interval = seconds(&device, "interval", 5).clamp(1, 60);
     loop {
-        poll_wait(deadline, interval).await?;
+        poll_wait(deadline, interval, poll_unit).await?;
         let (status, value) =
             response_json(client.post(token_url).headers(headers.clone()).form(&[
                 ("client_id", client_id),
@@ -453,13 +477,16 @@ fn validate_verification_url(url: &str, provider: Provider) -> Result<()> {
     Ok(())
 }
 
-async fn poll_wait(deadline: Instant, seconds: u64) -> Result<()> {
+async fn poll_wait(deadline: Instant, seconds: u64, unit: Duration) -> Result<()> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     ensure!(
         !remaining.is_zero(),
         "timed out waiting for device authorization; sign in again"
     );
-    tokio::time::sleep(Duration::from_secs(seconds).min(remaining)).await;
+    let delay = unit
+        .checked_mul(u32::try_from(seconds).unwrap_or(u32::MAX))
+        .unwrap_or(Duration::MAX);
+    tokio::time::sleep(delay.min(remaining)).await;
     ensure!(
         Instant::now() < deadline,
         "timed out waiting for device authorization; sign in again"
@@ -488,6 +515,25 @@ async fn codex_login_at(
     token_url: &str,
     show: impl FnOnce(&str, &str),
 ) -> Result<Credential> {
+    codex_login_at_with_poll_unit(
+        client,
+        device_url,
+        poll_url,
+        token_url,
+        Duration::from_secs(1),
+        show,
+    )
+    .await
+}
+
+async fn codex_login_at_with_poll_unit(
+    client: &reqwest::Client,
+    device_url: &str,
+    poll_url: &str,
+    token_url: &str,
+    poll_unit: Duration,
+    show: impl FnOnce(&str, &str),
+) -> Result<Credential> {
     let (status, device) = response_json(
         client
             .post(device_url)
@@ -503,7 +549,7 @@ async fn codex_login_at(
         .clamp(1, 60)
         .saturating_add(3);
     loop {
-        poll_wait(deadline, interval).await?;
+        poll_wait(deadline, interval, poll_unit).await?;
         let (status, value) = response_json(
             client
                 .post(poll_url)
@@ -746,4 +792,5 @@ pub fn request_metadata<T>(wire: &WireRequest<'_, T>) -> (&'static str, bool) {
 }
 
 #[cfg(test)]
+#[path = "http/tests.rs"]
 mod tests;

@@ -387,142 +387,140 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     #[test]
-    fn artifact_cap_live_snapshots_and_resume_continue_numbering() {
-        let settings = OutputSettings {
-            artifact_spill_threshold: 8,
-            artifact_head_bytes: 4,
-            output_max_columns: 0,
-            artifact_max_bytes: 128,
-        };
-        let (dir, store, mut sink) = fixture(settings);
-        sink.append(OutputStream::Stdout, b"0123456789abcdef-INITIAL");
-        let uri = sink.value()["artifact"]["uri"].as_str().unwrap().to_owned();
-        let before = store.snapshot(&uri, &CancellationToken::new()).unwrap();
-        sink.append(
-            OutputStream::Stderr,
-            &format!("{}FINAL", "middle-".repeat(40)).into_bytes(),
-        );
-        assert_eq!(read(before), "0123456789abcdef-INITIAL");
-        let notice = sink.value()["notice"].as_str().unwrap().to_owned();
-        assert!(notice.contains("snapshot"));
-        assert!(notice.contains("head/tail sample"));
-        assert!(notice.contains("cannot be recovered"));
-        assert!(!notice.contains("Full saved output"));
-        let active = store.snapshot(&uri, &CancellationToken::new()).unwrap();
-        assert_eq!(active.metadata["capturing"], true);
-        let active = read(active);
-        assert!(active.starts_with("0123456789abcdef"));
-        assert!(active.ends_with("FINAL"));
-        assert!(active.contains("ARTIFACT TRUNCATED"));
-        let log = dir.path().join("session/0.bash.log");
-        let inode = fs::metadata(&log).unwrap().ino();
-        sink.finish();
-        assert_eq!(fs::metadata(&log).unwrap().ino(), inode);
-        assert_eq!(sink.value()["artifact"]["uri"], uri);
-        assert_eq!(sink.value()["artifact"]["complete"], false);
-        let notice = sink.value()["notice"].as_str().unwrap().to_owned();
-        assert!(notice.contains("incomplete"));
-        assert!(notice.contains("head/tail sample"));
-        assert!(!notice.contains("still growing"));
-        assert!(
-            fs::metadata(dir.path().join("session/0.bash.log"))
-                .unwrap()
-                .len()
-                <= 128
-        );
-        let restored = Store::default();
-        restored.bind(dir.path(), "session").unwrap();
-        assert_eq!(
-            read(restored.snapshot(&uri, &CancellationToken::new()).unwrap()),
-            active
-        );
-        let mut next = OutputSink::new(settings, restored.clone());
-        next.append(OutputStream::Stdout, b"next-next-next");
-        assert_eq!(next.value()["artifact"]["uri"], "artifact://1");
-        drop(next);
-        drop(restored);
-        let resumed = Store::default();
-        resumed.bind(dir.path(), "session").unwrap();
-        let interrupted = resumed
-            .snapshot("artifact://1", &CancellationToken::new())
-            .unwrap();
-        assert_eq!(interrupted.metadata["interrupted"], true);
-        assert_eq!(interrupted.metadata["complete"], false);
-        assert_eq!(read(interrupted), "next-next-next");
-    }
-
-    #[test]
-    fn artifact_invalid_uri_symlink_and_capture_failure_are_explicit() {
-        let (dir, store, mut sink) = fixture(OutputSettings {
-            artifact_spill_threshold: 8,
-            ..Default::default()
-        });
-        for uri in [
-            "artifact://",
-            "artifact://../0",
-            "artifact://0/file",
-            "artifact://0?x",
-            "artifact://-1",
-            "artifact://18446744073709551616",
-        ] {
-            assert!(store.snapshot(uri, &CancellationToken::new()).is_err());
-        }
-        let root = dir.path().join("session");
-        fs::write(&root, "blocked").unwrap();
-        sink.append(OutputStream::Stdout, b"large-output");
-        sink.finish();
-        assert!(sink.value()["capture_error"].is_string());
-        assert!(sink.value().get("artifact").is_none());
-        let notice = sink.value()["notice"].as_str().unwrap().to_owned();
-        assert!(notice.contains("unavailable"));
-        assert!(!notice.contains("read("));
-        assert!(!notice.contains("artifact://"));
-        fs::remove_file(&root).unwrap();
-        fs::create_dir(&root).unwrap();
-        let outside = dir.path().join("outside");
-        fs::write(&outside, "secret").unwrap();
-        std::os::unix::fs::symlink(&outside, root.join("0.bash.log")).unwrap();
-        assert!(
-            store
-                .snapshot("artifact://0", &CancellationToken::new())
-                .is_err()
-        );
-        assert!(Store::remove(dir.path(), "session").is_err());
-        assert_eq!(fs::read_to_string(outside).unwrap(), "secret");
-    }
-
-    #[test]
-    fn artifact_concurrent_shared_ids_are_unique() {
-        let (dir, store, _) = fixture(Default::default());
-        std::thread::scope(|scope| {
-            for i in 0..12 {
-                let store = store.clone();
-                scope.spawn(move || {
-                    let mut sink = OutputSink::new(
-                        OutputSettings {
-                            artifact_spill_threshold: 1,
-                            ..Default::default()
-                        },
-                        store,
-                    );
-                    sink.append(OutputStream::Stdout, format!("child-{i}").as_bytes());
-                    sink.finish();
-                    assert!(sink.value()["artifact"]["uri"].is_string());
-                });
-            }
-        });
-        let logs = fs::read_dir(dir.path().join("session"))
-            .unwrap()
-            .filter(|e| {
-                e.as_ref()
+    fn artifact_lifecycle_resume_error_handling_and_concurrency() {
+        {
+            let settings = OutputSettings {
+                artifact_spill_threshold: 8,
+                artifact_head_bytes: 4,
+                output_max_columns: 0,
+                artifact_max_bytes: 128,
+            };
+            let (dir, store, mut sink) = fixture(settings);
+            sink.append(OutputStream::Stdout, b"0123456789abcdef-INITIAL");
+            let uri = sink.value()["artifact"]["uri"].as_str().unwrap().to_owned();
+            let before = store.snapshot(&uri, &CancellationToken::new()).unwrap();
+            sink.append(
+                OutputStream::Stderr,
+                &format!("{}FINAL", "middle-".repeat(40)).into_bytes(),
+            );
+            assert_eq!(read(before), "0123456789abcdef-INITIAL");
+            let notice = sink.value()["notice"].as_str().unwrap().to_owned();
+            assert!(notice.contains("snapshot"));
+            assert!(notice.contains("head/tail sample"));
+            assert!(notice.contains("cannot be recovered"));
+            assert!(!notice.contains("Full saved output"));
+            let active = store.snapshot(&uri, &CancellationToken::new()).unwrap();
+            assert_eq!(active.metadata["capturing"], true);
+            let active = read(active);
+            assert!(active.starts_with("0123456789abcdef"));
+            assert!(active.ends_with("FINAL"));
+            assert!(active.contains("ARTIFACT TRUNCATED"));
+            let log = dir.path().join("session/0.bash.log");
+            let inode = fs::metadata(&log).unwrap().ino();
+            sink.finish();
+            assert_eq!(fs::metadata(&log).unwrap().ino(), inode);
+            assert_eq!(sink.value()["artifact"]["uri"], uri);
+            assert_eq!(sink.value()["artifact"]["complete"], false);
+            let notice = sink.value()["notice"].as_str().unwrap().to_owned();
+            assert!(notice.contains("incomplete"));
+            assert!(notice.contains("head/tail sample"));
+            assert!(!notice.contains("still growing"));
+            assert!(
+                fs::metadata(dir.path().join("session/0.bash.log"))
                     .unwrap()
-                    .path()
-                    .extension()
-                    .is_some_and(|e| e == "log")
-            })
-            .count();
-        assert_eq!(logs, 12);
-        Store::remove(dir.path(), "session").unwrap();
-        assert!(!dir.path().join("session").exists());
+                    .len()
+                    <= 128
+            );
+            let restored = Store::default();
+            restored.bind(dir.path(), "session").unwrap();
+            assert_eq!(
+                read(restored.snapshot(&uri, &CancellationToken::new()).unwrap()),
+                active
+            );
+            let mut next = OutputSink::new(settings, restored.clone());
+            next.append(OutputStream::Stdout, b"next-next-next");
+            assert_eq!(next.value()["artifact"]["uri"], "artifact://1");
+            drop(next);
+            drop(restored);
+            let resumed = Store::default();
+            resumed.bind(dir.path(), "session").unwrap();
+            let interrupted = resumed
+                .snapshot("artifact://1", &CancellationToken::new())
+                .unwrap();
+            assert_eq!(interrupted.metadata["interrupted"], true);
+            assert_eq!(interrupted.metadata["complete"], false);
+            assert_eq!(read(interrupted), "next-next-next");
+        }
+        {
+            let (dir, store, mut sink) = fixture(OutputSettings {
+                artifact_spill_threshold: 8,
+                ..Default::default()
+            });
+            for uri in [
+                "artifact://",
+                "artifact://../0",
+                "artifact://0/file",
+                "artifact://0?x",
+                "artifact://-1",
+                "artifact://18446744073709551616",
+            ] {
+                assert!(store.snapshot(uri, &CancellationToken::new()).is_err());
+            }
+            let root = dir.path().join("session");
+            fs::write(&root, "blocked").unwrap();
+            sink.append(OutputStream::Stdout, b"large-output");
+            sink.finish();
+            assert!(sink.value()["capture_error"].is_string());
+            assert!(sink.value().get("artifact").is_none());
+            let notice = sink.value()["notice"].as_str().unwrap().to_owned();
+            assert!(notice.contains("unavailable"));
+            assert!(!notice.contains("read("));
+            assert!(!notice.contains("artifact://"));
+            fs::remove_file(&root).unwrap();
+            fs::create_dir(&root).unwrap();
+            let outside = dir.path().join("outside");
+            fs::write(&outside, "secret").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("0.bash.log")).unwrap();
+            assert!(
+                store
+                    .snapshot("artifact://0", &CancellationToken::new())
+                    .is_err()
+            );
+            assert!(Store::remove(dir.path(), "session").is_err());
+            assert_eq!(fs::read_to_string(outside).unwrap(), "secret");
+        }
+        {
+            let (dir, store, _) = fixture(Default::default());
+            std::thread::scope(|scope| {
+                for i in 0..12 {
+                    let store = store.clone();
+                    scope.spawn(move || {
+                        let mut sink = OutputSink::new(
+                            OutputSettings {
+                                artifact_spill_threshold: 1,
+                                ..Default::default()
+                            },
+                            store,
+                        );
+                        sink.append(OutputStream::Stdout, format!("child-{i}").as_bytes());
+                        sink.finish();
+                        assert!(sink.value()["artifact"]["uri"].is_string());
+                    });
+                }
+            });
+            let logs = fs::read_dir(dir.path().join("session"))
+                .unwrap()
+                .filter(|e| {
+                    e.as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|e| e == "log")
+                })
+                .count();
+            assert_eq!(logs, 12);
+            Store::remove(dir.path(), "session").unwrap();
+            assert!(!dir.path().join("session").exists());
+        }
     }
 }

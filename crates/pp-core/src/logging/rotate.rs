@@ -301,297 +301,291 @@ mod tests {
     }
 
     #[test]
-    fn numeric_volumes_restart_and_deleted_cache_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut file = RotatingFile::new(dir.path().join("logs")).unwrap();
-        fs::write(file.path(date(), 2), b"{}\n").unwrap();
-        fs::write(file.path(date(), 10), b"{\"old\":true}\n").unwrap();
-        append(&mut file, b"{\"new\":true}\n", date()).unwrap();
-        let prefix = fs::read(file.path(date(), 10)).unwrap();
-        let path = file.dir.clone();
-        drop(file);
-        let mut file = RotatingFile::new(path).unwrap();
-        append(&mut file, b"{}\n", date()).unwrap();
-        assert!(
-            fs::read(file.path(date(), 10))
-                .unwrap()
-                .starts_with(&prefix)
-        );
-        assert!(!file.path(date(), 11).exists());
-        fs::write(file.path(date(), 10), padded_record(MAX_LOG_BYTES as usize)).unwrap();
-        append(&mut file, b"{}\n", date()).unwrap();
-        assert_eq!(fs::read(file.path(date(), 11)).unwrap(), b"{}\n");
-        fs::remove_file(file.path(date(), 11)).unwrap();
-        append(&mut file, b"{\"recovered\":true}\n", date()).unwrap();
-        assert_eq!(
-            fs::read(file.path(date(), 11)).unwrap(),
-            b"{\"recovered\":true}\n"
-        );
-        assert_eq!(records(&file.dir).len(), 3);
-    }
-
-    #[test]
-    fn volume_scan_is_deferred_to_first_append() {
-        let dir = tempfile::tempdir().unwrap();
-        let logs = dir.path().join("logs");
-        fs::create_dir(&logs).unwrap();
-        let today = Local::now().date_naive();
-        // 日志不自动删除，长期使用后目录里已有大量历史分卷。
-        let old = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
-        for number in 1..=500 {
-            fs::write(logs.join(format!("pp.{old}.{number}.log")), b"{}\n").unwrap();
+    fn rotating_volumes_deferred_scan_and_date_isolation() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut file = RotatingFile::new(dir.path().join("logs")).unwrap();
+            fs::write(file.path(date(), 2), b"{}\n").unwrap();
+            fs::write(file.path(date(), 10), b"{\"old\":true}\n").unwrap();
+            append(&mut file, b"{\"new\":true}\n", date()).unwrap();
+            let prefix = fs::read(file.path(date(), 10)).unwrap();
+            let path = file.dir.clone();
+            drop(file);
+            let mut file = RotatingFile::new(path).unwrap();
+            append(&mut file, b"{}\n", date()).unwrap();
+            assert!(
+                fs::read(file.path(date(), 10))
+                    .unwrap()
+                    .starts_with(&prefix)
+            );
+            assert!(!file.path(date(), 11).exists());
+            fs::write(file.path(date(), 10), padded_record(MAX_LOG_BYTES as usize)).unwrap();
+            append(&mut file, b"{}\n", date()).unwrap();
+            assert_eq!(fs::read(file.path(date(), 11)).unwrap(), b"{}\n");
+            fs::remove_file(file.path(date(), 11)).unwrap();
+            append(&mut file, b"{\"recovered\":true}\n", date()).unwrap();
+            assert_eq!(
+                fs::read(file.path(date(), 11)).unwrap(),
+                b"{\"recovered\":true}\n"
+            );
+            assert_eq!(records(&file.dir).len(), 3);
         }
-        // 构造阶段不打开当日分卷：不安全路径只在首次追加的扫描里被发现。
-        let sentinel = dir.path().join("sentinel");
-        fs::write(&sentinel, b"untouched").unwrap();
-        let first = logs.join(format!("pp.{today}.1.log"));
-        symlink(&sentinel, &first).unwrap();
-        let mut file = RotatingFile::new(logs.clone()).unwrap();
-        assert!(file.append_record(b"{\"lost\":true}\n").is_err());
-        assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let logs = dir.path().join("logs");
+            fs::create_dir(&logs).unwrap();
+            let today = Local::now().date_naive();
+            // 日志不自动删除，长期使用后目录里已有大量历史分卷。
+            let old = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
+            for number in 1..=500 {
+                fs::write(logs.join(format!("pp.{old}.{number}.log")), b"{}\n").unwrap();
+            }
+            // 构造阶段不打开当日分卷：不安全路径只在首次追加的扫描里被发现。
+            let sentinel = dir.path().join("sentinel");
+            fs::write(&sentinel, b"untouched").unwrap();
+            let first = logs.join(format!("pp.{today}.1.log"));
+            symlink(&sentinel, &first).unwrap();
+            let mut file = RotatingFile::new(logs.clone()).unwrap();
+            assert!(file.append_record(b"{\"lost\":true}\n").is_err());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
 
-        // 首次成功追加才扫描，并落在当日分卷号：历史分卷与当日无关。
-        fs::remove_file(&first).unwrap();
-        file.append_record(b"{\"first\":true}\n").unwrap();
-        assert_eq!(fs::read(&first).unwrap(), b"{\"first\":true}\n");
-        file.append_record(b"{\"second\":true}\n").unwrap();
-        assert_eq!(
-            fs::read(&first).unwrap(),
-            b"{\"first\":true}\n{\"second\":true}\n"
-        );
-        assert_eq!(
-            fs::read(logs.join(format!("pp.{old}.1.log"))).unwrap(),
-            b"{}\n"
-        );
-        assert_eq!(fs::read_dir(&logs).unwrap().count(), 1 + 500 + 1);
-    }
-
-    #[test]
-    fn opening_writing_and_crossing_dates_preserve_old_logs() {
-        let dir = tempfile::tempdir().unwrap();
-        let logs = dir.path().join("logs");
-        fs::create_dir(&logs).unwrap();
-        let names = ["pp.2000-01-01.1.log", "debug.2000-01-01.0001"];
-        for name in names {
-            fs::write(logs.join(name), b"old log\n").unwrap();
+            // 首次成功追加才扫描，并落在当日分卷号：历史分卷与当日无关。
+            fs::remove_file(&first).unwrap();
+            file.append_record(b"{\"first\":true}\n").unwrap();
+            assert_eq!(fs::read(&first).unwrap(), b"{\"first\":true}\n");
+            file.append_record(b"{\"second\":true}\n").unwrap();
+            assert_eq!(
+                fs::read(&first).unwrap(),
+                b"{\"first\":true}\n{\"second\":true}\n"
+            );
+            assert_eq!(
+                fs::read(logs.join(format!("pp.{old}.1.log"))).unwrap(),
+                b"{}\n"
+            );
+            assert_eq!(fs::read_dir(&logs).unwrap().count(), 1 + 500 + 1);
         }
-        let mut pp = RotatingFile::new(logs.clone()).unwrap();
-        let mut debug = RotatingFile::new(logs.clone()).unwrap();
-        for day in [date(), date().succ_opt().unwrap()] {
-            append(&mut pp, b"{}\n", day).unwrap();
-            debug_append(&mut debug, b"{}\n", day).unwrap();
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let logs = dir.path().join("logs");
+            fs::create_dir(&logs).unwrap();
+            let names = ["pp.2000-01-01.1.log", "debug.2000-01-01.0001"];
+            for name in names {
+                fs::write(logs.join(name), b"old log\n").unwrap();
+            }
+            let mut pp = RotatingFile::new(logs.clone()).unwrap();
+            let mut debug = RotatingFile::new(logs.clone()).unwrap();
+            for day in [date(), date().succ_opt().unwrap()] {
+                append(&mut pp, b"{}\n", day).unwrap();
+                debug_append(&mut debug, b"{}\n", day).unwrap();
+                for name in names {
+                    assert_eq!(fs::read(logs.join(name)).unwrap(), b"old log\n");
+                }
+            }
+            drop(pp);
+            drop(debug);
+            let _pp = RotatingFile::new(logs.clone()).unwrap();
+            let _debug = RotatingFile::new(logs.clone()).unwrap();
             for name in names {
                 assert_eq!(fs::read(logs.join(name)).unwrap(), b"old log\n");
             }
         }
-        drop(pp);
-        drop(debug);
-        let _pp = RotatingFile::new(logs.clone()).unwrap();
-        let _debug = RotatingFile::new(logs.clone()).unwrap();
-        for name in names {
-            assert_eq!(fs::read(logs.join(name)).unwrap(), b"old log\n");
+        {
+            for kind in ["symlink", "fifo", "directory"] {
+                for lock_path in [true, false] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let logs = dir.path().join("logs");
+                    fs::create_dir(&logs).unwrap();
+                    let sentinel = dir.path().join("sentinel");
+                    fs::write(&sentinel, b"untouched").unwrap();
+                    let path = logs.join(if lock_path {
+                        ".lock".to_owned()
+                    } else {
+                        format!("pp.{}.1.log", Local::now().date_naive())
+                    });
+                    match kind {
+                        "symlink" => symlink(&sentinel, &path).unwrap(),
+                        "fifo" => assert!(
+                            std::process::Command::new("mkfifo")
+                                .arg(&path)
+                                .status()
+                                .unwrap()
+                                .success()
+                        ),
+                        _ => fs::create_dir(&path).unwrap(),
+                    }
+                    let mut file = RotatingFile::new(logs.clone());
+                    if lock_path {
+                        // .lock 是构造阶段唯一打开的路径，不安全就立即失败。
+                        assert!(file.is_err(), "{kind}");
+                    } else {
+                        // 不安全的当日分卷延迟到首次追加才校验。
+                        file.as_mut()
+                            .unwrap_or_else(|error| panic!("{kind} construction: {error}"))
+                            .append_record(b"{}\n")
+                            .expect_err(kind);
+                    }
+                    assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
+                    if !lock_path {
+                        let lock = open_regular(&logs.join(".lock"), false, false).unwrap();
+                        flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+                        flock(&lock, FlockOperation::Unlock).unwrap();
+                    }
+                    if kind == "directory" {
+                        fs::remove_dir(&path).unwrap();
+                    } else {
+                        fs::remove_file(&path).unwrap();
+                    }
+                    let mut file = RotatingFile::new(logs).unwrap();
+                    file.append_record(b"{}\n").unwrap();
+                }
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("target");
+            fs::create_dir(&target).unwrap();
+            symlink(&target, dir.path().join("logs")).unwrap();
+            assert!(RotatingFile::new(dir.path().join("logs")).is_err());
+            assert_eq!(fs::read_dir(target).unwrap().count(), 0);
         }
     }
 
     #[test]
-    fn unsafe_paths_fail_without_following_or_leaking_lock() {
-        for kind in ["symlink", "fifo", "directory"] {
-            for lock_path in [true, false] {
-                let dir = tempfile::tempdir().unwrap();
-                let logs = dir.path().join("logs");
-                fs::create_dir(&logs).unwrap();
-                let sentinel = dir.path().join("sentinel");
-                fs::write(&sentinel, b"untouched").unwrap();
-                let path = logs.join(if lock_path {
-                    ".lock".to_owned()
-                } else {
-                    format!("pp.{}.1.log", Local::now().date_naive())
-                });
-                match kind {
-                    "symlink" => symlink(&sentinel, &path).unwrap(),
-                    "fifo" => assert!(
-                        std::process::Command::new("mkfifo")
-                            .arg(&path)
-                            .status()
-                            .unwrap()
-                            .success()
-                    ),
-                    _ => fs::create_dir(&path).unwrap(),
-                }
-                let mut file = RotatingFile::new(logs.clone());
-                if lock_path {
-                    // .lock 是构造阶段唯一打开的路径，不安全就立即失败。
-                    assert!(file.is_err(), "{kind}");
-                } else {
-                    // 不安全的当日分卷延迟到首次追加才校验。
-                    file.as_mut()
-                        .unwrap_or_else(|error| panic!("{kind} construction: {error}"))
-                        .append_record(b"{}\n")
-                        .expect_err(kind);
-                }
-                assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
-                if !lock_path {
-                    let lock = open_regular(&logs.join(".lock"), false, false).unwrap();
-                    flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
-                    flock(&lock, FlockOperation::Unlock).unwrap();
-                }
-                if kind == "directory" {
-                    fs::remove_dir(&path).unwrap();
-                } else {
-                    fs::remove_file(&path).unwrap();
-                }
-                let mut file = RotatingFile::new(logs).unwrap();
-                file.append_record(b"{}\n").unwrap();
+    fn cached_writer_permissions_overflow_and_debug_namespaces() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let logs = dir.path().join("logs");
+            let write =
+                |file: &mut RotatingFile, namespace: Namespace, record: &[u8], day: NaiveDate| {
+                    match namespace {
+                        Namespace::Pp => append(file, record, day),
+                        Namespace::Debug => debug_append(file, record, day),
+                    }
+                };
+            for (namespace, label) in [(Namespace::Pp, "pp"), (Namespace::Debug, "debug")] {
+                let mut first = RotatingFile::new(logs.clone()).unwrap();
+                let mut second = RotatingFile::new(logs.clone()).unwrap();
+                write(&mut first, namespace, b"{\"first\":1}\n", date()).unwrap();
+                write(&mut second, namespace, b"{\"second\":1}\n", date()).unwrap();
+                assert_eq!(
+                    fs::read(first.path_for(namespace, date(), 1)).unwrap(),
+                    b"{\"first\":1}\n{\"second\":1}\n",
+                    "{label} namespace"
+                );
+                fs::write(
+                    first.path_for(namespace, date(), 1),
+                    padded_record(MAX_LOG_BYTES as usize),
+                )
+                .unwrap();
+                write(&mut first, namespace, b"{\"first\":2}\n", date()).unwrap();
+                write(&mut second, namespace, b"{\"second\":2}\n", date()).unwrap();
+                assert_eq!(
+                    fs::read(first.path_for(namespace, date(), 2)).unwrap(),
+                    b"{\"first\":2}\n{\"second\":2}\n",
+                    "{label} namespace"
+                );
+                let tomorrow = date().succ_opt().unwrap();
+                fs::write(first.path_for(namespace, tomorrow, 10), b"{}\n").unwrap();
+                write(&mut first, namespace, b"{\"next\":true}\n", tomorrow).unwrap();
+                assert_eq!(
+                    fs::read(first.path_for(namespace, tomorrow, 10)).unwrap(),
+                    b"{}\n{\"next\":true}\n",
+                    "{label} namespace"
+                );
+                assert!(!first.path_for(namespace, tomorrow, 2).exists());
             }
         }
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target");
-        fs::create_dir(&target).unwrap();
-        symlink(&target, dir.path().join("logs")).unwrap();
-        assert!(RotatingFile::new(dir.path().join("logs")).is_err());
-        assert_eq!(fs::read_dir(target).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn cached_writer_follows_successors_and_resets_date_volume() {
-        let dir = tempfile::tempdir().unwrap();
-        let logs = dir.path().join("logs");
-        let write =
-            |file: &mut RotatingFile, namespace: Namespace, record: &[u8], day: NaiveDate| {
-                match namespace {
-                    Namespace::Pp => append(file, record, day),
-                    Namespace::Debug => debug_append(file, record, day),
-                }
-            };
-        for (namespace, label) in [(Namespace::Pp, "pp"), (Namespace::Debug, "debug")] {
-            let mut first = RotatingFile::new(logs.clone()).unwrap();
-            let mut second = RotatingFile::new(logs.clone()).unwrap();
-            write(&mut first, namespace, b"{\"first\":1}\n", date()).unwrap();
-            write(&mut second, namespace, b"{\"second\":1}\n", date()).unwrap();
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut file = RotatingFile::new(dir.path().join("logs")).unwrap();
             assert_eq!(
-                fs::read(first.path_for(namespace, date(), 1)).unwrap(),
-                b"{\"first\":1}\n{\"second\":1}\n",
-                "{label} namespace"
+                fs::metadata(&file.dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                file.lock.metadata().unwrap().permissions().mode() & 0o777,
+                0o600
             );
             fs::write(
-                first.path_for(namespace, date(), 1),
+                file.path(date(), 1),
+                padded_record(MAX_LOG_BYTES as usize + 1),
+            )
+            .unwrap();
+            append(&mut file, b"{}\n", date()).unwrap();
+            assert_eq!(fs::read(file.path(date(), 2)).unwrap(), b"{}\n");
+            assert_eq!(
+                fs::metadata(file.path(date(), 2))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            fs::write(
+                file.path(date(), u64::MAX),
                 padded_record(MAX_LOG_BYTES as usize),
             )
             .unwrap();
-            write(&mut first, namespace, b"{\"first\":2}\n", date()).unwrap();
-            write(&mut second, namespace, b"{\"second\":2}\n", date()).unwrap();
-            assert_eq!(
-                fs::read(first.path_for(namespace, date(), 2)).unwrap(),
-                b"{\"first\":2}\n{\"second\":2}\n",
-                "{label} namespace"
-            );
-            let tomorrow = date().succ_opt().unwrap();
-            fs::write(first.path_for(namespace, tomorrow, 10), b"{}\n").unwrap();
-            write(&mut first, namespace, b"{\"next\":true}\n", tomorrow).unwrap();
-            assert_eq!(
-                fs::read(first.path_for(namespace, tomorrow, 10)).unwrap(),
-                b"{}\n{\"next\":true}\n",
-                "{label} namespace"
-            );
-            assert!(!first.path_for(namespace, tomorrow, 2).exists());
+            file.current = None;
+            assert!(append(&mut file, b"{}\n", date()).is_err());
+            assert_eq!(fs::read(file.path(date(), 2)).unwrap(), b"{}\n");
         }
-    }
-
-    #[test]
-    fn permissions_overfull_and_volume_overflow() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut file = RotatingFile::new(dir.path().join("logs")).unwrap();
-        assert_eq!(
-            fs::metadata(&file.dir).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            file.lock.metadata().unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        fs::write(
-            file.path(date(), 1),
-            padded_record(MAX_LOG_BYTES as usize + 1),
-        )
-        .unwrap();
-        append(&mut file, b"{}\n", date()).unwrap();
-        assert_eq!(fs::read(file.path(date(), 2)).unwrap(), b"{}\n");
-        assert_eq!(
-            fs::metadata(file.path(date(), 2))
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let logs = dir.path().join("logs");
+            let mut file = RotatingFile::new(logs.clone()).unwrap();
+            // Nothing is eagerly created beyond the shared .lock.
+            let only: Vec<String> = fs::read_dir(&logs)
                 .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        fs::write(
-            file.path(date(), u64::MAX),
-            padded_record(MAX_LOG_BYTES as usize),
-        )
-        .unwrap();
-        file.current = None;
-        assert!(append(&mut file, b"{}\n", date()).is_err());
-        assert_eq!(fs::read(file.path(date(), 2)).unwrap(), b"{}\n");
-    }
-
-    #[test]
-    fn debug_volumes_are_padded_names_isolated_from_pp_and_foreign_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let logs = dir.path().join("logs");
-        let mut file = RotatingFile::new(logs.clone()).unwrap();
-        // Nothing is eagerly created beyond the shared .lock.
-        let only: Vec<String> = fs::read_dir(&logs)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(only, [".lock".to_owned()]);
-        // pp volumes and non-canonical debug names must not seed numbering.
-        for name in [
-            "pp.2026-10-19.1.log",
-            "pp.2026-10-19.7.log",
-            "debug.2026-10-19.1",
-            "debug.2026-10-19.0000",
-            "debug.2026-10-19.00001",
-            "debug.2026-10-19.0001.log",
-        ] {
-            fs::write(logs.join(name), b"{}\n").unwrap();
-        }
-        debug_append(&mut file, b"{\"first\":true}\n", date()).unwrap();
-        assert_eq!(
-            fs::read(logs.join("debug.2026-10-19.0001")).unwrap(),
-            b"{\"first\":true}\n"
-        );
-        fs::write(
-            logs.join("debug.2026-10-19.0001"),
-            padded_record(MAX_LOG_BYTES as usize),
-        )
-        .unwrap();
-        debug_append(&mut file, b"{\"second\":true}\n", date()).unwrap();
-        assert_eq!(
-            fs::read(logs.join("debug.2026-10-19.0002")).unwrap(),
-            b"{\"second\":true}\n"
-        );
-        // Every foreign or pp file is still present, byte for byte.
-        let names: BTreeSet<String> = fs::read_dir(&logs)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                ".lock",
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(only, [".lock".to_owned()]);
+            // pp volumes and non-canonical debug names must not seed numbering.
+            for name in [
+                "pp.2026-10-19.1.log",
+                "pp.2026-10-19.7.log",
                 "debug.2026-10-19.1",
                 "debug.2026-10-19.0000",
                 "debug.2026-10-19.00001",
-                "debug.2026-10-19.0001",
                 "debug.2026-10-19.0001.log",
-                "debug.2026-10-19.0002",
-                "pp.2026-10-19.1.log",
-                "pp.2026-10-19.7.log",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect()
-        );
+            ] {
+                fs::write(logs.join(name), b"{}\n").unwrap();
+            }
+            debug_append(&mut file, b"{\"first\":true}\n", date()).unwrap();
+            assert_eq!(
+                fs::read(logs.join("debug.2026-10-19.0001")).unwrap(),
+                b"{\"first\":true}\n"
+            );
+            fs::write(
+                logs.join("debug.2026-10-19.0001"),
+                padded_record(MAX_LOG_BYTES as usize),
+            )
+            .unwrap();
+            debug_append(&mut file, b"{\"second\":true}\n", date()).unwrap();
+            assert_eq!(
+                fs::read(logs.join("debug.2026-10-19.0002")).unwrap(),
+                b"{\"second\":true}\n"
+            );
+            // Every foreign or pp file is still present, byte for byte.
+            let names: BTreeSet<String> = fs::read_dir(&logs)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    ".lock",
+                    "debug.2026-10-19.1",
+                    "debug.2026-10-19.0000",
+                    "debug.2026-10-19.00001",
+                    "debug.2026-10-19.0001",
+                    "debug.2026-10-19.0001.log",
+                    "debug.2026-10-19.0002",
+                    "pp.2026-10-19.1.log",
+                    "pp.2026-10-19.7.log",
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect()
+            );
+        }
     }
 }

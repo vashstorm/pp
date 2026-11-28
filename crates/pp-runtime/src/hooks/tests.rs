@@ -56,94 +56,94 @@ fn envelope(dir: &Path) -> serde_json::Value {
 }
 
 #[test]
-fn hooks_exec_large_stdin_and_interleaved_output_do_not_deadlock() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = script(
-        dir.path(),
-        "echo.sh",
-        "payload=$(cat)\nprintf '%s' \"${#payload}\"\nprintf 'noise' >&2",
-    );
-    let input = vec![b'{'; 512 * 1024];
-    let outcome = exec::run(
-        exec::Request {
-            command: path.to_str().unwrap(),
-            args: None,
-            timeout: Duration::from_secs(20),
-            cwd: dir.path(),
-            input: &input,
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    assert_eq!(outcome.code, Some(0));
-    assert_eq!(String::from_utf8(outcome.stdout).unwrap(), "524288");
-    assert_eq!(String::from_utf8(outcome.stderr).unwrap(), "noise");
-}
+fn hooks_exec_io_args_bounds_and_process_reaping() {
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(
+            dir.path(),
+            "echo.sh",
+            "payload=$(cat)\nprintf '%s' \"${#payload}\"\nprintf 'noise' >&2",
+        );
+        let input = vec![b'{'; 512 * 1024];
+        let outcome = exec::run(
+            exec::Request {
+                command: path.to_str().unwrap(),
+                args: None,
+                timeout: Duration::from_secs(20),
+                cwd: dir.path(),
+                input: &input,
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(outcome.code, Some(0));
+        assert_eq!(String::from_utf8(outcome.stdout).unwrap(), "524288");
+        assert_eq!(String::from_utf8(outcome.stderr).unwrap(), "noise");
+    }
 
-#[test]
-fn hooks_exec_direct_args_keep_spaces_unsplit() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = script(dir.path(), "arg.sh", "printf '%s' \"$1\"");
-    let args = vec!["a b  c".to_owned()];
-    let outcome = exec::run(
-        exec::Request {
-            command: path.to_str().unwrap(),
-            args: Some(&args),
-            timeout: Duration::from_secs(20),
-            cwd: dir.path(),
-            input: b"{}",
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    assert_eq!(String::from_utf8(outcome.stdout).unwrap(), "a b  c");
-}
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let path = script(dir.path(), "arg.sh", "printf '%s' \"$1\"");
+        let args = vec!["a b  c".to_owned()];
+        let outcome = exec::run(
+            exec::Request {
+                command: path.to_str().unwrap(),
+                args: Some(&args),
+                timeout: Duration::from_secs(20),
+                cwd: dir.path(),
+                input: b"{}",
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(String::from_utf8(outcome.stdout).unwrap(), "a b  c");
+    }
 
-#[test]
-fn hooks_exec_bounds_stdout_and_keeps_stderr_tail() {
-    let dir = tempfile::tempdir().unwrap();
-    let huge = script(
-        dir.path(),
-        "huge.sh",
-        &format!(
-            "head -c {} /dev/zero | tr '\\0' 'x'",
-            exec::STDOUT_LIMIT + 4096
-        ),
-    );
-    let error = exec::run(
-        exec::Request {
-            command: huge.to_str().unwrap(),
-            args: None,
-            timeout: Duration::from_secs(20),
-            cwd: dir.path(),
-            input: b"{}",
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("exceeded"), "{error:#}");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let huge = script(
+            dir.path(),
+            "huge.sh",
+            &format!(
+                "head -c {} /dev/zero | tr '\\0' 'x'",
+                exec::STDOUT_LIMIT + 4096
+            ),
+        );
+        let error = exec::run(
+            exec::Request {
+                command: huge.to_str().unwrap(),
+                args: None,
+                timeout: Duration::from_secs(20),
+                cwd: dir.path(),
+                input: b"{}",
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeded"), "{error:#}");
 
-    let noisy = script(
-        dir.path(),
-        "noisy.sh",
-        &format!(
-            "head -c {} /dev/zero | tr '\\0' 'y' >&2",
-            exec::STDERR_LIMIT * 2
-        ),
-    );
-    let outcome = exec::run(
-        exec::Request {
-            command: noisy.to_str().unwrap(),
-            args: None,
-            timeout: Duration::from_secs(20),
-            cwd: dir.path(),
-            input: b"{}",
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    assert_eq!(outcome.stderr.len(), exec::STDERR_LIMIT);
-    assert!(outcome.stderr.iter().all(|byte| *byte == b'y'));
+        let noisy = script(
+            dir.path(),
+            "noisy.sh",
+            &format!(
+                "head -c {} /dev/zero | tr '\\0' 'y' >&2",
+                exec::STDERR_LIMIT * 2
+            ),
+        );
+        let outcome = exec::run(
+            exec::Request {
+                command: noisy.to_str().unwrap(),
+                args: None,
+                timeout: Duration::from_secs(20),
+                cwd: dir.path(),
+                input: b"{}",
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(outcome.stderr.len(), exec::STDERR_LIMIT);
+        assert!(outcome.stderr.iter().all(|byte| *byte == b'y'));
+    }
 }
 
 fn alive(pid: u32) -> bool {
@@ -165,117 +165,117 @@ fn assert_reaped(pid: u32) {
 }
 
 #[test]
-fn hooks_exec_timeout_reaps_root_and_descendants() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("pids");
-    let path = script(
-        dir.path(),
-        "hang.sh",
-        &format!(
-            "sleep 60 &\necho \"$$ $!\" > {}\nsleep 60",
-            marker.display()
-        ),
-    );
-    let started = std::time::Instant::now();
-    let error = exec::run(
-        exec::Request {
-            command: path.to_str().unwrap(),
-            args: None,
-            // 宽限足够让 bash 在满载并行的机器上先落 marker，再被超时回收。
-            timeout: Duration::from_secs(5),
-            cwd: dir.path(),
-            input: b"{}",
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("timed out"), "{error:#}");
-    assert!(started.elapsed() < Duration::from_secs(20));
-    let pids: Vec<u32> = std::fs::read_to_string(&marker)
-        .unwrap()
-        .split_whitespace()
-        .map(|pid| pid.parse().unwrap())
-        .collect();
-    assert_eq!(pids.len(), 2);
-    for pid in pids {
+fn hooks_exec_process_group_reaping_on_timeout_exit_and_cancel() {
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("pids");
+        let path = script(
+            dir.path(),
+            "hang.sh",
+            &format!(
+                "sleep 60 &\necho \"$$ $!\" > {}\nsleep 60",
+                marker.display()
+            ),
+        );
+        let started = std::time::Instant::now();
+        let error = exec::run(
+            exec::Request {
+                command: path.to_str().unwrap(),
+                args: None,
+                // 宽限足够让 bash 在满载并行的机器上先落 marker，再被超时回收。
+                timeout: Duration::from_secs(5),
+                cwd: dir.path(),
+                input: b"{}",
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error:#}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+        let pids: Vec<u32> = std::fs::read_to_string(&marker)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        for pid in pids {
+            assert_reaped(pid);
+        }
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("child");
+        let path = script(
+            dir.path(),
+            "detach.sh",
+            &format!("sleep 60 &\necho $! > {}\nexit 0", marker.display()),
+        );
+        let outcome = exec::run(
+            exec::Request {
+                command: path.to_str().unwrap(),
+                args: None,
+                timeout: Duration::from_secs(20),
+                cwd: dir.path(),
+                input: b"{}",
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(outcome.code, Some(0));
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_reaped(pid);
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("pids");
+        let path = script(
+            dir.path(),
+            "wait.sh",
+            &format!("echo \"$$ $BASHPID\" > {}\nsleep 60", marker.display()),
+        );
+        let token = CancellationToken::new();
+        let cancellation = token.clone();
+        let command = path.display().to_string();
+        let cwd = dir.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            exec::run(
+                exec::Request {
+                    command: &command,
+                    args: None,
+                    timeout: Duration::from_secs(60),
+                    cwd: &cwd,
+                    input: b"{}",
+                },
+                &cancellation,
+            )
+        });
+        let mut waited = Duration::ZERO;
+        while !marker.exists() && waited < Duration::from_secs(20) {
+            std::thread::sleep(Duration::from_millis(20));
+            waited += Duration::from_millis(20);
+        }
+        token.cancel();
+        let error = handle.join().unwrap().unwrap_err();
+        assert!(error.is::<Cancelled>(), "{error:#}");
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
         assert_reaped(pid);
     }
 }
 
 #[test]
-fn hooks_exec_reaps_descendants_after_root_exits() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("child");
-    let path = script(
-        dir.path(),
-        "detach.sh",
-        &format!("sleep 60 &\necho $! > {}\nexit 0", marker.display()),
-    );
-    let outcome = exec::run(
-        exec::Request {
-            command: path.to_str().unwrap(),
-            args: None,
-            timeout: Duration::from_secs(20),
-            cwd: dir.path(),
-            input: b"{}",
-        },
-        &CancellationToken::new(),
-    )
-    .unwrap();
-    assert_eq!(outcome.code, Some(0));
-    let pid: u32 = std::fs::read_to_string(&marker)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert_reaped(pid);
-}
-
-#[test]
-fn hooks_exec_cancellation_reaps_and_keeps_cancelled_type() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("pids");
-    let path = script(
-        dir.path(),
-        "wait.sh",
-        &format!("echo \"$$ $BASHPID\" > {}\nsleep 60", marker.display()),
-    );
-    let token = CancellationToken::new();
-    let cancellation = token.clone();
-    let command = path.display().to_string();
-    let cwd = dir.path().to_path_buf();
-    let handle = std::thread::spawn(move || {
-        exec::run(
-            exec::Request {
-                command: &command,
-                args: None,
-                timeout: Duration::from_secs(60),
-                cwd: &cwd,
-                input: b"{}",
-            },
-            &cancellation,
-        )
-    });
-    let mut waited = Duration::ZERO;
-    while !marker.exists() && waited < Duration::from_secs(20) {
-        std::thread::sleep(Duration::from_millis(20));
-        waited += Duration::from_millis(20);
-    }
-    token.cancel();
-    let error = handle.join().unwrap().unwrap_err();
-    assert!(error.is::<Cancelled>(), "{error:#}");
-    let pid: u32 = std::fs::read_to_string(&marker)
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert_reaped(pid);
-}
-
-#[test]
-fn hooks_matcher_names_and_regex_are_case_sensitive_and_unanchored() {
+fn hooks_matcher_compile_and_protocol_validation() {
     assert!(
         Matcher::compile(HookEvent::PreToolUse, Some("bash, edit"), 0)
             .unwrap()
@@ -312,10 +312,7 @@ fn hooks_matcher_names_and_regex_are_case_sensitive_and_unanchored() {
     assert!(text.contains("PreToolUse[0]"), "{text}");
     // 错误不回显模式原文。
     assert!(!text.contains("(?<=x)"), "{text}");
-}
 
-#[test]
-fn hooks_compile_rejects_matcher_on_input_events_and_keeps_empty_hooks_inert() {
     let link = settings(
         HookEvent::UserPromptSubmit,
         Some("bash"),
@@ -331,10 +328,7 @@ fn hooks_compile_rejects_matcher_on_input_events_and_keeps_empty_hooks_inert() {
     let empty = settings(HookEvent::PreToolUse, None, Vec::new());
     let runner = Runner::compile(&empty).unwrap();
     assert!(!runner.has_handlers(HookEvent::PreToolUse));
-}
 
-#[test]
-fn hooks_protocol_maps_exit_codes_and_decisions_per_event() {
     let output = protocol::parse(
         HookEvent::UserPromptSubmit,
         Some(0),
@@ -376,10 +370,7 @@ fn hooks_protocol_maps_exit_codes_and_decisions_per_event() {
     assert!(output.deny.is_none());
     let error = protocol::parse(HookEvent::PreToolUse, Some(3), b"", b"boom", None).unwrap_err();
     assert!(error.to_string().contains("status 3"), "{error:#}");
-}
 
-#[test]
-fn hooks_protocol_rejects_unknown_fields_and_bad_shapes() {
     for (event, stdout) in [
         (HookEvent::PreToolUse, &b"{\"decision\":\"allow\"}"[..]),
         (HookEvent::PreToolUse, b"{\"unknownControl\":true}"),
@@ -436,7 +427,7 @@ fn hooks_protocol_rejects_unknown_fields_and_bad_shapes() {
 }
 
 #[test]
-fn hooks_protocol_preserves_tool_status_and_stop_semantics() {
+fn hooks_protocol_status_image_stop_truncation_and_redaction() {
     let response = json!({"ok": false, "error": "boom"});
     let output = protocol::parse(
         HookEvent::PostToolUse,
@@ -513,10 +504,7 @@ fn hooks_protocol_preserves_tool_status_and_stop_semantics() {
     let updated = output.updated_output.unwrap();
     assert_eq!(updated["ok"], json!(true));
     assert!(updated.get("cancelled").is_none());
-}
 
-#[test]
-fn hooks_protocol_preserves_image_kind_while_rewriting_content() {
     let image = json!({
         "ok": true,
         "kind": "image",
@@ -546,10 +534,7 @@ fn hooks_protocol_preserves_image_kind_while_rewriting_content() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("kind"), "{error:#}");
-}
 
-#[test]
-fn hooks_protocol_only_stops_on_continue_false() {
     // `stopReason` 是停止理由，不能独立触发停止。
     for stdout in [
         &br#"{"continue":true,"stopReason":"note"}"#[..],
@@ -560,7 +545,6 @@ fn hooks_protocol_only_stops_on_continue_false() {
         let output = protocol::parse(HookEvent::PreToolUse, Some(0), stdout, b"", None).unwrap();
         assert!(output.stop.is_none(), "{stdout:?}");
     }
-    // 类型校验仍然生效。
     assert!(
         protocol::parse(
             HookEvent::PreToolUse,
@@ -571,7 +555,6 @@ fn hooks_protocol_only_stops_on_continue_false() {
         )
         .is_err()
     );
-    // `continue:false` 的空白理由回落到固定默认理由。
     let output = protocol::parse(
         HookEvent::PreToolUse,
         Some(0),
@@ -582,10 +565,7 @@ fn hooks_protocol_only_stops_on_continue_false() {
     .unwrap();
     let reason = output.stop.expect("continue:false stops the task");
     assert!(!reason.trim().is_empty(), "{reason}");
-}
 
-#[test]
-fn hooks_protocol_truncates_injected_text_on_char_boundaries() {
     let long = "字".repeat(protocol::TEXT_LIMIT + 10);
     let payload = serde_json::to_vec(&json!({"reason": long})).unwrap();
     let output =
@@ -596,7 +576,6 @@ fn hooks_protocol_truncates_injected_text_on_char_boundaries() {
         protocol::TEXT_LIMIT + "…[truncated]".chars().count()
     );
     assert!(reason.ends_with("…[truncated]"));
-    // 终端转义不进入注入文本。
     let output = protocol::parse(
         HookEvent::UserPromptSubmit,
         Some(0),
@@ -606,180 +585,7 @@ fn hooks_protocol_truncates_injected_text_on_char_boundaries() {
     )
     .unwrap();
     assert!(!output.deny.unwrap().contains('\u{1b}'));
-}
 
-#[test]
-fn hooks_runner_merges_handlers_in_order_and_short_circuits() {
-    let dir = tempfile::tempdir().unwrap();
-    let first = script(dir.path(), "first.sh", "cat > /dev/null\nprintf 'ctx-1'");
-    let second = script(
-        dir.path(),
-        "second.sh",
-        "cat > /dev/null\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"additionalContext\":\"ctx-2\"}}'",
-    );
-    let deny = script(
-        dir.path(),
-        "deny.sh",
-        "cat > /dev/null\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked\"}}'",
-    );
-    let mut settings = HooksSettings::default();
-    settings.pre_tool_use.push(HookMatcherGroup {
-        matcher: Some("bash".into()),
-        hooks: vec![
-            command(&first, 30),
-            command(&second, 30),
-            command(&deny, 30),
-        ],
-    });
-    let runner = Runner::compile(&settings).unwrap();
-    assert!(runner.has_handlers(HookEvent::PreToolUse));
-    assert!(!runner.has_handlers(HookEvent::Stop));
-    let effect = runner
-        .run(
-            HookEvent::PreToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap();
-    // 普通文本不提供决定，两个 allow 的上下文按顺序保留；deny 短路。
-    assert_eq!(effect.additional_context, vec!["ctx-2".to_owned()]);
-    assert_eq!(effect.deny_reason.as_deref(), Some("blocked"));
-}
-
-#[test]
-fn hooks_runner_reports_failure_policy_per_event() {
-    let dir = tempfile::tempdir().unwrap();
-    let failing = script(dir.path(), "fail.sh", "exit 7");
-    let pre = settings(HookEvent::PreToolUse, None, vec![command(&failing, 30)]);
-    let error = Runner::compile(&pre)
-        .unwrap()
-        .run(
-            HookEvent::PreToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("status 7"), "{error:#}");
-    let mut diagnosed = false;
-    let mut observe = |event| {
-        diagnosed |= matches!(event, AgentEvent::HookDiagnostic { .. });
-    };
-    Runner::compile(&pre)
-        .unwrap()
-        .run(
-            HookEvent::PreToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut observe,
-        )
-        .unwrap_err();
-    assert!(diagnosed);
-
-    let post = settings(HookEvent::PostToolUse, None, vec![command(&failing, 30)]);
-    let effect = Runner::compile(&post)
-        .unwrap()
-        .run(
-            HookEvent::PostToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap();
-    assert!(effect.deny_reason.is_none());
-
-    let mut blocked = command(&failing, 30);
-    blocked.on_failure = Some(HookFailurePolicy::Block);
-    let post_blocked = settings(HookEvent::PostToolUse, None, vec![blocked]);
-    assert!(
-        Runner::compile(&post_blocked)
-            .unwrap()
-            .run(
-                HookEvent::PostToolUse,
-                &envelope(dir.path()),
-                &CancellationToken::new(),
-                &mut |_| {},
-            )
-            .is_err()
-    );
-}
-
-#[test]
-fn hooks_runner_matches_tool_names_only_for_tool_events() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("ran");
-    let path = script(
-        dir.path(),
-        "mark.sh",
-        &format!("cat > /dev/null\necho ran >> {}", marker.display()),
-    );
-    let mut settings = HooksSettings::default();
-    settings.pre_tool_use.push(HookMatcherGroup {
-        matcher: Some("write,edit".into()),
-        hooks: vec![command(&path, 30)],
-    });
-    let runner = Runner::compile(&settings).unwrap();
-    runner
-        .run(
-            HookEvent::PreToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap();
-    assert!(!marker.exists(), "bash must not match a write,edit matcher");
-    let mut write = envelope(dir.path());
-    write["tool_name"] = json!("write");
-    runner
-        .run(
-            HookEvent::PreToolUse,
-            &write,
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap();
-    assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
-}
-
-#[test]
-fn hooks_runner_passes_real_envelope_on_stdin() {
-    let dir = tempfile::tempdir().unwrap();
-    let capture = dir.path().join("stdin.json");
-    let path = script(
-        dir.path(),
-        "capture.sh",
-        &format!("cat > {}", capture.display()),
-    );
-    let mut settings = HooksSettings::default();
-    settings.user_prompt_submit.push(HookMatcherGroup {
-        matcher: None,
-        hooks: vec![command(&path, 30)],
-    });
-    let runner = Runner::compile(&settings).unwrap();
-    let input = json!({
-        "session_id": "s-9",
-        "transcript_path": dir.path().join("s-9.jsonl").display().to_string(),
-        "cwd": dir.path().display().to_string(),
-        "permission_mode": "acceptEdits",
-        "hook_event_name": "UserPromptSubmit",
-        "prompt": "hello",
-    });
-    runner
-        .run(
-            HookEvent::UserPromptSubmit,
-            &input,
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap();
-    let received: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&capture).unwrap()).unwrap();
-    assert_eq!(received, input);
-}
-
-#[test]
-fn hooks_protocol_block_without_reason_still_stops_the_event() {
     // 缺 reason 的 block 不能静默放行：输入、Stop 与后置反馈都拿到默认理由。
     for (event, stdout) in [
         (
@@ -803,7 +609,6 @@ fn hooks_protocol_block_without_reason_still_stops_the_event() {
     assert!(output.deny.is_none());
     assert_eq!(output.context.len(), 1, "{:?}", output.context);
     assert!(!output.context[0].trim().is_empty());
-    // 显式 reason 仍然是唯一生效的理由。
     let output = protocol::parse(
         HookEvent::UserPromptSubmit,
         Some(0),
@@ -813,10 +618,7 @@ fn hooks_protocol_block_without_reason_still_stops_the_event() {
     )
     .unwrap();
     assert_eq!(output.deny.as_deref(), Some("explicit"));
-}
 
-#[test]
-fn hooks_protocol_redacts_credentials_before_diagnostics() {
     const SECRET: &str = "review-secret-123";
     let error = protocol::parse(
         HookEvent::PreToolUse,
@@ -842,7 +644,6 @@ fn hooks_protocol_redacts_credentials_before_diagnostics() {
     assert!(!message.contains(SECRET), "{message}");
     assert!(message.contains("[REDACTED]"), "{message}");
 
-    // exit 2 的 stderr 拒绝理由同样先脱敏再注入。
     let output = protocol::parse(
         HookEvent::UserPromptSubmit,
         Some(2),
@@ -856,143 +657,308 @@ fn hooks_protocol_redacts_credentials_before_diagnostics() {
 }
 
 #[test]
-fn hooks_runner_feeds_updated_output_to_later_handlers() {
-    let dir = tempfile::tempdir().unwrap();
-    let seen = dir.path().join("second-envelope.json");
-    let rewrite = script(
-        dir.path(),
-        "rewrite.sh",
-        "cat > /dev/null\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"updatedToolOutput\":{\"ok\":true,\"content\":\"REDACTED\"}}}'",
-    );
-    let observe = script(
-        dir.path(),
-        "observe.sh",
-        &format!("cat > {}", seen.display()),
-    );
-    let effect = Runner::compile(&settings(
-        HookEvent::PostToolUse,
-        None,
-        vec![command(&rewrite, 30), command(&observe, 30)],
-    ))
-    .unwrap()
-    .run(
-        HookEvent::PostToolUse,
-        &json!({
-            "session_id": "s-1",
-            "transcript_path": dir.path().join("s.jsonl").display().to_string(),
+fn hooks_runner_order_policies_matching_stdin_and_stop() {
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let first = script(dir.path(), "first.sh", "cat > /dev/null\nprintf 'ctx-1'");
+        let second = script(
+            dir.path(),
+            "second.sh",
+            "cat > /dev/null\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"additionalContext\":\"ctx-2\"}}'",
+        );
+        let deny = script(
+            dir.path(),
+            "deny.sh",
+            "cat > /dev/null\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked\"}}'",
+        );
+        let mut settings = HooksSettings::default();
+        settings.pre_tool_use.push(HookMatcherGroup {
+            matcher: Some("bash".into()),
+            hooks: vec![
+                command(&first, 30),
+                command(&second, 30),
+                command(&deny, 30),
+            ],
+        });
+        let runner = Runner::compile(&settings).unwrap();
+        assert!(runner.has_handlers(HookEvent::PreToolUse));
+        assert!(!runner.has_handlers(HookEvent::Stop));
+        let effect = runner
+            .run(
+                HookEvent::PreToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap();
+        // 普通文本不提供决定，两个 allow 的上下文按顺序保留；deny 短路。
+        assert_eq!(effect.additional_context, vec!["ctx-2".to_owned()]);
+        assert_eq!(effect.deny_reason.as_deref(), Some("blocked"));
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let failing = script(dir.path(), "fail.sh", "exit 7");
+        let pre = settings(HookEvent::PreToolUse, None, vec![command(&failing, 30)]);
+        let error = Runner::compile(&pre)
+            .unwrap()
+            .run(
+                HookEvent::PreToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("status 7"), "{error:#}");
+        let mut diagnosed = false;
+        let mut observe = |event| {
+            diagnosed |= matches!(event, AgentEvent::HookDiagnostic { .. });
+        };
+        Runner::compile(&pre)
+            .unwrap()
+            .run(
+                HookEvent::PreToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut observe,
+            )
+            .unwrap_err();
+        assert!(diagnosed);
+
+        let post = settings(HookEvent::PostToolUse, None, vec![command(&failing, 30)]);
+        let effect = Runner::compile(&post)
+            .unwrap()
+            .run(
+                HookEvent::PostToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(effect.deny_reason.is_none());
+
+        let mut blocked = command(&failing, 30);
+        blocked.on_failure = Some(HookFailurePolicy::Block);
+        let post_blocked = settings(HookEvent::PostToolUse, None, vec![blocked]);
+        assert!(
+            Runner::compile(&post_blocked)
+                .unwrap()
+                .run(
+                    HookEvent::PostToolUse,
+                    &envelope(dir.path()),
+                    &CancellationToken::new(),
+                    &mut |_| {},
+                )
+                .is_err()
+        );
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let path = script(
+            dir.path(),
+            "mark.sh",
+            &format!("cat > /dev/null\necho ran >> {}", marker.display()),
+        );
+        let mut settings = HooksSettings::default();
+        settings.pre_tool_use.push(HookMatcherGroup {
+            matcher: Some("write,edit".into()),
+            hooks: vec![command(&path, 30)],
+        });
+        let runner = Runner::compile(&settings).unwrap();
+        runner
+            .run(
+                HookEvent::PreToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap();
+        assert!(!marker.exists(), "bash must not match a write,edit matcher");
+        let mut write = envelope(dir.path());
+        write["tool_name"] = json!("write");
+        runner
+            .run(
+                HookEvent::PreToolUse,
+                &write,
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap().lines().count(), 1);
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.json");
+        let path = script(
+            dir.path(),
+            "capture.sh",
+            &format!("cat > {}", capture.display()),
+        );
+        let mut settings = HooksSettings::default();
+        settings.user_prompt_submit.push(HookMatcherGroup {
+            matcher: None,
+            hooks: vec![command(&path, 30)],
+        });
+        let runner = Runner::compile(&settings).unwrap();
+        let input = json!({
+            "session_id": "s-9",
+            "transcript_path": dir.path().join("s-9.jsonl").display().to_string(),
             "cwd": dir.path().display().to_string(),
-            "permission_mode": "default",
-            "hook_event_name": "PostToolUse",
-            "tool_name": "read",
-            "tool_input": {"path": "a.txt"},
-            "tool_use_id": "call-1",
-            "tool_response": {"ok": true, "content": "ORIGINAL"},
-        }),
-        &CancellationToken::new(),
-        &mut |_| {},
-    )
-    .unwrap();
-    assert_eq!(effect.updated_output.unwrap()["content"], json!("REDACTED"));
-    let received: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&seen).unwrap()).unwrap();
-    assert_eq!(received["tool_response"]["content"], json!("REDACTED"));
-    assert_eq!(received["tool_response"]["ok"], json!(true));
-}
-
-#[test]
-fn hooks_runner_redacts_credentials_in_handler_failures() {
-    const SECRET: &str = "review-secret-456";
-    let dir = tempfile::tempdir().unwrap();
-    let failing = script(
-        dir.path(),
-        "leak.sh",
-        &format!("cat > /dev/null\nprintf 'Bearer {SECRET}' >&2\nexit 9"),
-    );
-    let runner = Runner::compile(&settings(
-        HookEvent::PreToolUse,
-        None,
-        vec![command(&failing, 30)],
-    ))
-    .unwrap();
-    let mut diagnostics = Vec::new();
-    let error = runner
-        .run(
-            HookEvent::PreToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut |event| {
-                if let AgentEvent::HookDiagnostic { message, .. } = event {
-                    diagnostics.push(message);
-                }
-            },
-        )
-        .unwrap_err();
-    let text = format!("{error:#}");
-    assert!(!text.contains(SECRET), "{text}");
-    assert!(!diagnostics.is_empty());
-    for message in &diagnostics {
-        assert!(!message.contains(SECRET), "{message}");
+            "permission_mode": "acceptEdits",
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "hello",
+        });
+        runner
+            .run(
+                HookEvent::UserPromptSubmit,
+                &input,
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap();
+        let received: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&capture).unwrap()).unwrap();
+        assert_eq!(received, input);
     }
-}
 
-#[test]
-fn hooks_runner_does_not_report_the_command_when_spawn_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("missing-hook.sh");
-    // 直接 exec（不经 bash）才能让进程创建本身失败，覆盖启动错误路径。
-    let mut hook = command(&missing, 30);
-    hook.args = Some(Vec::new());
-    let runner = Runner::compile(&settings(HookEvent::PreToolUse, None, vec![hook])).unwrap();
-    let mut diagnostics = Vec::new();
-    let error = runner
-        .run(
-            HookEvent::PreToolUse,
-            &envelope(dir.path()),
-            &CancellationToken::new(),
-            &mut |event| {
-                if let AgentEvent::HookDiagnostic { message, .. } = event {
-                    diagnostics.push(message);
-                }
-            },
-        )
-        .unwrap_err();
-    let text = format!("{error:#}");
-    assert!(text.contains("starting hook command"), "{text}");
-    assert!(!text.contains("missing-hook.sh"), "{text}");
-    assert!(!diagnostics.is_empty());
-    for message in diagnostics {
-        assert!(!message.contains("missing-hook.sh"), "{message}");
-    }
-}
-
-#[test]
-fn hooks_runner_stops_after_continue_false() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("second-ran");
-    let stop = script(
-        dir.path(),
-        "stop.sh",
-        "cat > /dev/null\nprintf '{\"continue\":false,\"stopReason\":\"halt\"}'",
-    );
-    let second = script(
-        dir.path(),
-        "second.sh",
-        &format!("cat > /dev/null\ntouch {}", marker.display()),
-    );
-    let settings = settings(
-        HookEvent::PostToolUse,
-        None,
-        vec![command(&stop, 30), command(&second, 30)],
-    );
-    let effect = Runner::compile(&settings)
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("second-envelope.json");
+        let rewrite = script(
+            dir.path(),
+            "rewrite.sh",
+            "cat > /dev/null\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"updatedToolOutput\":{\"ok\":true,\"content\":\"REDACTED\"}}}'",
+        );
+        let observe = script(
+            dir.path(),
+            "observe.sh",
+            &format!("cat > {}", seen.display()),
+        );
+        let effect = Runner::compile(&settings(
+            HookEvent::PostToolUse,
+            None,
+            vec![command(&rewrite, 30), command(&observe, 30)],
+        ))
         .unwrap()
         .run(
             HookEvent::PostToolUse,
-            &envelope(dir.path()),
+            &json!({
+                "session_id": "s-1",
+                "transcript_path": dir.path().join("s.jsonl").display().to_string(),
+                "cwd": dir.path().display().to_string(),
+                "permission_mode": "default",
+                "hook_event_name": "PostToolUse",
+                "tool_name": "read",
+                "tool_input": {"path": "a.txt"},
+                "tool_use_id": "call-1",
+                "tool_response": {"ok": true, "content": "ORIGINAL"},
+            }),
             &CancellationToken::new(),
             &mut |_| {},
         )
         .unwrap();
-    assert_eq!(effect.stop_reason.as_deref(), Some("halt"));
-    assert!(!marker.exists());
+        assert_eq!(effect.updated_output.unwrap()["content"], json!("REDACTED"));
+        let received: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&seen).unwrap()).unwrap();
+        assert_eq!(received["tool_response"]["content"], json!("REDACTED"));
+        assert_eq!(received["tool_response"]["ok"], json!(true));
+    }
+
+    {
+        const SECRET: &str = "review-secret-456";
+        let dir = tempfile::tempdir().unwrap();
+        let failing = script(
+            dir.path(),
+            "leak.sh",
+            &format!("cat > /dev/null\nprintf 'Bearer {SECRET}' >&2\nexit 9"),
+        );
+        let runner = Runner::compile(&settings(
+            HookEvent::PreToolUse,
+            None,
+            vec![command(&failing, 30)],
+        ))
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        let error = runner
+            .run(
+                HookEvent::PreToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |event| {
+                    if let AgentEvent::HookDiagnostic { message, .. } = event {
+                        diagnostics.push(message);
+                    }
+                },
+            )
+            .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(!text.contains(SECRET), "{text}");
+        assert!(!diagnostics.is_empty());
+        for message in &diagnostics {
+            assert!(!message.contains(SECRET), "{message}");
+        }
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-hook.sh");
+        // 直接 exec（不经 bash）才能让进程创建本身失败，覆盖启动错误路径。
+        let mut hook = command(&missing, 30);
+        hook.args = Some(Vec::new());
+        let runner = Runner::compile(&settings(HookEvent::PreToolUse, None, vec![hook])).unwrap();
+        let mut diagnostics = Vec::new();
+        let error = runner
+            .run(
+                HookEvent::PreToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |event| {
+                    if let AgentEvent::HookDiagnostic { message, .. } = event {
+                        diagnostics.push(message);
+                    }
+                },
+            )
+            .unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("starting hook command"), "{text}");
+        assert!(!text.contains("missing-hook.sh"), "{text}");
+        assert!(!diagnostics.is_empty());
+        for message in diagnostics {
+            assert!(!message.contains("missing-hook.sh"), "{message}");
+        }
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("second-ran");
+        let stop = script(
+            dir.path(),
+            "stop.sh",
+            "cat > /dev/null\nprintf '{\"continue\":false,\"stopReason\":\"halt\"}'",
+        );
+        let second = script(
+            dir.path(),
+            "second.sh",
+            &format!("cat > /dev/null\ntouch {}", marker.display()),
+        );
+        let settings = settings(
+            HookEvent::PostToolUse,
+            None,
+            vec![command(&stop, 30), command(&second, 30)],
+        );
+        let effect = Runner::compile(&settings)
+            .unwrap()
+            .run(
+                HookEvent::PostToolUse,
+                &envelope(dir.path()),
+                &CancellationToken::new(),
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(effect.stop_reason.as_deref(), Some("halt"));
+        assert!(!marker.exists());
+    }
 }

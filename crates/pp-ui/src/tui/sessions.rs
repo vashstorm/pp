@@ -672,262 +672,81 @@ mod tests {
     }
 
     #[test]
-    fn resume_panel_matches_single_line_layout_and_searches_scopes() {
-        let mut panel = panel();
-        let (screen, terminal) = render(&mut panel, 100, 30);
-        let lines: Vec<_> = screen.lines().collect();
-        assert!(lines[0].contains("Resume session (current folder)"));
-        assert!(lines[2].starts_with("> "));
-        assert!(lines[4].starts_with("› 2m ago"));
-        assert!(lines[4].contains("当前会话"));
-        assert!(lines[5].contains("修复 Rust 测试"));
-        assert!(!lines[4..6].iter().any(|line| line.contains("answer for")));
-        assert!(lines[28].contains("current · \u{f00c} done · 1.5KB"));
-        assert_eq!(terminal.backend().buffer()[(0, 4)].fg, selected_fg());
-        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, selected_bg());
-        assert_eq!(terminal.backend().buffer()[(2, 5)].fg, time_fg());
-        assert_eq!(terminal.backend().buffer()[(99, 5)].bg, row_bg());
-        assert_eq!(
-            terminal.backend().buffer()[(14, 5)].fg,
-            title_color("alpha")
-        );
-        assert_eq!(terminal.backend().cursor_position(), (2, 2).into());
+    fn resume_panel_layout_searches_scopes_and_formats_metadata() {
+        {
+            let mut panel = panel();
+            let (screen, terminal) = render(&mut panel, 100, 30);
+            let lines: Vec<_> = screen.lines().collect();
+            assert!(lines[0].contains("Resume session (current folder)"));
+            assert!(lines[2].starts_with("> "));
+            assert!(lines[4].starts_with("› 2m ago"));
+            assert!(lines[4].contains("当前会话"));
+            assert!(lines[5].contains("修复 Rust 测试"));
+            assert!(!lines[4..6].iter().any(|line| line.contains("answer for")));
+            assert!(lines[28].contains("current · \u{f00c} done · 1.5KB"));
+            assert_eq!(terminal.backend().buffer()[(0, 4)].fg, selected_fg());
+            assert_eq!(terminal.backend().buffer()[(99, 4)].bg, selected_bg());
+            assert_eq!(terminal.backend().buffer()[(2, 5)].fg, time_fg());
+            assert_eq!(terminal.backend().buffer()[(99, 5)].bg, row_bg());
+            assert_eq!(
+                terminal.backend().buffer()[(14, 5)].fg,
+                title_color("alpha")
+            );
+            assert_eq!(terminal.backend().cursor_position(), (2, 2).into());
 
-        // 范围切换只发送新检索；等待期间旧行不可见也不能选择。
-        panel.key(key(KeyCode::Right));
-        let (scope_request, cwd, query) = search(&mut panel);
-        assert_eq!(cwd, None);
-        assert!(query.is_empty());
-        let screen = render(&mut panel, 100, 30).0;
-        assert!(screen.contains("Searching sessions…"));
-        assert!(!screen.contains("其他目录"));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        panel.key(key(KeyCode::Delete));
-        assert!(matches!(panel.phase, Phase::Ready));
-        assert!(panel.install(scope_request, all_listing()));
-        assert!(render(&mut panel, 100, 30).0.contains("其他目录"));
+            // 范围切换只发送新检索；等待期间旧行不可见也不能选择。
+            panel.key(key(KeyCode::Right));
+            let (scope_request, cwd, query) = search(&mut panel);
+            assert_eq!(cwd, None);
+            assert!(query.is_empty());
+            let screen = render(&mut panel, 100, 30).0;
+            assert!(screen.contains("Searching sessions…"));
+            assert!(!screen.contains("其他目录"));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+            panel.key(key(KeyCode::Delete));
+            assert!(matches!(panel.phase, Phase::Ready));
+            assert!(panel.install(scope_request, all_listing()));
+            assert!(render(&mut panel, 100, 30).0.contains("其他目录"));
 
-        // 服务端已过滤：粘贴换行转空格、检索词下发、结果直接安装。
-        panel.paste("其他\n目录");
-        let (paste_request, cwd, query) = search(&mut panel);
-        assert_eq!(cwd, None);
-        assert_eq!(query, "其他 目录");
-        assert!(panel.install(
-            paste_request,
-            listing(vec![summary("beta", "/other", "其他目录")])
-        ));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
+            // 服务端已过滤：粘贴换行转空格、检索词下发、结果直接安装。
+            panel.paste("其他\n目录");
+            let (paste_request, cwd, query) = search(&mut panel);
+            assert_eq!(cwd, None);
+            assert_eq!(query, "其他 目录");
+            assert!(panel.install(
+                paste_request,
+                listing(vec![summary("beta", "/other", "其他目录")])
+            ));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
 
-        panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        let (_, cwd, _) = search(&mut panel);
-        assert_eq!(cwd, None);
-        panel.key(key(KeyCode::Left));
-        let (_, cwd, _) = search(&mut panel);
-        assert_eq!(cwd, Some(PathBuf::from("/project")));
-        panel.paste("RUST 测试");
-        let (typed_request, _, query) = search(&mut panel);
-        assert_eq!(query, "RUST 测试");
-        assert!(panel.install(
-            typed_request,
-            listing(vec![summary("alpha", "/project", "修复 Rust 测试")])
-        ));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
-        panel.key(key(KeyCode::Backspace));
-        panel.key(key(KeyCode::Char('错')));
-        let (narrowed_request, _, query) = search(&mut panel);
-        assert_eq!(query, "RUST 测错");
-        assert!(panel.install(narrowed_request, listing(vec![])));
-        assert!(
-            render(&mut panel, 100, 30)
-                .0
-                .contains("No matching sessions.")
-        );
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(matches!(panel.key(key(KeyCode::Esc)), Action::Cancel));
-    }
-
-    #[test]
-    fn resume_pin_preserves_identity_after_reordering_and_rejects_repeated_actions() {
-        let mut panel = panel();
-        panel.key(key(KeyCode::Down));
-        let pin = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
-        assert!(matches!(panel.key(pin), Action::Pin(1)));
-        let (request_id, id, pinned) = panel.pin_request(1).unwrap();
-        assert_eq!(id, "alpha");
-        assert!(pinned);
-        assert!(!panel.sessions[1].pinned, "写入前不更新状态");
-        assert!(matches!(panel.key(pin), Action::None));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        panel.paste("ignored");
-        assert!(panel.query.is_empty());
-        assert!(!panel.pin_finished(request_id - 1));
-        assert!(panel.pin_finished(request_id));
-        let (search_id, _, _) = panel.refresh_request();
-        let mut alpha = summary("alpha", "/project", "修复 Rust 测试");
-        alpha.pinned = true;
-        assert!(panel.install(
-            search_id,
-            listing(vec![alpha, summary("current", "/project", "当前会话")])
-        ));
-        assert_eq!(panel.selected, 0);
-        let (screen, terminal) = render(&mut panel, 100, 20);
-        assert!(screen.lines().nth(4).unwrap().contains(" 修复 Rust 测试"));
-        assert_eq!(terminal.backend().buffer()[(12, 4)].symbol(), "");
-        assert_eq!(terminal.backend().buffer()[(14, 4)].symbol(), "修");
-        assert!(screen.contains(" pinned"));
-        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, selected_bg());
-        assert!(matches!(panel.key(pin), Action::Pin(0)));
-        let (request_id, id, pinned) = panel.pin_request(0).unwrap();
-        assert_eq!(id, "alpha");
-        assert!(!pinned);
-        assert!(panel.pin_finished(request_id));
-        panel.set_feedback("Could not save session pin; please retry.".into());
-        assert!(panel.sessions[0].pinned, "写入失败保持原状态和选择");
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
-
-        panel.paste("search");
-        search(&mut panel);
-        assert!(
-            matches!(panel.key(pin), Action::None),
-            "等待查询时禁止 pin 旧行"
-        );
-    }
-
-    #[test]
-    fn resume_rows_keep_title_alignment_stripes_and_clip_unicode() {
-        let mut panel = panel();
-        let (request_id, _, _) = panel.sync_request();
-        assert!(panel.install(
-            request_id,
-            listing(vec![
-                summary("one", "/project", &"长标题👩‍💻".repeat(40)),
-                summary("two", "/project", "第二行"),
-                summary("three", "/project", "第三行"),
-            ])
-        ));
-        // TUI 输出完整帧；TestBackend 的差分快照会重置宽字符续列，不能替代实际帧。
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
-        let completed = terminal
-            .draw(|frame| panel.draw(frame, frame.area()))
-            .unwrap();
-        let buffer = completed.buffer;
-        assert_eq!(buffer[(14, 4)].symbol(), "长");
-        assert_eq!(buffer[(14, 5)].symbol(), "第");
-        assert_eq!(buffer[(39, 5)].bg, row_bg());
-        assert_eq!(buffer[(39, 6)].bg, stripe_bg());
-        assert_eq!(buffer[(14, 6)].fg, title_color("three"));
-        panel.key(key(KeyCode::Down));
-        let completed = terminal
-            .draw(|frame| panel.draw(frame, frame.area()))
-            .unwrap();
-        assert_eq!(completed.buffer[(39, 4)].bg, stripe_bg());
-        assert_eq!(completed.buffer[(39, 5)].bg, selected_bg());
-    }
-
-    #[test]
-    fn stale_requests_never_replace_newer_results_or_selection() {
-        let mut panel = panel();
-        panel.key(key(KeyCode::Char('a')));
-        let (first, _, _) = search(&mut panel);
-        panel.key(key(KeyCode::Char('b')));
-        let (second, _, query) = search(&mut panel);
-        assert_eq!(query, "ab");
-        assert!(second > first);
-        // 迟到的旧请求结果被丢弃，包括失败回复。
-        assert!(!panel.install(first, all_listing()));
-        assert!(!panel.fail(first, "stale".into()));
-        assert!(panel.error.is_none());
-        assert!(panel.install(second, project_listing()));
-        assert!(!panel.pending);
-    }
-
-    #[test]
-    fn resume_panel_deletion_confirms_blocks_repeats_and_keeps_query() {
-        let mut panel = panel();
-        panel.key(key(KeyCode::Delete));
-        assert!(matches!(panel.phase, Phase::Ready), "不能删除当前会话");
-        panel.key(key(KeyCode::Down));
-        panel.set_feedback("Previous restore failed".into());
-        assert!(
-            render(&mut panel, 100, 20)
-                .0
-                .contains("Previous restore failed")
-        );
-        panel.key(key(KeyCode::Delete));
-        assert!(
-            render(&mut panel, 100, 20)
-                .0
-                .contains("Delete selected session?")
-        );
-        panel.key(key(KeyCode::Esc));
-        assert!(matches!(panel.phase, Phase::Ready));
-        panel.key(key(KeyCode::Backspace));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Delete(1)));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
-        panel.delete_finished(false);
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(1)));
-
-        // 删除成功后同步刷新：旧行在回复前不可操作，失败时清空旧行。
-        panel.delete_finished(true);
-        let (request_id, _, _) = panel.refresh_request();
-        assert!(
-            render(&mut panel, 100, 20)
-                .0
-                .contains("Searching sessions…")
-        );
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(!panel.install(request_id - 1, project_listing()));
-        assert!(!panel.fail(request_id - 1, "stale".into()));
-        assert!(panel.fail(request_id, "index unavailable".into()));
-        assert!(render(&mut panel, 100, 20).0.contains("index unavailable"));
-        panel.paste("Rust");
-        let (_, _, query) = panel.take_search().expect("paste edits query");
-        assert_eq!(query, "Rust");
-    }
-
-    #[test]
-    fn resume_panel_pages_resizes_and_keeps_cursor_inside_small_screens() {
-        let mut panel = panel();
-        let (request_id, _, _) = panel.sync_request();
-        assert!(
-            panel.install(
-                request_id,
-                listing(
-                    (0..20)
-                        .map(|i| summary(&format!("id-{i}"), "/project", &format!("session-{i}")))
-                        .collect()
-                )
-            )
-        );
-        render(&mut panel, 100, 14);
-        panel.key(key(KeyCode::PageDown));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(8)));
-        panel.key(key(KeyCode::End));
-        let screen = render(&mut panel, 100, 10).0;
-        assert!(
-            screen
-                .lines()
-                .any(|line| line.starts_with('›') && line.contains("session-19"))
-        );
-        render(&mut panel, 100, 40);
-        panel.wheel(true);
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(18)));
-        panel.restore_started();
-        assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
-        panel.restore_failed();
-        panel.paste(&"中文👩‍💻".repeat(20));
-        for (width, height) in [(0, 0), (1, 1), (2, 3), (8, 8), (20, 5)] {
-            let (_, terminal) = render(&mut panel, width, height);
-            if width > 2 && height >= 3 {
-                let cursor = terminal.backend().cursor_position();
-                assert!(cursor.x < width && cursor.y < height);
-            }
+            panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+            let (_, cwd, _) = search(&mut panel);
+            assert_eq!(cwd, None);
+            panel.key(key(KeyCode::Left));
+            let (_, cwd, _) = search(&mut panel);
+            assert_eq!(cwd, Some(PathBuf::from("/project")));
+            panel.paste("RUST 测试");
+            let (typed_request, _, query) = search(&mut panel);
+            assert_eq!(query, "RUST 测试");
+            assert!(panel.install(
+                typed_request,
+                listing(vec![summary("alpha", "/project", "修复 Rust 测试")])
+            ));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
+            panel.key(key(KeyCode::Backspace));
+            panel.key(key(KeyCode::Char('错')));
+            let (narrowed_request, _, query) = search(&mut panel);
+            assert_eq!(query, "RUST 测错");
+            assert!(panel.install(narrowed_request, listing(vec![])));
+            assert!(
+                render(&mut panel, 100, 30)
+                    .0
+                    .contains("No matching sessions.")
+            );
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+            assert!(matches!(panel.key(key(KeyCode::Esc)), Action::Cancel));
         }
-    }
 
-    #[test]
-    fn resume_metadata_formats_time_and_size_boundaries() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(40_000_000);
         assert_eq!(format_age(now + Duration::from_secs(60), now), "just now");
         for (seconds, expected) in [
@@ -947,5 +766,190 @@ mod tests {
         assert_eq!(format_size(1023), "1023B");
         assert_eq!(format_size(1024), "1.0KB");
         assert_eq!(format_size(1_048_576), "1.0MB");
+    }
+
+    #[test]
+    fn resume_pin_rows_stripes_unicode_and_stale_requests() {
+        {
+            let mut panel = panel();
+            panel.key(key(KeyCode::Down));
+            let pin = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+            assert!(matches!(panel.key(pin), Action::Pin(1)));
+            let (request_id, id, pinned) = panel.pin_request(1).unwrap();
+            assert_eq!(id, "alpha");
+            assert!(pinned);
+            assert!(!panel.sessions[1].pinned, "写入前不更新状态");
+            assert!(matches!(panel.key(pin), Action::None));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+            panel.paste("ignored");
+            assert!(panel.query.is_empty());
+            assert!(!panel.pin_finished(request_id - 1));
+            assert!(panel.pin_finished(request_id));
+            let (search_id, _, _) = panel.refresh_request();
+            let mut alpha = summary("alpha", "/project", "修复 Rust 测试");
+            alpha.pinned = true;
+            assert!(panel.install(
+                search_id,
+                listing(vec![alpha, summary("current", "/project", "当前会话")])
+            ));
+            assert_eq!(panel.selected, 0);
+            let (screen, terminal) = render(&mut panel, 100, 20);
+            assert!(screen.lines().nth(4).unwrap().contains(" 修复 Rust 测试"));
+            assert_eq!(terminal.backend().buffer()[(12, 4)].symbol(), "");
+            assert_eq!(terminal.backend().buffer()[(14, 4)].symbol(), "修");
+            assert!(screen.contains(" pinned"));
+            assert_eq!(terminal.backend().buffer()[(99, 4)].bg, selected_bg());
+            assert!(matches!(panel.key(pin), Action::Pin(0)));
+            let (request_id, id, pinned) = panel.pin_request(0).unwrap();
+            assert_eq!(id, "alpha");
+            assert!(!pinned);
+            assert!(panel.pin_finished(request_id));
+            panel.set_feedback("Could not save session pin; please retry.".into());
+            assert!(panel.sessions[0].pinned, "写入失败保持原状态和选择");
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
+
+            panel.paste("search");
+            search(&mut panel);
+            assert!(
+                matches!(panel.key(pin), Action::None),
+                "等待查询时禁止 pin 旧行"
+            );
+        }
+
+        {
+            let mut panel = panel();
+            let (request_id, _, _) = panel.sync_request();
+            assert!(panel.install(
+                request_id,
+                listing(vec![
+                    summary("one", "/project", &"长标题👩‍💻".repeat(40)),
+                    summary("two", "/project", "第二行"),
+                    summary("three", "/project", "第三行"),
+                ])
+            ));
+            // TUI 输出完整帧；TestBackend 的差分快照会重置宽字符续列，不能替代实际帧。
+            let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+            let completed = terminal
+                .draw(|frame| panel.draw(frame, frame.area()))
+                .unwrap();
+            let buffer = completed.buffer;
+            assert_eq!(buffer[(14, 4)].symbol(), "长");
+            assert_eq!(buffer[(14, 5)].symbol(), "第");
+            assert_eq!(buffer[(39, 5)].bg, row_bg());
+            assert_eq!(buffer[(39, 6)].bg, stripe_bg());
+            assert_eq!(buffer[(14, 6)].fg, title_color("three"));
+            panel.key(key(KeyCode::Down));
+            let completed = terminal
+                .draw(|frame| panel.draw(frame, frame.area()))
+                .unwrap();
+            assert_eq!(completed.buffer[(39, 4)].bg, stripe_bg());
+            assert_eq!(completed.buffer[(39, 5)].bg, selected_bg());
+        }
+
+        {
+            let mut panel = panel();
+            panel.key(key(KeyCode::Char('a')));
+            let (first, _, _) = search(&mut panel);
+            panel.key(key(KeyCode::Char('b')));
+            let (second, _, query) = search(&mut panel);
+            assert_eq!(query, "ab");
+            assert!(second > first);
+            // 迟到的旧请求结果被丢弃，包括失败回复。
+            assert!(!panel.install(first, all_listing()));
+            assert!(!panel.fail(first, "stale".into()));
+            assert!(panel.error.is_none());
+            assert!(panel.install(second, project_listing()));
+            assert!(!panel.pending);
+        }
+    }
+
+    #[test]
+    fn resume_panel_deletion_paging_resizing_and_small_screens() {
+        {
+            let mut panel = panel();
+            panel.key(key(KeyCode::Delete));
+            assert!(matches!(panel.phase, Phase::Ready), "不能删除当前会话");
+            panel.key(key(KeyCode::Down));
+            panel.set_feedback("Previous restore failed".into());
+            assert!(
+                render(&mut panel, 100, 20)
+                    .0
+                    .contains("Previous restore failed")
+            );
+            panel.key(key(KeyCode::Delete));
+            assert!(
+                render(&mut panel, 100, 20)
+                    .0
+                    .contains("Delete selected session?")
+            );
+            panel.key(key(KeyCode::Esc));
+            assert!(matches!(panel.phase, Phase::Ready));
+            panel.key(key(KeyCode::Backspace));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Delete(1)));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+            assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
+            panel.delete_finished(false);
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(1)));
+
+            // 删除成功后同步刷新：旧行在回复前不可操作，失败时清空旧行。
+            panel.delete_finished(true);
+            let (request_id, _, _) = panel.refresh_request();
+            assert!(
+                render(&mut panel, 100, 20)
+                    .0
+                    .contains("Searching sessions…")
+            );
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
+            assert!(!panel.install(request_id - 1, project_listing()));
+            assert!(!panel.fail(request_id - 1, "stale".into()));
+            assert!(panel.fail(request_id, "index unavailable".into()));
+            assert!(render(&mut panel, 100, 20).0.contains("index unavailable"));
+            panel.paste("Rust");
+            let (_, _, query) = panel.take_search().expect("paste edits query");
+            assert_eq!(query, "Rust");
+        }
+
+        {
+            let mut panel = panel();
+            let (request_id, _, _) = panel.sync_request();
+            assert!(
+                panel.install(
+                    request_id,
+                    listing(
+                        (0..20)
+                            .map(|i| summary(
+                                &format!("id-{i}"),
+                                "/project",
+                                &format!("session-{i}")
+                            ))
+                            .collect()
+                    )
+                )
+            );
+            render(&mut panel, 100, 14);
+            panel.key(key(KeyCode::PageDown));
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(8)));
+            panel.key(key(KeyCode::End));
+            let screen = render(&mut panel, 100, 10).0;
+            assert!(
+                screen
+                    .lines()
+                    .any(|line| line.starts_with('›') && line.contains("session-19"))
+            );
+            render(&mut panel, 100, 40);
+            panel.wheel(true);
+            assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(18)));
+            panel.restore_started();
+            assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
+            panel.restore_failed();
+            panel.paste(&"中文👩‍💻".repeat(20));
+            for (width, height) in [(0, 0), (1, 1), (2, 3), (8, 8), (20, 5)] {
+                let (_, terminal) = render(&mut panel, width, height);
+                if width > 2 && height >= 3 {
+                    let cursor = terminal.backend().cursor_position();
+                    assert!(cursor.x < width && cursor.y < height);
+                }
+            }
+        }
     }
 }

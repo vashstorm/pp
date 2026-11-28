@@ -19,9 +19,25 @@ test-threads = 2
 threads-required = 1
 default-filter = 'test(/(^|::)slow_/)'
 
-# 保留少量真实 PTY 冒烟用例，其余普通单元测试和集成测试照常运行。
+# L1: 纯单元测试层（纯内存状态机、解析、布局、TestBackend；无子进程/HTTP/PTY）
+[profile.unit]
+default-filter = 'not binary_id(pp::cli_agent) and not test(/::integration(::|$)/) and not test(/(^|::)slow_/)'
+
+# L2: Crate 组件集成层（TestServer / REPL / LSP / MCP / Bash / Sandbox）
+[profile.integration]
+default-filter = 'not binary_id(pp::cli_agent) and test(/::integration(::|$)/) and not test(/(^|::)slow_/)'
+
+# L3: Headless CLI 二进制端到端层（非 PTY 的 pp::cli_agent）
+[profile.e2e-cli]
+default-filter = 'binary_id(pp::cli_agent) and not test(/^tui::/) and not test(/(^|::)slow_/)'
+
+# L4: 真实 PTY / TUI 端到端层（cli_agent::tui::）
+[profile.e2e-pty]
+default-filter = 'binary_id(pp::cli_agent) and test(/^tui::/) and not test(/(^|::)slow_/)'
+
+# 日常快速回归：全部 L1 纯单测 + 核心 L3/L4 冒烟，跳过慢用例。
 [profile.quick]
-default-filter = '((not (binary_id(pp::cli_agent) and test(/^tui::/))) or test(/^(tui::streaming_cases::streaming_tui_both_protocols_live_colors_scroll_resize_and_bash|tui::transcript_cases::tui_exit_keeps_conversation_on_normal_screen|tui::plan_mode_cases::plan_tui_prompt_enters_before_request_and_reuses_plan_mode|tui::native_tui_streaming_keeps_input_cursor_visible_both_protocols|tui::ask_tui_single_space_selects_without_sending_until_enter|tui::context_tui_shows_current_and_window_on_input_top_right)$/)) and not test(/(^|::)slow_/)'
+default-filter = '(not binary_id(pp::cli_agent) and not test(/::integration(::|$)/) and not test(/(^|::)slow_/)) or (binary_id(pp::cli_agent) and test(/^(command_cases::|non_interactive::|tui::streaming_cases::|tui::plan_mode_cases::|tui::startup_cases::)/) and not test(/(^|::)slow_/))'
 
 # 禁用伪终端的环境仍可运行普通 CLI、进程内 TUI 和非 PTY 的慢用例。
 [profile.no_pty]
@@ -29,6 +45,5 @@ default-filter = '''
 not (binary_id(pp::cli_agent) and (
     test(/^tui::/)
     or test(=lsp::lsp_roundtrip_plan_readonly_denies_mutations_and_server_apply_edit)
-    or test(=stats::server_cases::stats_server_opens_actual_url_and_survives_browser_failure)
 ))
 '''

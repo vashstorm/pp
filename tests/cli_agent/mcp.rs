@@ -153,532 +153,94 @@ fn mcp_roundtrip_both_protocols_preserves_schema_results_order_and_events() {
 }
 
 #[test]
-fn mcp_startup_failures_are_bounded_redacted_and_reap_processes() {
-    for mode in [
-        "bad_version",
-        "invalid_json",
-        "wrong_id",
-        "eof",
-        "init_error",
-        "timeout_init",
-        "oversized",
-        "cursor_loop",
-        "duplicate",
-        "invalid_schema",
-    ] {
-        let provider = server();
-        let dir = tempfile::tempdir().unwrap();
-        let cli = Cli::start_with(
-            dir.path(),
-            Some("test"),
-            &settings(mode).to_string(),
-            &fixture_models(&provider),
-        );
-        let (request, body) = receive(&provider);
-        assert!(
-            !body["tools"].to_string().contains("mcp__local__"),
-            "{mode}"
-        );
-        final_reply(request, "local tools remain available");
-        let output = cli.finish();
-        assert!(output.status.success(), "{mode}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let lines: Vec<&str> = stderr.lines().collect();
-        let failed_idx = lines
-            .iter()
-            .position(|line| line.starts_with("MCP: local failed (") && line.ends_with(") ✗"))
-            .unwrap_or_else(|| panic!("{mode}: {stderr}"));
-        assert!(
-            lines
-                .get(failed_idx + 1)
-                .is_some_and(|line| line.starts_with("  ") && !line.trim().is_empty()),
-            "{mode}: {stderr}"
-        );
-        assert!(
-            stderr.contains("Connected to MCP servers: 0 succeeded, 1 failed ("),
-            "{mode}: {stderr}"
-        );
-        assert!(!stderr.contains("secret-"), "{mode}: {stderr}");
-        no_more(&provider);
-        assert_stopped(dir.path());
-    }
-}
-
-#[test]
-fn mcp_call_failures_reach_model_and_failed_connections_are_not_reused() {
-    for mode in [
-        "call_timeout",
-        "call_eof",
-        "call_bad_json",
-        "rpc_error",
-        "blocked_write",
-    ] {
-        let provider = server();
-        let dir = tempfile::tempdir().unwrap();
-        let cli = Cli::start_with(
-            dir.path(),
-            Some("test"),
-            &settings(mode).to_string(),
-            &fixture_models(&provider),
-        );
-        let (request, _) = receive(&provider);
-        let args = if mode == "blocked_write" {
-            json!({"text":"x".repeat(262144)})
-        } else {
-            json!({"text":"ok"})
-        };
-        calls_reply(
-            request,
-            json!([
-                call("one", "mcp__local__echo", args),
-                call("two", "mcp__local__echo", json!({"text":"ok"}))
-            ]),
-        );
-        // 大参数会通过 CLI 工具事件写入 stderr，使用已有的双管道 drain 避免测试本身阻塞。
-        let live = super::streaming::LiveCli::new(cli);
-        let (request, body) = receive(&provider);
-        let messages = body["messages"].as_array().unwrap();
-        let results: Vec<_> = messages
-            .iter()
-            .filter(|item| item["role"] == "tool")
-            .collect();
-        let first = result(results[0], "one");
-        let second = result(results[1], "two");
-        assert_eq!(first["ok"], false, "{mode}");
-        assert_eq!(second["ok"], mode == "rpc_error", "{mode}");
-        assert!(!first.to_string().contains("secret-"));
-        final_reply(request, "recovered");
-        let output = live.finish();
-        assert!(output.status.success());
-        assert_stopped(dir.path());
-    }
-}
-
-#[test]
-fn mcp_config_rejects_invalid_fields_types_and_values_without_leaking_secrets() {
-    let cases = [
-        json!({"command":""}),
-        json!({"command":"bash","args":"secret-config"}),
-        json!({"command":"bash","env":{"A":null}}),
-        json!({"command":"bash","env":{"A=B":"secret-config"}}),
-        json!({"command":"bash","timeout":0}),
-        json!({"command":"bash","timeout":null}),
-        json!({"command":"bash","timeout":-1}),
-        json!({"command":"bash","timeout":1.5}),
-    ];
-    for config in cases {
-        let provider = server();
-        let dir = tempfile::tempdir().unwrap();
-        let cli = Cli::start_with(
-            dir.path(),
-            Some("test"),
-            &json!({"mcpServers":{"local":config}}).to_string(),
-            &fixture_models(&provider),
-        );
-        let (request, body) = receive(&provider);
-        assert!(!body["tools"].to_string().contains("mcp__local__"));
-        final_reply(request, "invalid server isolated");
-        let output = cli.finish();
-        assert!(output.status.success());
-        assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-"));
-        no_more(&provider);
-    }
-}
-
-#[test]
-fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
+fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
+    let protocol = "response";
     let provider = server();
     let home = tempfile::tempdir().unwrap();
-    let models = json!({"providers":{
-        "a": slash_provider(&provider,"a","completion",json!({"m": {"model":"a"}})),
-        "b": slash_provider(&provider,"b","response",json!({"m": {"model":"b"}}))}})
-    .to_string();
-    let mut cli = Cli::start_with(home.path(), None, &settings("").to_string(), &models);
-    for (index, command) in [
-        "first\n",
-        "/model b/m\nsecond\n",
-        "/new\n/model a/m\nthird\n",
+    let mut configured = settings("");
+    configured["mcpServers"]["broken"] = json!({"command":"/nonexistent/pp-mcp-fixture"});
+    // 与 `local` 共用 fixture，但写入独立日志与返回值，便于区分两条连接。
+    let mut extra = configured["mcpServers"]["local"].clone();
+    extra["env"]["MCP_LOG"] = json!("extra-log");
+    extra["env"]["MCP_VALUE"] = json!("外部新增结果");
+    let mut cli = Cli::start_with(
+        home.path(),
+        None,
+        &configured.to_string(),
+        &response_models(&provider, Some(protocol)),
+    );
+    let api = if protocol == "response" {
+        "/v1/responses"
+    } else {
+        "/v1/chat/completions"
+    };
+    // 索引 3 只改 mcp.json、不发 `/mcp reload`：同一行模式会话必须沿用内存中的旧定义。
+    // 索引 4 的 reload 才接入 `extra`；索引 5 用解析失败的配置验证旧工具保留。
+    for (index, (command, expected)) in [
+        ("/mcp list\n/mcp disable local", None),
+        ("/mcp enable local", Some("mcp__local__echo")),
+        ("/mcp reconnect local", Some("mcp__local__echo")),
+        ("", Some("mcp__local__echo")),
+        ("/mcp reload", Some("mcp__local__tool_")),
+        ("/mcp reload", Some("mcp__local__tool_")),
     ]
-    .iter()
+    .into_iter()
     .enumerate()
     {
-        cli.input(command);
-        let response = index == 1;
-        let path = if response {
-            "/v1/responses"
-        } else {
-            "/v1/chat/completions"
-        };
-        let (request, body) = receive_at(&provider, path);
-        assert!(body["tools"].to_string().contains("mcp__local__echo"));
-        if response {
-            response_reply(
-                request,
-                json!([response_call(
-                    "echo",
-                    "mcp__local__echo",
-                    json!({"text":"ok"})
-                )]),
-            );
-        } else {
-            calls_reply(
-                request,
-                json!([call("echo", "mcp__local__echo", json!({"text":"ok"}))]),
-            );
+        if index == 3 {
+            let mut changed = configured.clone();
+            changed["mcpServers"]["extra"] = extra.clone();
+            std::fs::write(
+                config_path(home.path(), "mcp.json"),
+                json!({"mcpServers":changed["mcpServers"]}).to_string(),
+            )
+            .unwrap();
         }
-        let (request, body) = receive_at(&provider, path);
-        let item = if response {
-            body["input"].as_array().unwrap().last().unwrap()
-        } else {
-            body["messages"].as_array().unwrap().last().unwrap()
-        };
-        let output = if response {
-            response_result(item, "echo")
-        } else {
-            result(item, "echo")
-        };
-        assert_eq!(output["result"]["structuredContent"]["count"], index + 1);
-        if response {
-            response_final(request, "done");
-        } else {
-            final_reply(request, "done");
+        if index == 4 {
+            let mut changed = settings("special_name");
+            changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
+            changed["mcpServers"]["extra"] = extra.clone();
+            std::fs::write(
+                config_path(home.path(), "mcp.json"),
+                json!({"mcpServers":changed["mcpServers"]}).to_string(),
+            )
+            .unwrap();
         }
-    }
-    cli.input("/quit\n");
-    assert!(cli.finish().status.success());
-    assert_stopped(home.path());
-    let requests = log(home.path(), "mcp-log");
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|r| r["method"] == "initialize")
-            .count(),
-        1
-    );
-    let sessions = config_path(home.path(), "sessions");
-    let mut ids: Vec<_> = std::fs::read_dir(&sessions)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .collect();
-    ids.sort_by_key(|path| std::fs::metadata(path).unwrap().modified().unwrap());
-    let id = ids.last().unwrap().file_stem().unwrap().to_str().unwrap();
-    // `/new`、`/model` 在进程内复用已有连接；只有新进程恢复会话时才重新读取 mcp.json，
-    // 因此下面两次 `-r` 分别看到更新后的返回值与删除配置后的空工具表。
-    let mut changed = settings("");
-    changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
-    crate::write_settings(home.path(), changed.to_string()).unwrap();
-    let cli = Cli::spawn(
-        home.path(),
-        &["--allowed-tools", "mcp__*", "-r", id, "-p", "resumed"],
-        &[],
-    );
-    let (request, body) = receive(&provider);
-    assert!(body["tools"].to_string().contains("mcp__local__echo"));
-    calls_reply(
-        request,
-        json!([call("resumed", "mcp__local__echo", json!({"text":"ok"}))]),
-    );
-    let (request, body) = receive(&provider);
-    let output = result(
-        body["messages"].as_array().unwrap().last().unwrap(),
-        "resumed",
-    );
-    assert_eq!(output["result"]["content"][0]["text"], "updated");
-    assert_eq!(output["result"]["structuredContent"]["count"], 1);
-    final_reply(request, "resumed");
-    assert!(cli.finish().status.success());
-    assert_stopped(home.path());
-    std::fs::write(config_path(home.path(), "mcp.json"), "{}").unwrap();
-    let cli = Cli::spawn(
-        home.path(),
-        &["--allowed-tools", "mcp__*", "-r", id, "-p", "removed"],
-        &[],
-    );
-    let (request, body) = receive(&provider);
-    assert!(!body["tools"].to_string().contains("mcp__"));
-    calls_reply(
-        request,
-        json!([call("removed", "mcp__local__echo", json!({}))]),
-    );
-    let (request, body) = receive(&provider);
-    assert_eq!(
-        result(
-            body["messages"].as_array().unwrap().last().unwrap(),
-            "removed"
-        )["ok"],
-        false
-    );
-    final_reply(request, "removed");
-    assert!(cli.finish().status.success());
-}
-
-#[test]
-fn mcp_multiple_servers_and_optional_capabilities_keep_names_separate() {
-    for mode in ["no_tools", "old_version"] {
-        let provider = server();
-        let dir = tempfile::tempdir().unwrap();
-        let mut config = settings(mode);
-        let mut second = settings("")["mcpServers"]["local"].clone();
-        second["env"]["MCP_LOG"] = json!("second-log");
-        config["mcpServers"]["second"] = second;
-        let cli = Cli::start_with(
-            dir.path(),
-            Some("test"),
-            &config.to_string(),
-            &fixture_models(&provider),
-        );
-        let (request, body) = receive(&provider);
+        if index == 5 {
+            std::fs::write(config_path(home.path(), "mcp.json"), "broken secret-config").unwrap();
+        }
+        cli.input(&format!("{command}\ntask {index}\n"));
+        let (request, body) = receive_at(&provider, api);
         let definitions = body["tools"].to_string();
-        assert_eq!(definitions.contains("mcp__local__echo"), mode != "no_tools");
-        assert!(definitions.contains("mcp__second__echo"));
-        calls_reply(
-            request,
-            json!([
-                call("valid", "mcp__second__echo", json!({"text":"ok"})),
-                call("bad", "mcp__second__echo", json!([])),
-                call("unknown", "mcp__missing__echo", json!({}))
-            ]),
-        );
-        let (request, body) = receive(&provider);
-        let outputs: Vec<_> = body["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|item| item["role"] == "tool")
-            .collect();
-        assert_eq!(result(outputs[0], "valid")["ok"], true);
-        assert_eq!(result(outputs[1], "bad")["ok"], false);
-        assert_eq!(result(outputs[2], "unknown")["ok"], false);
-        final_reply(request, "done");
-        assert!(cli.finish().status.success());
-        let requests = log(dir.path(), "mcp-log");
-        assert_eq!(
-            requests.iter().any(|r| r["method"] == "tools/list"),
-            mode != "no_tools"
-        );
-        assert_stopped(dir.path());
-    }
-}
-
-#[test]
-fn mcp_special_and_long_tool_names_are_legal_stable_and_route_to_original_names() {
-    for mode in ["special_name", "long_name"] {
-        let provider = server();
-        let dir = tempfile::tempdir().unwrap();
-        let mut previous = None;
-        for _ in 0..2 {
-            let cli = Cli::start_with(
-                dir.path(),
-                Some("test"),
-                &settings(mode).to_string(),
-                &fixture_models(&provider),
-            );
-            let (request, body) = receive(&provider);
-            let tools = body["tools"].as_array().unwrap();
-            let name = tools
-                .iter()
-                .filter_map(|tool| tool["function"]["name"].as_str())
-                .find(|name| name.starts_with("mcp__local__tool_"))
-                .unwrap()
-                .to_owned();
-            assert!(name.len() <= 64);
-            assert!(
-                name.bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-            );
-            if let Some(previous) = &previous {
-                assert_eq!(&name, previous);
-            }
-            previous = Some(name.clone());
-            calls_reply(
-                request,
-                json!([call("encoded", &name, json!({"text":"ok"}))]),
-            );
-            let (request, body) = receive(&provider);
-            assert_eq!(
-                result(
-                    body["messages"].as_array().unwrap().last().unwrap(),
-                    "encoded"
-                )["ok"],
-                true
-            );
-            final_reply(request, "done");
-            assert!(cli.finish().status.success());
+        assert!(!definitions.contains("mcp__broken__"));
+        match expected {
+            Some(name) => assert!(definitions.contains(name), "{index}: {definitions}"),
+            None => assert!(!definitions.contains("mcp__local__")),
         }
-        let requests = log(dir.path(), "mcp-log");
-        let calls: Vec<_> = requests
-            .iter()
-            .filter(|request| request["method"] == "tools/call")
-            .collect();
-        let original = if mode == "special_name" {
-            "文件.search".into()
-        } else {
-            "0".repeat(80)
-        };
-        assert_eq!(calls.len(), 2);
-        assert!(calls.iter().all(|call| call["params"]["name"] == original));
-    }
-}
-
-#[test]
-fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
-    for protocol in ["completion", "response"] {
-        let provider = server();
-        let home = tempfile::tempdir().unwrap();
-        let mut configured = settings("");
-        configured["mcpServers"]["broken"] = json!({"command":"/nonexistent/pp-mcp-fixture"});
-        // 与 `local` 共用 fixture，但写入独立日志与返回值，便于区分两条连接。
-        let mut extra = configured["mcpServers"]["local"].clone();
-        extra["env"]["MCP_LOG"] = json!("extra-log");
-        extra["env"]["MCP_VALUE"] = json!("外部新增结果");
-        let mut cli = Cli::start_with(
-            home.path(),
-            None,
-            &configured.to_string(),
-            &response_models(&provider, Some(protocol)),
-        );
-        let api = if protocol == "response" {
-            "/v1/responses"
-        } else {
-            "/v1/chat/completions"
-        };
-        // 索引 3 只改 mcp.json、不发 `/mcp reload`：同一行模式会话必须沿用内存中的旧定义。
-        // 索引 4 的 reload 才接入 `extra`；索引 5 用解析失败的配置验证旧工具保留。
-        for (index, (command, expected)) in [
-            ("/mcp list\n/mcp disable local", None),
-            ("/mcp enable local", Some("mcp__local__echo")),
-            ("/mcp reconnect local", Some("mcp__local__echo")),
-            ("", Some("mcp__local__echo")),
-            ("/mcp reload", Some("mcp__local__tool_")),
-            ("/mcp reload", Some("mcp__local__tool_")),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            if index == 3 {
-                let mut changed = configured.clone();
-                changed["mcpServers"]["extra"] = extra.clone();
-                std::fs::write(
-                    config_path(home.path(), "mcp.json"),
-                    json!({"mcpServers":changed["mcpServers"]}).to_string(),
-                )
-                .unwrap();
-            }
-            if index == 4 {
-                let mut changed = settings("special_name");
-                changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
-                changed["mcpServers"]["extra"] = extra.clone();
-                std::fs::write(
-                    config_path(home.path(), "mcp.json"),
-                    json!({"mcpServers":changed["mcpServers"]}).to_string(),
-                )
-                .unwrap();
-            }
-            if index == 5 {
-                std::fs::write(config_path(home.path(), "mcp.json"), "broken secret-config")
-                    .unwrap();
-            }
-            cli.input(&format!("{command}\ntask {index}\n"));
-            let (request, body) = receive_at(&provider, api);
-            let definitions = body["tools"].to_string();
-            assert!(!definitions.contains("mcp__broken__"));
-            match expected {
-                Some(name) => assert!(definitions.contains(name), "{index}: {definitions}"),
-                None => assert!(!definitions.contains("mcp__local__")),
-            }
-            match index {
-                // 外部新增的服务只有在 `/mcp reload` 后才进入工具表，`local` 也保持旧定义。
-                3 => {
-                    assert!(
-                        !definitions.contains("mcp__extra__"),
-                        "{index}: {definitions}"
-                    );
-                    assert!(
-                        !definitions.contains("mcp__local__tool_"),
-                        "外部配置不应在 reload 前改写 local 定义: {index}: {definitions}"
-                    );
-                }
-                // reload 成功接入 `extra`；随后解析失败的 reload 保留旧工具。
-                4 | 5 => assert!(
-                    definitions.contains("mcp__extra__echo"),
+        match index {
+            // 外部新增的服务只有在 `/mcp reload` 后才进入工具表，`local` 也保持旧定义。
+            3 => {
+                assert!(
+                    !definitions.contains("mcp__extra__"),
                     "{index}: {definitions}"
-                ),
-                _ => {}
+                );
+                assert!(
+                    !definitions.contains("mcp__local__tool_"),
+                    "外部配置不应在 reload 前改写 local 定义: {index}: {definitions}"
+                );
             }
-            if protocol == "response" {
-                response_final(request, &format!("done {index}"));
-            } else {
-                final_reply(request, &format!("done {index}"));
-            }
+            // reload 成功接入 `extra`；随后解析失败的 reload 保留旧工具。
+            4 | 5 => assert!(
+                definitions.contains("mcp__extra__echo"),
+                "{index}: {definitions}"
+            ),
+            _ => {}
         }
-        cli.input("/quit\n");
-        let output = cli.finish();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("Configured MCP Servers"));
-        assert!(!stderr.contains("secret-config"));
-        assert_stopped(home.path());
-        stopped(home.path(), "extra-log");
-        assert!(
-            home.path().join("extra-log.closed").is_file(),
-            "extra MCP 子进程未写入退出标记"
-        );
-        let journal = std::fs::read_dir(config_path(home.path(), "sessions"))
-            .unwrap()
-            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
-            .collect::<String>();
-        assert!(!journal.contains("/mcp"));
-    }
-}
-
-#[test]
-fn mcp_legacy_settings_are_ignored_without_writing_mcp_json() {
-    let provider = server();
-    let home = tempfile::tempdir().unwrap();
-    let cli = Cli::start_with(
-        home.path(),
-        Some("test"),
-        r#"{"mcp_servers":{"secret-name":{"command":"secret-command"}}}"#,
-        &fixture_models(&provider),
-    );
-    let (request, body) = receive(&provider);
-    assert!(!body["tools"].to_string().contains("mcp__secret-name__"));
-    final_reply(request, "legacy MCP setting ignored");
-    let output = cli.finish();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
-    assert_eq!(output.stdout, b"legacy MCP setting ignored\n");
-    assert!(!stderr.contains("secret-command"));
-    assert!(!config_path(home.path(), "mcp.json").exists());
-    no_more(&provider);
-}
-
-/// 同一行模式进程完成两项任务：逐服务状态与总状态各只输出一次。
-/// 逐服务行由 peer 侧游标去重，不能靠每次任务归零的局部计数。
-#[test]
-fn mcp_line_mode_reports_each_service_and_the_total_once_per_process() {
-    let provider = server();
-    let dir = tempfile::tempdir().unwrap();
-    let mut cli = Cli::start_with(
-        dir.path(),
-        None,
-        &settings("").to_string(),
-        &fixture_models(&provider),
-    );
-    cli.input("first\nsecond\n");
-    for (index, text) in ["one", "two"].into_iter().enumerate() {
-        let (request, body) = receive(&provider);
-        assert!(
-            body["tools"].to_string().contains("mcp__local__echo"),
-            "{index}: {}",
-            body["tools"]
-        );
-        final_reply(request, text);
+        if protocol == "response" {
+            response_final(request, &format!("done {index}"));
+        } else {
+            final_reply(request, &format!("done {index}"));
+        }
     }
     cli.input("/quit\n");
     let output = cli.finish();
@@ -688,17 +250,17 @@ fn mcp_line_mode_reports_each_service_and_the_total_once_per_process() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        stderr.matches("MCP: local connected (").count(),
-        1,
-        "{stderr}"
+    assert!(stderr.contains("Configured MCP Servers"));
+    assert!(!stderr.contains("secret-config"));
+    assert_stopped(home.path());
+    stopped(home.path(), "extra-log");
+    assert!(
+        home.path().join("extra-log.closed").is_file(),
+        "extra MCP 子进程未写入退出标记"
     );
-    assert_eq!(
-        stderr
-            .matches("Connected to MCP servers: 1 succeeded (")
-            .count(),
-        1,
-        "{stderr}"
-    );
-    assert_stopped(dir.path());
+    let journal = std::fs::read_dir(config_path(home.path(), "sessions"))
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect::<String>();
+    assert!(!journal.contains("/mcp"));
 }

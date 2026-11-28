@@ -174,7 +174,7 @@ impl Client {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::*;
     use crate::uri::path_to_uri;
     use std::time::{Duration, Instant};

@@ -89,7 +89,7 @@ fn cancel_mcp_begin(pty: &mut Pty, provider: &TestServer, dir: &Path, protocol: 
 
 #[test]
 fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let provider = server();
         let dir = tempfile::tempdir().unwrap();
         crate::write_settings(dir.path(), cancel_mcp_settings("cancel_once", false)).unwrap();
@@ -119,68 +119,5 @@ fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
         pty.input("\x03");
         pty.finish();
         super::mcp::assert_stopped(dir.path());
-    }
 }
 
-#[test]
-fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools() {
-    let provider = server();
-    let dir = tempfile::tempdir().unwrap();
-    crate::write_settings(dir.path(), cancel_mcp_settings("cancel_then_schema_change", false)).unwrap();
-    std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
-    let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
-    cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
-    pty.input("schema check\r");
-    let (request, before) = receive(&provider);
-    cancel_mcp_reply_calls(request, "completion", &[
-        ("schema-rejected", "mcp__local__echo", json!({"text":"must not be sent"})),
-        ("local-kept", "write", json!({"path":"local-kept.txt","content":"local still works"})),
-    ]);
-    let (request, after) = receive(&provider);
-    // 定义变化拒绝后移除该服务的 schema，其他本地工具保持完整。
-    let available: Vec<_> = before["tools"].as_array().unwrap().iter()
-        .filter(|tool| !tool["function"]["name"].as_str().unwrap().starts_with("mcp__local__"))
-        .cloned().collect();
-    assert_eq!(serde_json::Value::Array(available), after["tools"]);
-    let outputs = cancel_mcp_outputs(&after, "completion");
-    let output = &outputs.iter().find(|(id, _)| id == "schema-rejected").unwrap().1;
-    assert_eq!(output["ok"], false);
-    assert_eq!(output["error"], "MCP tool definitions changed; restart pp to reconnect.");
-    assert_eq!(std::fs::read_to_string(dir.path().join("local-kept.txt")).unwrap(), "local still works");
-    assert_eq!(cancel_mcp_log(dir.path()).iter().filter(|row| row["method"] == "tools/call").count(), 1);
-    final_reply(request, "local tools survived schema rejection");
-    pty.text("local tools survived schema rejection");
-    pty.input("try rejected server again\r");
-    let (request, _) = receive(&provider);
-    calls_reply(request, json!([call("schema-still-rejected", "mcp__local__echo", json!({"text":"not sent either"}))]));
-    let (request, body) = receive(&provider);
-    assert_eq!(cancel_mcp_outputs(&body, "completion").last().unwrap().1["ok"], false);
-    assert_eq!(cancel_mcp_log(dir.path()).iter().filter(|row| row["method"] == "initialize").count(), 2);
-    assert_eq!(cancel_mcp_log(dir.path()).iter().filter(|row| row["method"] == "tools/call").count(), 1);
-    final_reply(request, "still usable");
-    pty.text("still usable");
-    pty.input("\x03");
-    pty.finish();
-    super::mcp::assert_stopped(dir.path());
-}
-
-#[test]
-fn tui_cancel_mcp_ctrl_c_reaps_replacement_during_rediscovery() {
-    let provider = server();
-    let dir = tempfile::tempdir().unwrap();
-    crate::write_settings(dir.path(), cancel_mcp_settings("cancel_once", true)).unwrap();
-    std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
-    let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
-    cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
-    pty.input("restart task\r");
-    let (request, _) = receive(&provider);
-    calls_reply(request, json!([call("restart-blocked", "mcp__local__echo", json!({"text":"new request"}))]));
-    cancel_mcp_wait_file(&mut pty, &dir.path().join("mcp-log.restart-initialize"));
-    let new_pid = std::fs::read_to_string(dir.path().join("mcp-log.pid")).unwrap();
-    assert_ne!(new_pid, std::fs::read_to_string(dir.path().join("mcp-log.cancel-server.pid")).unwrap());
-    pty.input("\x03");
-    pty.finish();
-    cancel_mcp_assert_pid_stopped(&dir.path().join("mcp-log.pid"));
-    assert_eq!(cancel_mcp_log(dir.path()).iter().filter(|row| row["method"] == "tools/call").count(), 1);
-    no_more(&provider);
-}

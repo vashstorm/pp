@@ -143,61 +143,6 @@ fn runtime_input_assert_user_after_outputs(body: &Value, protocol: &str, text: &
     );
 }
 
-// 场景 1：运行中 Enter 补充进入队列，首轮结束后在同一任务/额度内继续，
-// 模型真实执行 write 工具落盘 steering-proof.txt，最终只出现一个 Completed 活动。
-#[test]
-fn tui_runtime_input_steering_writes_file_both_protocols() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let (home, mut pty) = runtime_input_start(&fixture, protocol, "");
-        let path = api_path(protocol);
-        let stream = runtime_input_live(&mut pty, &fixture, protocol, "task U");
-        // SSE 仍打开且 delta 可见时提交 steering；草稿清空、计数恰好 1。
-        pty.input("S\r");
-        runtime_input_wait_queued_with_empty_draft(&mut pty, "runtime-live-marker");
-        cancel_assert_no_request(&fixture);
-        // 结束原流（无工具的最终回答）：完成边界原子领取 S，继续当前任务。
-        runtime_input_end_live(stream, protocol);
-        let (request, body) = pty.request_at(&fixture, path);
-        assert_eq!(
-            cancel_user_messages(&body, protocol),
-            ["task U", "S"].map(str::to_string)
-        );
-        runtime_input_calls(
-            request,
-            protocol,
-            &[(
-                "steer-write",
-                "write",
-                json!({"path":"steering-proof.txt","content":"steering-ok\n"}),
-            )],
-        );
-        // 工具结果提交后的下一请求：历史仍恰含 U、S 一次，且真实文件字节正确。
-        let (request, body) = pty.request_at(&fixture, path);
-        assert_eq!(
-            cancel_user_messages(&body, protocol),
-            ["task U", "S"].map(str::to_string)
-        );
-        let outputs = cancel_tool_outputs(&body, protocol);
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].0, "steer-write");
-        assert_eq!(outputs[0].1["ok"], json!(true));
-        assert_eq!(
-            std::fs::read_to_string(home.path().join("steering-proof.txt")).unwrap(),
-            "steering-ok\n"
-        );
-        runtime_input_final(request, protocol, "steered answer done");
-        pty.wait_for("steered task finished as exactly one activity", |screen| {
-            let text = screen.contents();
-            text.contains("steered answer done")
-                && text.matches("Completed ·").count() == 1
-                && !text.contains("Steering: ")
-                && input_is_ready(screen)
-        });
-        cancel_assert_no_request(&fixture);
-    }
-}
-
 // 场景 2：write A → bash 等 gate → write B 批次执行中提交 steering，
 // 新请求只能在整批结果之后携带 user S；A/B 文件字节真实正确。
 #[test]

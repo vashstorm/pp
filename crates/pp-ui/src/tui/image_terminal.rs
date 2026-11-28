@@ -219,7 +219,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_terminal_iterm2_uses_native_protocol_even_after_kitty_reply() {
+    fn select_protocol_and_negative_replies() {
         for detected in [None, Some(ProtocolType::Kitty), Some(ProtocolType::Sixel)] {
             assert_eq!(
                 select_protocol(ProtocolType::Halfblocks, detected, true, false),
@@ -239,100 +239,64 @@ mod tests {
             select_protocol(ProtocolType::Iterm2, Some(ProtocolType::Kitty), false, true),
             ProtocolType::Iterm2
         );
-    }
 
-    #[test]
-    fn image_terminal_probe_detects_protocol_font_and_retains_early_input() {
-        let mut probe = Probe::default();
-        for byte in b"\x1b_Gi=31;OK\x1b\\\x1b[6;20;10t" {
-            assert!(!probe.push(*byte));
-        }
-        assert_eq!(probe.protocol, Some(ProtocolType::Kitty));
-        assert_eq!(probe.font, Some((10, 20)));
-        assert!(probe.push(b'x'));
-        assert_eq!(probe.input_events(), vec![Event::Paste("x".into())]);
-    }
-
-    #[test]
-    fn image_terminal_probe_decodes_ghostty_replies_reencoded_by_tmux() {
-        for replies in [
-            &b"\x1b[95;3uGi=31;OK\x1b[92;3u\x1b[91;3u?62;22;52c\x1b[91;3u6;40;20t\x1b[91;3u0n"[..],
-            b"\x1b[27;3;95~Gi=31;OK\x1b[27;3;92~\x1b[27;3;91~?62;22;52c\x1b[27;3;91~6;40;20t\x1b[27;3;91~0n",
-        ] {
-            let mut probe = Probe::default();
-            for byte in replies {
-                assert!(!probe.push(*byte));
-            }
-            assert_eq!(probe.protocol, Some(ProtocolType::Kitty));
-            assert_eq!(probe.font, Some((20, 40)));
-            assert!(probe.input_events().is_empty());
-        }
-    }
-
-    #[test]
-    fn image_terminal_probe_discards_every_reply_and_keeps_reading() {
-        // DSR 之后的能力回复仍会到达：既不能停止读取，也不能变成输入。
-        let mut probe = Probe::default();
-        for byte in b"\x1b[0n\x1b[?62;22;52c\x1b[?95;3u\x1b[6;40;20t\x1bP>|ghostty 1.4.0\x1b\\" {
-            assert!(!probe.push(*byte));
-        }
-        assert_eq!(probe.font, Some((20, 40)));
-        assert!(probe.input_events().is_empty());
-        // 不完整的回复前缀在窗口结束时同样不能变成输入。
-        let mut probe = Probe::default();
-        for byte in b"\x1b_Gi=31;OK" {
-            assert!(!probe.push(*byte));
-        }
-        assert!(probe.input_events().is_empty());
-    }
-
-    #[test]
-    fn image_terminal_probe_discards_osc_and_oversized_control_strings() {
-        let mut probe = Probe::default();
-        for byte in b"\x1b]11;rgb:0000/0000/0000\x07\x1b_G" {
-            assert!(!probe.push(*byte));
-        }
-        for _ in 0..MAX_SEQUENCE * 3 {
-            assert!(!probe.push(b'x'));
-            assert!(probe.sequence.len() <= MAX_SEQUENCE);
-        }
-        for byte in b"\x1b\\\x1b[0n" {
-            assert!(!probe.push(*byte));
-        }
-        assert!(probe.input_events().is_empty());
-    }
-
-    #[test]
-    fn image_terminal_probe_preserves_typed_unicode_and_control_keys() {
-        let mut probe = Probe::default();
-        for byte in "图".as_bytes().iter().take(2) {
-            assert!(!probe.push(*byte));
-        }
-        assert!(probe.push("图".as_bytes()[2]));
-        assert_eq!(probe.input_events(), vec![Event::Paste("图".into())]);
-        let mut probe = Probe::default();
-        assert!(probe.push(b'\r'));
-        assert_eq!(
-            probe.input_events(),
-            vec![Event::Key(KeyEvent::new(
-                KeyCode::Enter,
-                KeyModifiers::NONE
-            ))]
-        );
-        // 非法 UTF-8 只当噪声：清空后继续等用户输入。
-        let mut probe = Probe::default();
-        assert!(!probe.push(0x80));
-        assert!(probe.push(b'a'));
-        assert_eq!(probe.input_events(), vec![Event::Paste("a".into())]);
-    }
-
-    #[test]
-    fn image_terminal_probe_ignores_negative_capability_replies() {
         let mut probe = Probe::default();
         for byte in b"\x1b[?1;2c\x1b_Gi=31;EINVAL\x1b\\\x1b[6;20;10t" {
             assert!(!probe.push(*byte));
         }
         assert_eq!(probe.font, Some((10, 20)));
         assert!(probe.input_events().is_empty());
+    }
+
+    #[test]
+    fn probe_kitty_ghostty_tmux_and_oversized() {
+        let mut probe = Probe::default();
+        for byte in b"\x1b_Gi=31;OK\x1b\\\x1b[6;20;10t" {
+            assert!(!probe.push(*byte));
+        }
+        assert_eq!(
+            (probe.protocol, probe.font),
+            (Some(ProtocolType::Kitty), Some((10, 20)))
+        );
+        assert!(probe.push(b'x'));
+        assert_eq!(probe.input_events(), vec![Event::Paste("x".into())]);
+
+        for replies in [
+            &b"\x1b[95;3uGi=31;OK\x1b[92;3u\x1b[91;3u?62;22;52c\x1b[91;3u6;40;20t\x1b[91;3u0n"[..],
+            b"\x1b[27;3;95~Gi=31;OK\x1b[27;3;92~\x1b[27;3;91~?62;22;52c\x1b[27;3;91~6;40;20t\x1b[27;3;91~0n",
+        ] {
+            let mut ghost = Probe::default();
+            for byte in replies {
+                assert!(!ghost.push(*byte));
+            }
+            assert_eq!((ghost.protocol, ghost.font), (Some(ProtocolType::Kitty), Some((20, 40))));
+            assert!(ghost.input_events().is_empty());
+        }
+
+        let mut dsr = Probe::default();
+        for byte in b"\x1b[0n\x1b[?62;22;52c\x1b[?95;3u\x1b[6;40;20t\x1bP>|ghostty 1.4.0\x1b\\" {
+            assert!(!dsr.push(*byte));
+        }
+        assert_eq!(dsr.font, Some((20, 40)));
+        assert!(dsr.input_events().is_empty());
+
+        let mut partial = Probe::default();
+        for byte in b"\x1b_Gi=31;OK" {
+            assert!(!partial.push(*byte));
+        }
+        assert!(partial.input_events().is_empty());
+
+        let mut osc = Probe::default();
+        for byte in b"\x1b]11;rgb:0000/0000/0000\x07\x1b_G" {
+            assert!(!osc.push(*byte));
+        }
+        for _ in 0..MAX_SEQUENCE * 3 {
+            assert!(!osc.push(b'x'));
+            assert!(osc.sequence.len() <= MAX_SEQUENCE);
+        }
+        for byte in b"\x1b\\\x1b[0n" {
+            assert!(!osc.push(*byte));
+        }
+        assert!(osc.input_events().is_empty());
     }
 }

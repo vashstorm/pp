@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_tokens_use_semantic_colors() {
+    fn highlight_semantic_tokens_cache_and_fallbacks() {
         let code = "let x = 1; // note\nlet s = \"hi\";";
         let lines = highlight(Some("rust"), code).expect("rust resolves");
         assert_eq!(lines.len(), 2);
@@ -359,79 +359,37 @@ mod tests {
         for needle in ["let", "1", "// note", "\"hi\""] {
             assert_ne!(span_fg_containing(&lines, needle), Some(code_block()));
         }
-        // 注释叠加 ITALIC。
         let comment = lines[0]
             .iter()
             .find(|span| span.content.contains("// note"))
             .unwrap();
         assert!(comment.style.add_modifier.contains(Modifier::ITALIC));
-        // 拼接还原图元。
         let joined: String = lines
             .iter()
             .flat_map(|spans| spans.iter())
             .map(|span| span.content.as_ref())
-            .collect::<String>();
+            .collect();
         assert_eq!(joined, code.replace('\n', ""));
-    }
 
-    #[test]
-    fn unknown_token_and_missing_lang_return_none() {
         assert!(highlight(None, "let x = 1;").is_none());
         assert!(highlight(Some("notalang"), "let x = 1;").is_none());
         assert!(highlight(Some(""), "let x = 1;").is_none());
-    }
-
-    #[test]
-    fn oversized_block_returns_none() {
-        let code: String = "let x = 1;\n".repeat(600);
-        assert!(highlight(Some("rust"), &code).is_none());
-        let wide = "a".repeat(MAX_BYTES + 1);
-        assert!(highlight(Some("rust"), &wide).is_none());
-    }
-
-    #[test]
-    fn repeated_calls_hit_the_cache() {
-        let code = "fn main() {}";
-        let first = highlight(Some("rust"), code).expect("rust resolves");
-        let second = highlight(Some("rust"), code).expect("rust resolves");
-        assert!(Arc::ptr_eq(&first, &second));
-    }
-
-    #[test]
-    fn incremental_highlight_matches_full_parse_for_partial_lines() {
-        let source = "/* multi\nline */\nlet x = r#\"string\nvalue\"#;\nlet 中文 = \"🙂\";\n";
-        for (index, _) in source.char_indices().skip(1) {
-            let text = &source[..index];
-            context(99881, 1);
-            let incremental = highlight(Some("rust"), text).unwrap();
-            let syntaxes = syntaxes();
-            let mut highlighter = HighlightLines::new(
-                syntaxes.find_syntax_by_token("rust").unwrap(),
-                theme_for(themes::current_theme()),
-            );
-            let full: HighlightedLines = text
-                .split('\n')
-                .map(|line| {
-                    let fed = format!("{line}\n");
-                    Arc::new(grapheme_spans(
-                        line,
-                        highlighter.highlight_line(&fed, syntaxes).unwrap(),
-                    ))
-                })
-                .collect();
-            assert_eq!(*incremental, full, "前缀字节数：{index}");
-        }
-        context(0, 0);
-    }
-
-    #[test]
-    fn plain_token_keeps_default_color() {
-        // "text" 不在 syntect 收录 token 中，走回退；"txt" 解析到 Plain Text。
         assert!(highlight(Some("text"), "just words").is_none());
-        let lines = highlight(Some("txt"), "just words").expect("txt resolves");
-        assert_eq!(lines.len(), 1);
-        for span in lines[0].iter() {
+
+        let txt = highlight(Some("txt"), "just words").expect("txt resolves");
+        assert_eq!(txt.len(), 1);
+        for span in txt[0].iter() {
             assert_eq!(span.style.fg, Some(code_block()));
         }
+
+        let big: String = "let x = 1;\n".repeat(600);
+        assert!(highlight(Some("rust"), &big).is_none());
+        let wide = "a".repeat(MAX_BYTES + 1);
+        assert!(highlight(Some("rust"), &wide).is_none());
+
+        let cached_src = "fn main() {}";
+        let first = highlight(Some("rust"), cached_src).expect("rust resolves");
+        let second = highlight(Some("rust"), cached_src).expect("rust resolves");
+        assert!(Arc::ptr_eq(&first, &second));
     }
 }

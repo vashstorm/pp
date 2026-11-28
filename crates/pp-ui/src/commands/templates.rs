@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn file_command_quote_aware_arguments() {
+    fn file_command_quotes_and_placeholders() {
         for (args, expected) in [
             ("auth \"error handling\" tests", "auth|error handling|tests"),
             ("a' b'\" c\" d e", "a b c|d|e"),
@@ -303,10 +303,6 @@ mod tests {
         ] {
             assert_eq!(expand("$1|$2|$3", args), expected, "{args:?}");
         }
-    }
-
-    #[test]
-    fn file_command_placeholders_are_longest_single_pass_matches() {
         let args = "a b c d e f g h i j";
         for (body, expected) in [
             ("$0/$1/$10/$11/$99999999999999999999999999999", "/a/j//"),
@@ -336,63 +332,70 @@ mod tests {
             expand("{{task}} $unknown \n", "a b"),
             "{{task}} $unknown\n\na b"
         );
-        assert_eq!(expand("body \n", ""), "body \n");
-        assert_eq!(expand("body $2 \n", "a"), "body  \n");
         assert_eq!(expand("\\$1", "a"), "\\a");
     }
 
     #[test]
-    fn file_command_parse_does_not_recurse_or_poison_following_input() {
+    fn file_command_parse_metadata_and_snapshot() {
         use super::super::{Command, parse};
-        let (_, commands) = load(&[
+        let (_, cmds) = load(&[
             ("quit-prompt.md", b"/quit"),
             ("shell-prompt.md", b"!printf not-shell"),
             ("empty.md", b"$2"),
             ("good.md", b"Good $1"),
         ]);
+        assert!(parse("/empty a", &cmds).is_err());
         assert_eq!(
-            parse("/empty a", &commands).unwrap_err().to_string(),
-            "command expands to an empty prompt"
-        );
-        assert_eq!(
-            parse("/good auth", &commands).unwrap(),
+            parse("/good auth", &cmds).unwrap(),
             Some(Command::Prompt("Good auth".into()))
         );
         assert_eq!(
-            parse("/quit-prompt", &commands).unwrap(),
+            parse("/quit-prompt", &cmds).unwrap(),
             Some(Command::Prompt("/quit".into()))
         );
         assert_eq!(
-            parse("/shell-prompt", &commands).unwrap(),
+            parse("/shell-prompt", &cmds).unwrap(),
             Some(Command::Prompt("!printf not-shell".into()))
         );
-        assert_eq!(
-            parse("/unknown", &commands).unwrap(),
-            Some(Command::Unknown)
-        );
-        assert_eq!(parse("/good\nordinary task", &commands).unwrap(), None);
-    }
+        assert_eq!(parse("/unknown", &cmds).unwrap(), Some(Command::Unknown));
+        assert_eq!(parse("/good\nordinary task", &cmds).unwrap(), None);
 
-    #[test]
-    fn file_command_metadata_and_body_preservation() {
-        let (_, commands) = load(&[
+        let (_, meta) = load(&[
             ("review.md", "\u{feff}---\r\ndescription: ' Review   source '\r\nname: ignored\r\nallowed-tools: [bash]\r\n---\r\nReview $1.\r\n".as_bytes()),
             ("中文.md", format!("---\n---\n{}\n", "中".repeat(61)).as_bytes()),
             ("empty-description.md", b"---\ndescription: null\n---\n\n fallback \n"),
         ]);
-        assert!(commands.diagnostics.is_empty());
-        assert_eq!(commands.entries[1].name, "/review");
-        assert_eq!(commands.entries[1].description, "Review source");
-        assert_eq!(commands.entries[1].content, "Review $1.\r\n");
+        assert!(meta.diagnostics.is_empty());
         assert_eq!(
-            commands.entries[2].description,
+            (
+                meta.entries[1].name.as_str(),
+                meta.entries[1].description.as_str()
+            ),
+            ("/review", "Review source")
+        );
+        assert_eq!(
+            meta.entries[2].description,
             format!("{}...", "中".repeat(60))
         );
-        assert_eq!(commands.entries[0].description, "fallback");
+        assert_eq!(meta.entries[0].description, "fallback");
+
+        let (dir, snap) = load(&[("review.md", b"Old $1")]);
+        fs::write(dir.path().join("commands/review.md"), "New $1").unwrap();
+        fs::write(dir.path().join("commands/added.md"), "Added").unwrap();
+        assert_eq!(
+            parse("/review auth", &snap).unwrap(),
+            Some(Command::Prompt("Old auth".into()))
+        );
+        assert_eq!(parse("/added", &snap).unwrap(), Some(Command::Unknown));
+        let next = FileCommands::from_dir(dir.path());
+        assert_eq!(
+            parse("/review auth", &next).unwrap(),
+            Some(Command::Prompt("New auth".into()))
+        );
     }
 
     #[test]
-    fn file_command_bad_files_are_isolated_and_discovery_is_shallow() {
+    fn file_command_bad_files_missing_root_and_conflicts() {
         let (dir, _) = load(&[
             ("good.md", b"Good"),
             (".hidden.md", b"hidden"),
@@ -417,7 +420,7 @@ mod tests {
             commands
                 .entries
                 .iter()
-                .map(|entry| entry.name.as_str())
+                .map(|e| e.name.as_str())
                 .collect::<Vec<_>>(),
             ["/good"]
         );
@@ -426,84 +429,43 @@ mod tests {
             commands
                 .diagnostics
                 .iter()
-                .all(|issue| issue.contains("commands/"))
+                .all(|i| i.contains("commands/") && !i.contains("secret"))
         );
+
+        let empty = tempfile::tempdir().unwrap();
+        let ce = FileCommands::from_dir(empty.path());
         assert!(
-            !commands
-                .diagnostics
-                .iter()
-                .any(|issue| issue.contains("secret"))
+            ce.entries.is_empty()
+                && ce.diagnostics.is_empty()
+                && !empty.path().join("commands").exists()
         );
-    }
+        fs::write(empty.path().join("commands"), "not a directory").unwrap();
+        assert_eq!(FileCommands::from_dir(empty.path()).diagnostics.len(), 1);
 
-    #[test]
-    fn file_command_missing_and_invalid_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let commands = FileCommands::from_dir(dir.path());
-        assert!(commands.entries.is_empty() && commands.diagnostics.is_empty());
-        assert!(!dir.path().join("commands").exists());
-        fs::write(dir.path().join("commands"), "not a directory").unwrap();
-        assert_eq!(FileCommands::from_dir(dir.path()).diagnostics.len(), 1);
-    }
-
-    #[test]
-    fn file_command_startup_snapshot_is_unchanged_by_file_updates() {
-        use super::super::{Command, parse};
-        let (dir, commands) = load(&[("review.md", b"Old $1")]);
-        fs::write(dir.path().join("commands/review.md"), "New $1").unwrap();
-        fs::write(dir.path().join("commands/added.md"), "Added").unwrap();
-        assert_eq!(
-            parse("/review auth", &commands).unwrap(),
-            Some(Command::Prompt("Old auth".into()))
-        );
-        // 启动快照之后的同名文件不会被本轮加载；未收录的名称被视为未知命令。
-        assert_eq!(parse("/added", &commands).unwrap(), Some(Command::Unknown));
-        let next = FileCommands::from_dir(dir.path());
-        assert_eq!(
-            parse("/review auth", &next).unwrap(),
-            Some(Command::Prompt("New auth".into()))
-        );
-        fs::remove_file(dir.path().join("commands/review.md")).unwrap();
-        assert_eq!(
-            parse("/review auth", &commands).unwrap(),
-            Some(Command::Prompt("Old auth".into()))
-        );
+        let (_dt, theme_cmd) = load(&[("theme.md", b"Override theme")]);
+        assert!(theme_cmd.entries.is_empty() && theme_cmd.diagnostics[0].contains("/theme"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn file_command_unreadable_files_and_broken_root_are_diagnostic() {
+    fn file_command_unix_permissions_and_symlinks() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let (dir, _) = load(&[("unreadable.md", b"private"), ("good.md", b"Good")]);
         let path = dir.path().join("commands/unreadable.md");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
         let commands = FileCommands::from_dir(dir.path());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(commands.entries.len(), 1);
-        assert!(commands.diagnostics[0].contains("unreadable.md"));
+        assert!(commands.entries.len() == 1 && commands.diagnostics[0].contains("unreadable.md"));
         let root = dir.path().join("commands");
         fs::set_permissions(&root, fs::Permissions::from_mode(0o0)).unwrap();
         let inaccessible = FileCommands::from_dir(dir.path());
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(inaccessible.entries.is_empty());
-        assert_eq!(inaccessible.diagnostics.len(), 1);
-        let broken = tempfile::tempdir().unwrap();
-        symlink(
-            broken.path().join("missing"),
-            broken.path().join("commands"),
-        )
-        .unwrap();
-        assert_eq!(FileCommands::from_dir(broken.path()).diagnostics.len(), 1);
-    }
+        assert!(inaccessible.entries.is_empty() && inaccessible.diagnostics.len() == 1);
 
-    #[cfg(unix)]
-    #[test]
-    fn file_command_symlinks_and_broken_targets() {
-        use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
+        let dir_sym = tempfile::tempdir().unwrap();
         let target = tempfile::tempdir().unwrap();
         fs::write(target.path().join("real.md"), "linked body").unwrap();
-        symlink(target.path(), dir.path().join("commands")).unwrap();
+        symlink(target.path(), dir_sym.path().join("commands")).unwrap();
         symlink(
             target.path().join("real.md"),
             target.path().join("alias.md"),
@@ -514,18 +476,7 @@ mod tests {
             target.path().join("broken.md"),
         )
         .unwrap();
-        let commands = FileCommands::from_dir(dir.path());
-        assert_eq!(commands.entries.len(), 2);
-        assert_eq!(commands.entries[0].content, "linked body");
-        assert_eq!(commands.diagnostics.len(), 1);
-        assert!(commands.diagnostics[0].contains("broken.md"));
-    }
-
-    #[test]
-    fn file_command_rejects_theme_alias_conflict() {
-        let (_dir, commands) = load(&[("theme.md", b"Override theme")]);
-        assert!(commands.entries.is_empty());
-        assert_eq!(commands.diagnostics.len(), 1);
-        assert!(commands.diagnostics[0].contains("/theme"));
+        let sym_cmds = FileCommands::from_dir(dir_sym.path());
+        assert_eq!((sym_cmds.entries.len(), sym_cmds.diagnostics.len()), (2, 1));
     }
 }

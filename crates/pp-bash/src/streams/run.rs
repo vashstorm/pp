@@ -513,100 +513,98 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipeline_metadata_retains_recent_occurrences() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        for index in 0..(MAX_PIPELINES_PER_RUN + 4) {
+    fn pipeline_metadata_retention_truncation_and_json() {
+        {
+            let store = PipeStore::new();
+            let run = unique_run(&store);
+            for index in 0..(MAX_PIPELINES_PER_RUN + 4) {
+                let id = run
+                    .observer()
+                    .begin(None, 2, index % 2 == 0, false)
+                    .unwrap();
+                run.observer().stage_done(id, 1, 0, None).unwrap();
+                run.observer().finish(id, 0).unwrap();
+            }
+            let info = run.snapshot();
+            assert_eq!(info.pipelines.len(), MAX_PIPELINES_PER_RUN);
+            assert_eq!(info.omitted_pipelines, 4);
+            assert_eq!(info.nonzero_stages, 0);
+            assert!(info.incomplete);
+            // 前 4 个 occurrence 的明细被淘汰，但 id 序列保持单调且不复用。
+            let ids = info.pipelines.iter().map(|p| p.id).collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                (5u64..=(MAX_PIPELINES_PER_RUN as u64 + 4)).collect::<Vec<_>>()
+            );
+            run.finish(RunEnd::exited(Some(0)));
+        }
+        {
+            let store = PipeStore::new();
+            let run = unique_run(&store);
             let id = run
                 .observer()
-                .begin(None, 2, index % 2 == 0, false)
+                .begin(None, MAX_STAGES_PER_PIPELINE + 8, false, true)
                 .unwrap();
-            run.observer().stage_done(id, 1, 0, None).unwrap();
-            run.observer().finish(id, 0).unwrap();
+            let long = "λ".repeat(MAX_LABEL_BYTES);
+            run.observer().label(id, 1, &long).unwrap();
+            // 超出明细容量的阶段也必须计入非零事实。
+            run.observer().stage_done(id, 1, 3, None).unwrap();
+            run.observer()
+                .stage_done(id, MAX_STAGES_PER_PIPELINE + 8, 7, Some(13))
+                .unwrap();
+            run.observer().finish(id, 3).unwrap();
+
+            let info = run.snapshot();
+            assert_eq!(info.pipelines.len(), 1);
+            let pipeline = &info.pipelines[0];
+            assert_eq!(pipeline.stage_count, MAX_STAGES_PER_PIPELINE + 8);
+            assert_eq!(pipeline.stages.len(), MAX_STAGES_PER_PIPELINE);
+            assert_eq!(pipeline.stages[0].command.len(), MAX_LABEL_BYTES);
+            assert!(pipeline.stages[0].command.is_char_boundary(MAX_LABEL_BYTES));
+            assert_eq!(pipeline.status, Some(3));
+            assert_eq!(info.nonzero_stages, 2);
+            assert_eq!(info.omitted_stages, 8);
+            // 未报告真实等待结果的阶段残留为 unknown，绝不补 0。
+            let tail = pipeline.stages.last().unwrap();
+            assert_eq!(tail.state, StageState::Unknown);
+            assert_eq!(tail.status, None);
+            run.finish(RunEnd::exited(Some(3)));
         }
-        let info = run.snapshot();
-        assert_eq!(info.pipelines.len(), MAX_PIPELINES_PER_RUN);
-        assert_eq!(info.omitted_pipelines, 4);
-        assert_eq!(info.nonzero_stages, 0);
-        assert!(info.incomplete);
-        // 前 4 个 occurrence 的明细被淘汰，但 id 序列保持单调且不复用。
-        let ids = info.pipelines.iter().map(|p| p.id).collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            (5u64..=(MAX_PIPELINES_PER_RUN as u64 + 4)).collect::<Vec<_>>()
-        );
-        run.finish(RunEnd::exited(Some(0)));
-    }
+        {
+            let store = PipeStore::new();
+            let run = unique_run(&store);
+            let id = run.observer().begin(None, 2, true, false).unwrap();
+            run.observer().label(id, 1, "printf").unwrap();
+            run.observer().label(id, 2, "cat").unwrap();
+            let (consumer, producer) = edge(&run, id, 1);
+            drop((consumer, producer));
+            run.observer().stage_done(id, 1, 7, None).unwrap();
+            run.observer().stage_done(id, 2, 0, Some(13)).unwrap();
+            run.observer().finish(id, 0).unwrap();
+            let info = run.finish(RunEnd::exited(Some(0)));
+            let json = info.to_json();
 
-    #[test]
-    fn pipeline_metadata_truncates_labels_and_counts_nonzero_beyond_details() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        let id = run
-            .observer()
-            .begin(None, MAX_STAGES_PER_PIPELINE + 8, false, true)
-            .unwrap();
-        let long = "λ".repeat(MAX_LABEL_BYTES);
-        run.observer().label(id, 1, &long).unwrap();
-        // 超出明细容量的阶段也必须计入非零事实。
-        run.observer().stage_done(id, 1, 3, None).unwrap();
-        run.observer()
-            .stage_done(id, MAX_STAGES_PER_PIPELINE + 8, 7, Some(13))
-            .unwrap();
-        run.observer().finish(id, 3).unwrap();
-
-        let info = run.snapshot();
-        assert_eq!(info.pipelines.len(), 1);
-        let pipeline = &info.pipelines[0];
-        assert_eq!(pipeline.stage_count, MAX_STAGES_PER_PIPELINE + 8);
-        assert_eq!(pipeline.stages.len(), MAX_STAGES_PER_PIPELINE);
-        assert_eq!(pipeline.stages[0].command.len(), MAX_LABEL_BYTES);
-        assert!(pipeline.stages[0].command.is_char_boundary(MAX_LABEL_BYTES));
-        assert_eq!(pipeline.status, Some(3));
-        assert_eq!(info.nonzero_stages, 2);
-        assert_eq!(info.omitted_stages, 8);
-        // 未报告真实等待结果的阶段残留为 unknown，绝不补 0。
-        let tail = pipeline.stages.last().unwrap();
-        assert_eq!(tail.state, StageState::Unknown);
-        assert_eq!(tail.status, None);
-        run.finish(RunEnd::exited(Some(3)));
-    }
-
-    #[test]
-    fn pipeline_pipes_json_carries_bounded_metadata_only() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        let id = run.observer().begin(None, 2, true, false).unwrap();
-        run.observer().label(id, 1, "printf").unwrap();
-        run.observer().label(id, 2, "cat").unwrap();
-        let (consumer, producer) = edge(&run, id, 1);
-        drop((consumer, producer));
-        run.observer().stage_done(id, 1, 7, None).unwrap();
-        run.observer().stage_done(id, 2, 0, Some(13)).unwrap();
-        run.observer().finish(id, 0).unwrap();
-        let info = run.finish(RunEnd::exited(Some(0)));
-        let json = info.to_json();
-
-        assert_eq!(json["run_id"], run.id());
-        assert_eq!(json["uri"], run_uri(run.id()));
-        assert_eq!(json["state"], "exited");
-        assert_eq!(json["exit_code"], 0);
-        assert_eq!(json["nonzero_stages"], 2);
-        assert_eq!(json["incomplete"], false);
-        let pipeline = &json["pipelines"][0];
-        assert_eq!(pipeline["bang"], true);
-        assert_eq!(pipeline["status"], 0);
-        let stage = &pipeline["stages"][0];
-        assert_eq!(stage["index"], 1);
-        assert_eq!(stage["command"], "printf");
-        assert_eq!(stage["state"], "exited");
-        assert_eq!(stage["status"], 7);
-        let stream = &json["streams"][0];
-        assert_eq!(stream["uri"], stream_uri(run.id(), 1));
-        assert_eq!(stream["producer_stage"], 1);
-        assert_eq!(stream["consumer_stage"], 2);
-        // 快照只含元数据，绝不携带阶段正文。
-        assert!(stream.get("data").is_none());
-        assert!(json["pipelines"][0]["stages"][0].get("data").is_none());
+            assert_eq!(json["run_id"], run.id());
+            assert_eq!(json["uri"], run_uri(run.id()));
+            assert_eq!(json["state"], "exited");
+            assert_eq!(json["exit_code"], 0);
+            assert_eq!(json["nonzero_stages"], 2);
+            assert_eq!(json["incomplete"], false);
+            let pipeline = &json["pipelines"][0];
+            assert_eq!(pipeline["bang"], true);
+            assert_eq!(pipeline["status"], 0);
+            let stage = &pipeline["stages"][0];
+            assert_eq!(stage["index"], 1);
+            assert_eq!(stage["command"], "printf");
+            assert_eq!(stage["state"], "exited");
+            assert_eq!(stage["status"], 7);
+            let stream = &json["streams"][0];
+            assert_eq!(stream["uri"], stream_uri(run.id(), 1));
+            assert_eq!(stream["producer_stage"], 1);
+            assert_eq!(stream["consumer_stage"], 2);
+            // 快照只含元数据，绝不携带阶段正文。
+            assert!(stream.get("data").is_none());
+            assert!(json["pipelines"][0]["stages"][0].get("data").is_none());
+        }
     }
 }

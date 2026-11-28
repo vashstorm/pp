@@ -270,57 +270,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lsp_diagnostics_report_flags_issues() {
-        let report = crate::lsp_report::DiagnosticReport {
-            path: "src/a.rs".into(),
-            origin: "write".into(),
-            owner: "root".into(),
-            servers: vec![crate::lsp_report::ServerReport {
-                server: "rust-analyzer".into(),
-                status: crate::lsp_report::ReportStatus::ReportedIssues,
-                note: None,
-                diagnostics: vec![crate::lsp_report::ReportDiagnostic {
-                    line: 3,
-                    column: 2,
-                    end_line: 3,
-                    end_column: 4,
-                    severity: 1,
-                    message: "expected i32".into(),
-                    code: None,
-                    source: None,
-                    line_only: false,
+    fn lsp_diagnostics_and_text_diff_serde_contracts() {
+        {
+            let report = crate::lsp_report::DiagnosticReport {
+                path: "src/a.rs".into(),
+                origin: "write".into(),
+                owner: "root".into(),
+                servers: vec![crate::lsp_report::ServerReport {
+                    server: "rust-analyzer".into(),
+                    status: crate::lsp_report::ReportStatus::ReportedIssues,
+                    note: None,
+                    diagnostics: vec![crate::lsp_report::ReportDiagnostic {
+                        line: 3,
+                        column: 2,
+                        end_line: 3,
+                        end_column: 4,
+                        severity: 1,
+                        message: "expected i32".into(),
+                        code: None,
+                        source: None,
+                        line_only: false,
+                    }],
                 }],
-            }],
-            formatter: None,
-            deduplicated: 0,
-            omitted: 0,
-            at_ms: 7,
-        };
-        let event = AgentEvent::LspDiagnostics {
-            id: Some("call-1".into()),
-            report,
-        };
-        let AgentEvent::LspDiagnostics { report, .. } = event else {
-            unreachable!("刚构造的事件必定是 LspDiagnostics");
-        };
-        assert_eq!(report.path, "src/a.rs");
-        assert!(report.has_issues());
-    }
-
-    #[test]
-    fn lsp_edits_old_journal_text_diff_preserves_non_deleted_file() {
-        let event: AgentEvent = serde_json::from_value(serde_json::json!({
-            "file_changed": {"id":"old","path":"empty","diff":{
-                "kind":"text","created":false,"added":0,"removed":0,"hunks":[]
-            }}
-        }))
-        .unwrap();
-        assert!(matches!(
-            event,
-            AgentEvent::FileChanged {
-                diff: FileDiff::Text { deleted: false, .. },
-                ..
-            }
-        ));
+                formatter: None,
+                deduplicated: 0,
+                omitted: 0,
+                at_ms: 7,
+            };
+            let event = AgentEvent::LspDiagnostics {
+                id: Some("call-1".into()),
+                report,
+            };
+            let AgentEvent::LspDiagnostics { report, .. } = event else {
+                unreachable!("刚构造的事件必定是 LspDiagnostics");
+            };
+            assert_eq!(report.path, "src/a.rs");
+            assert!(report.has_issues());
+        }
+        {
+            let event: AgentEvent = serde_json::from_value(serde_json::json!({
+                "file_changed": {"id":"old","path":"empty","diff":{
+                    "kind":"text","created":false,"added":0,"removed":0,"hunks":[]
+                }}
+            }))
+            .unwrap();
+            assert!(matches!(
+                event,
+                AgentEvent::FileChanged {
+                    diff: FileDiff::Text { deleted: false, .. },
+                    ..
+                }
+            ));
+        }
     }
 }

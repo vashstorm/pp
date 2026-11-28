@@ -26,7 +26,8 @@ pub mod uri;
 pub mod writethrough;
 
 #[cfg(test)]
-mod tests;
+#[path = "tests.rs"]
+mod integration;
 
 pub(crate) use client::Client;
 

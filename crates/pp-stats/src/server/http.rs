@@ -335,7 +335,7 @@ fn serve(
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::*;
 
     #[test]

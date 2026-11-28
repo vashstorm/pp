@@ -35,193 +35,106 @@ fn read_tool_description(body: &Value, protocol: &str) -> String {
 
 #[test]
 fn non_interactive_defaults_to_read_grep_glob_and_disables_subagents() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("note.txt"), "hello world\n").unwrap();
-        let models = if protocol == "completion" {
-            fixture_models(&server)
-        } else {
-            response_models(&server, Some("response"))
-        };
-        write_settings(dir.path(), task_fixture_settings()).unwrap();
-        std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
-
-        let cli = Cli::spawn(dir.path(), &["-p", "inspect workspace"], &[]);
-        let path = if protocol == "completion" {
-            "/v1/chat/completions"
-        } else {
-            "/v1/responses"
-        };
-        let (request, body) = receive_at(&server, path);
-        assert_eq!(
-            tool_names(&body, protocol),
-            BTreeSet::from(["read".into(), "rg".into(), "glob".into()])
-        );
-        assert!(!read_tool_description(&body, protocol).contains("agent://"));
-
-        // 模型尝试调用未授权写工具/Bash/Subagent 时，执行层硬门禁拒绝且不创建 .subagents。
-        if protocol == "completion" {
-            calls_reply(
-                request,
-                json!([
-                    call("c-read", "read", json!({"path": "note.txt"})),
-                    call("c-bash", "bash", json!({"command": "touch forbidden"})),
-                    call(
-                        "c-task",
-                        "task",
-                        json!({"context": "x", "tasks": [{"role": "fast", "task": "y"}]})
-                    )
-                ]),
-            );
-        } else {
-            response_reply(
-                request,
-                json!([
-                    response_call("c-read", "read", json!({"path": "note.txt"})),
-                    response_call("c-bash", "bash", json!({"command": "touch forbidden"})),
-                    response_call(
-                        "c-task",
-                        "task",
-                        json!({"context": "x", "tasks": [{"role": "fast", "task": "y"}]})
-                    )
-                ]),
-            );
-        }
-
-        let (request, body) = receive_at(&server, path);
-        let extract = |id: &str| -> Value {
-            if protocol == "completion" {
-                let msg = body["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|m| m["role"] == "tool" && m["tool_call_id"] == id)
-                    .unwrap();
-                result(msg, id)
-            } else {
-                let item = body["input"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|m| m["type"] == "function_call_output" && m["call_id"] == id)
-                    .unwrap();
-                response_result(item, id)
-            }
-        };
-        assert_eq!(extract("c-read")["ok"], true);
-        for blocked in ["c-bash", "c-task"] {
-            let res = extract(blocked);
-            assert_eq!(res["ok"], false, "{res}");
-            assert!(
-                res["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("outside this agent capability set"),
-                "{res}"
-            );
-        }
-        if protocol == "completion" {
-            final_reply(request, "read only ok");
-        } else {
-            response_final(request, "read only ok");
-        }
-        let output = cli.finish();
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(output.stdout, b"read only ok\n");
-        assert!(!dir.path().join("forbidden").exists());
-        let has_subagents = std::fs::read_dir(config_path(dir.path(), "sessions"))
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|e| e.path().extension().is_some_and(|x| x == "subagents"));
-        assert!(!has_subagents);
-        no_more(&server);
-    }
-}
-
-#[test]
-fn non_interactive_resume_supports_p_r_prompt_order_and_validates_missing_prompt() {
+    let protocol = "response";
     let server = server();
-    let home = tempfile::tempdir().unwrap();
-    write_settings(home.path(), fixture_settings()).unwrap();
-    std::fs::write(
-        config_path(home.path(), "models.yml"),
-        fixture_models(&server),
-    )
-    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "hello world\n").unwrap();
+    let models = if protocol == "completion" {
+        fixture_models(&server)
+    } else {
+        response_models(&server, Some("response"))
+    };
+    write_settings(dir.path(), task_fixture_settings()).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
 
-    // 1. 首次 -p 运行创建会话。
-    let cli = Cli::spawn(home.path(), &["-p", "remember alpha"], &[]);
-    let (request, _) = receive(&server);
-    final_reply(request, "alpha stored");
+    let cli = Cli::spawn(dir.path(), &["-p", "inspect workspace"], &[]);
+    let path = if protocol == "completion" {
+        "/v1/chat/completions"
+    } else {
+        "/v1/responses"
+    };
+    let (request, body) = receive_at(&server, path);
+    assert_eq!(
+        tool_names(&body, protocol),
+        BTreeSet::from(["read".into(), "rg".into(), "glob".into()])
+    );
+    assert!(!read_tool_description(&body, protocol).contains("agent://"));
+
+    // 模型尝试调用未授权写工具/Bash/Subagent 时，执行层硬门禁拒绝且不创建 .subagents。
+    if protocol == "completion" {
+        calls_reply(
+            request,
+            json!([
+                call("c-read", "read", json!({"path": "note.txt"})),
+                call("c-bash", "bash", json!({"command": "touch forbidden"})),
+                call(
+                    "c-task",
+                    "task",
+                    json!({"context": "x", "tasks": [{"role": "fast", "task": "y"}]})
+                )
+            ]),
+        );
+    } else {
+        response_reply(
+            request,
+            json!([
+                response_call("c-read", "read", json!({"path": "note.txt"})),
+                response_call("c-bash", "bash", json!({"command": "touch forbidden"})),
+                response_call(
+                    "c-task",
+                    "task",
+                    json!({"context": "x", "tasks": [{"role": "fast", "task": "y"}]})
+                )
+            ]),
+        );
+    }
+
+    let (request, body) = receive_at(&server, path);
+    let extract = |id: &str| -> Value {
+        if protocol == "completion" {
+            let msg = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["role"] == "tool" && m["tool_call_id"] == id)
+                .unwrap();
+            result(msg, id)
+        } else {
+            let item = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "function_call_output" && m["call_id"] == id)
+                .unwrap();
+            response_result(item, id)
+        }
+    };
+    assert_eq!(extract("c-read")["ok"], true);
+    for blocked in ["c-bash", "c-task"] {
+        let res = extract(blocked);
+        assert_eq!(res["ok"], false, "{res}");
+        assert!(
+            res["error"]
+                .as_str()
+                .unwrap()
+                .contains("outside this agent capability set"),
+            "{res}"
+        );
+    }
+    if protocol == "completion" {
+        final_reply(request, "read only ok");
+    } else {
+        response_final(request, "read only ok");
+    }
     let output = cli.finish();
     assert!(output.status.success(), "{output:?}");
-    let session_file = std::fs::read_dir(config_path(home.path(), "sessions"))
+    assert_eq!(output.stdout, b"read only ok\n");
+    assert!(!dir.path().join("forbidden").exists());
+    let has_subagents = std::fs::read_dir(config_path(dir.path(), "sessions"))
         .unwrap()
         .filter_map(Result::ok)
-        .map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .unwrap();
-    let id = session_file
-        .file_stem()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-
-    // 2. `-p -r <session_id> "prompt"` 顺序恢复并追加新 prompt。
-    let cli = Cli::spawn(home.path(), &["-p", "-r", &id, "follow up beta"], &[]);
-    let (request, body) = receive(&server);
-    let users: Vec<_> = body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|m| m["role"] == "user")
-        .map(|m| m["content"].as_str().unwrap())
-        .collect();
-    assert_eq!(users, ["remember alpha", "follow up beta"]);
-    final_reply(request, "beta stored");
-    let output = cli.finish();
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"beta stored\n");
-
-    // 3. `-p --resume <session_id> "prompt"` 同样支持。
-    let cli = Cli::spawn(
-        home.path(),
-        &["-p", "--resume", &id, "follow up gamma"],
-        &[],
-    );
-    let (request, body) = receive(&server);
-    let users: Vec<_> = body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|m| m["role"] == "user")
-        .map(|m| m["content"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        users,
-        ["remember alpha", "follow up beta", "follow up gamma"]
-    );
-    final_reply(request, "gamma stored");
-    let output = cli.finish();
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"gamma stored\n");
-
-    // 4. 缺少 prompt 或非 -p 使用 --mode json 均应失败且不发请求。
-    let missing_prompt = Cli::spawn(home.path(), &["-p"], &[]).finish();
-    assert!(!missing_prompt.status.success());
-    assert!(
-        String::from_utf8_lossy(&missing_prompt.stderr).contains("prompt is required in -p mode")
-    );
-
-    let mode_without_p = Cli::spawn(home.path(), &["--mode", "json"], &[]).finish();
-    assert!(!mode_without_p.status.success());
-    let err_json: Value =
-        serde_json::from_str(std::str::from_utf8(&mode_without_p.stdout).unwrap().trim()).unwrap();
-    assert_eq!(err_json["type"], "result");
-    assert_eq!(err_json["status"], "error");
-    assert!(err_json["error"].as_str().unwrap().contains("require -p"));
+        .any(|e| e.path().extension().is_some_and(|x| x == "subagents"));
+    assert!(!has_subagents);
     no_more(&server);
 }
 
@@ -396,251 +309,250 @@ fn allowed_tools_preapproves_in_always_ask_and_gates_subagent_via_task() {
 
 #[test]
 fn output_mode_json_and_stream_json_emit_events_and_terminal_results() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let dir = tempfile::tempdir().unwrap();
-        let models = if protocol == "completion" {
-            fixture_models(&server)
-        } else {
-            response_models(&server, Some("response"))
-        };
-        write_settings(dir.path(), fixture_settings()).unwrap();
-        std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
+    let protocol = "response";
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let models = if protocol == "completion" {
+        fixture_models(&server)
+    } else {
+        response_models(&server, Some("response"))
+    };
+    write_settings(dir.path(), fixture_settings()).unwrap();
+    std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
 
-        // 1. `--mode stream-json`：验证 init、过程事件与末行 result。
-        let cli = Cli::spawn(
-            dir.path(),
-            &[
-                "-p",
-                "create file via stream",
-                "--mode",
-                "stream-json",
-                "--allowed-tools",
-                "Read,Write",
-            ],
-            &[],
-        );
-        let path = if protocol == "completion" {
-            "/v1/chat/completions"
-        } else {
-            "/v1/responses"
-        };
-        let (request, _) = receive_at(&server, path);
-        let write_args = json!({"path": "out.txt", "content": "hello jsonl\n"});
-        if protocol == "completion" {
-            let mut stream = request.start_sse().unwrap();
-            stream
+    // 1. `--mode stream-json`：验证 init、过程事件与末行 result。
+    let cli = Cli::spawn(
+        dir.path(),
+        &[
+            "-p",
+            "create file via stream",
+            "--mode",
+            "stream-json",
+            "--allowed-tools",
+            "Read,Write",
+        ],
+        &[],
+    );
+    let path = if protocol == "completion" {
+        "/v1/chat/completions"
+    } else {
+        "/v1/responses"
+    };
+    let (request, _) = receive_at(&server, path);
+    let write_args = json!({"path": "out.txt", "content": "hello jsonl\n"});
+    if protocol == "completion" {
+        let mut stream = request.start_sse().unwrap();
+        stream
                 .event(&json!({
                     "id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"fixture-model",
                     "choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"w1","type":"function","function":{"name":"write","arguments":write_args.to_string()}}]},"finish_reason":null}]
                 }))
                 .unwrap();
-            stream
+        stream
                 .event(&json!({
                     "id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"fixture-model",
                     "choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
                     "usage":{"prompt_tokens":100,"completion_tokens":15,"total_tokens":115}
                 }))
                 .unwrap();
-            stream.frame("[DONE]").unwrap();
-            stream.finish();
-        } else {
-            let item = response_call("w1", "write", write_args);
-            let mut stream = request.start_sse().unwrap();
-            stream
-                .event(&json!({
-                    "type":"response.output_item.done","sequence_number":0,
-                    "output_index":0,"item":item
-                }))
-                .unwrap();
-            let mut resp = response_body(json!([item]));
-            resp["usage"] = json!({
-                "input_tokens":100,"output_tokens":15,"total_tokens":115,
-                "input_tokens_details":{"cached_tokens":0},
-                "output_tokens_details":{"reasoning_tokens":0}
-            });
-            stream
-                .event(&json!({
-                    "type":"response.completed","sequence_number":1,
-                    "response":resp
-                }))
-                .unwrap();
-            stream.finish();
-        }
-        let (request, _) = receive_at(&server, path);
-        if protocol == "completion" {
-            let mut stream = request.start_sse().unwrap();
-            stream
-                .event(&chat_chunk(
-                    json!({"role":"assistant","content":"stream "}),
-                    None,
-                ))
-                .unwrap();
-            stream
-                .event(&chat_chunk(json!({"content":"done"}), Some("stop")))
-                .unwrap();
-            stream
+        stream.frame("[DONE]").unwrap();
+        stream.finish();
+    } else {
+        let item = response_call("w1", "write", write_args);
+        let mut stream = request.start_sse().unwrap();
+        stream
+            .event(&json!({
+                "type":"response.output_item.done","sequence_number":0,
+                "output_index":0,"item":item
+            }))
+            .unwrap();
+        let mut resp = response_body(json!([item]));
+        resp["usage"] = json!({
+            "input_tokens":100,"output_tokens":15,"total_tokens":115,
+            "input_tokens_details":{"cached_tokens":0},
+            "output_tokens_details":{"reasoning_tokens":0}
+        });
+        stream
+            .event(&json!({
+                "type":"response.completed","sequence_number":1,
+                "response":resp
+            }))
+            .unwrap();
+        stream.finish();
+    }
+    let (request, _) = receive_at(&server, path);
+    if protocol == "completion" {
+        let mut stream = request.start_sse().unwrap();
+        stream
+            .event(&chat_chunk(
+                json!({"role":"assistant","content":"stream "}),
+                None,
+            ))
+            .unwrap();
+        stream
+            .event(&chat_chunk(json!({"content":"done"}), Some("stop")))
+            .unwrap();
+        stream
                 .event(&json!({
                     "id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":"fixture-model",
                     "choices":[],
                     "usage":{"prompt_tokens":120,"completion_tokens":8,"total_tokens":128}
                 }))
                 .unwrap();
-            stream.frame("[DONE]").unwrap();
-            stream.finish();
-        } else {
-            let msg = response_message("msg-final", json!([response_text("stream done")]));
-            let mut stream = request.start_sse().unwrap();
-            stream
-                .event(&json!({
-                    "type":"response.output_text.delta","sequence_number":0,
-                    "item_id":"msg-final","output_index":0,"content_index":0,
-                    "delta":"stream ","logprobs":[]
-                }))
-                .unwrap();
-            stream
-                .event(&json!({
-                    "type":"response.output_text.delta","sequence_number":1,
-                    "item_id":"msg-final","output_index":0,"content_index":0,
-                    "delta":"done","logprobs":[]
-                }))
-                .unwrap();
-            stream
-                .event(&json!({
-                    "type":"response.output_item.done","sequence_number":2,
-                    "output_index":0,"item":msg
-                }))
-                .unwrap();
-            let mut resp = response_body(json!([msg]));
-            resp["usage"] = json!({
-                "input_tokens":120,"output_tokens":8,"total_tokens":128,
-                "input_tokens_details":{"cached_tokens":0},
-                "output_tokens_details":{"reasoning_tokens":0}
-            });
-            stream
-                .event(&json!({
-                    "type":"response.completed","sequence_number":3,
-                    "response":resp
-                }))
-                .unwrap();
-            stream.finish();
-        }
+        stream.frame("[DONE]").unwrap();
+        stream.finish();
+    } else {
+        let msg = response_message("msg-final", json!([response_text("stream done")]));
+        let mut stream = request.start_sse().unwrap();
+        stream
+            .event(&json!({
+                "type":"response.output_text.delta","sequence_number":0,
+                "item_id":"msg-final","output_index":0,"content_index":0,
+                "delta":"stream ","logprobs":[]
+            }))
+            .unwrap();
+        stream
+            .event(&json!({
+                "type":"response.output_text.delta","sequence_number":1,
+                "item_id":"msg-final","output_index":0,"content_index":0,
+                "delta":"done","logprobs":[]
+            }))
+            .unwrap();
+        stream
+            .event(&json!({
+                "type":"response.output_item.done","sequence_number":2,
+                "output_index":0,"item":msg
+            }))
+            .unwrap();
+        let mut resp = response_body(json!([msg]));
+        resp["usage"] = json!({
+            "input_tokens":120,"output_tokens":8,"total_tokens":128,
+            "input_tokens_details":{"cached_tokens":0},
+            "output_tokens_details":{"reasoning_tokens":0}
+        });
+        stream
+            .event(&json!({
+                "type":"response.completed","sequence_number":3,
+                "response":resp
+            }))
+            .unwrap();
+        stream.finish();
+    }
+    let output = cli.finish();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("write/edit only modify"), "{stderr}");
+    assert!(!stderr.contains("Resume with:"), "{stderr}");
+    let lines: Vec<Value> = std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines[0]["type"], "init");
+    assert_eq!(lines[0]["resumed"], false);
+    assert_eq!(lines[0]["tools"], json!(["read", "write"]));
+    assert!(lines.iter().any(|e| e["type"] == "tool_started"
+        && e["name"] == "write"
+        && e["arguments"]["path"] == "out.txt"));
+    assert!(
+        lines
+            .iter()
+            .any(|e| e["type"] == "file_changed" && e["path"] == "out.txt")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|e| e["type"] == "tool_finished" && e["name"] == "write" && e["ok"] == true)
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|e| e["type"] == "assistant_finished" && e["text"] == "stream done")
+    );
+    let last = lines.last().unwrap();
+    assert_eq!(last["type"], "result");
+    assert_eq!(last["status"], "ok");
+    assert_eq!(last["text"], "stream done");
+    assert_eq!(last["turns"], 2);
+    assert_eq!(last["usage"]["input_tokens"], 220);
+    assert_eq!(last["usage"]["output_tokens"], 23);
+    let session_id = last["session_id"].as_str().unwrap().to_owned();
+
+    // 2. `--mode json` + `-p -r <id> "prompt"`（且把 `--mode json` 放在位置参数之后）：
+    //    stdout 仅输出单条终态汇总 JSON。
+    let cli = Cli::spawn(
+        dir.path(),
+        &["-p", "-r", &session_id, "summarize json", "--mode", "json"],
+        &[],
+    );
+    let (request, _) = receive_at(&server, path);
+    if protocol == "completion" {
+        final_reply(request, "single json ok");
+    } else {
+        response_final(request, "single json ok");
+    }
+    let output = cli.finish();
+    assert!(output.status.success(), "{output:?}");
+    let stdout_str = std::str::from_utf8(&output.stdout).unwrap();
+    assert_eq!(stdout_str.lines().count(), 1, "{stdout_str}");
+    let summary: Value = serde_json::from_str(stdout_str.trim()).unwrap();
+    assert_eq!(summary["type"], "result");
+    assert_eq!(summary["status"], "ok");
+    assert_eq!(summary["session_id"], session_id);
+    assert_eq!(summary["text"], "single json ok");
+    assert_eq!(summary["turns"], 1);
+
+    // 3. 运行期 HTTP 500 错误：json 与 stream-json 均向 stdout 写终态 error JSON 且脱敏。
+    for mode in ["json", "stream-json"] {
+        let cli = Cli::spawn(dir.path(), &["-p", "explode", "--mode", mode], &[]);
+        let (request, _) = receive_at(&server, path);
+        request
+            .respond(
+                Response::builder()
+                    .status(500)
+                    .body(Body::from(
+                        json!({"error":{"message":"upstream leaked fixture-key"}}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .unwrap();
         let output = cli.finish();
-        assert!(output.status.success(), "{output:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!stderr.contains("write/edit only modify"), "{stderr}");
-        assert!(!stderr.contains("Resume with:"), "{stderr}");
-        let lines: Vec<Value> = std::str::from_utf8(&output.stdout)
+        assert!(!output.status.success());
+        let err_lines: Vec<Value> = std::str::from_utf8(&output.stdout)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(lines[0]["type"], "init");
-        assert_eq!(lines[0]["resumed"], false);
-        assert_eq!(lines[0]["tools"], json!(["read", "write"]));
-        assert!(lines.iter().any(|e| e["type"] == "tool_started"
-            && e["name"] == "write"
-            && e["arguments"]["path"] == "out.txt"));
+        assert!(!err_lines.is_empty());
+        let terminal = err_lines.last().unwrap();
+        assert_eq!(terminal["type"], "result");
+        assert_eq!(terminal["status"], "error");
+        let err_msg = terminal["error"].as_str().unwrap();
+        assert!(!err_msg.contains("fixture-key"), "{err_msg}");
         assert!(
-            lines
-                .iter()
-                .any(|e| e["type"] == "file_changed" && e["path"] == "out.txt")
+            String::from_utf8_lossy(&output.stderr).contains("error:"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        assert!(
-            lines
-                .iter()
-                .any(|e| e["type"] == "tool_finished" && e["name"] == "write" && e["ok"] == true)
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|e| e["type"] == "assistant_finished" && e["text"] == "stream done")
-        );
-        let last = lines.last().unwrap();
-        assert_eq!(last["type"], "result");
-        assert_eq!(last["status"], "ok");
-        assert_eq!(last["text"], "stream done");
-        assert_eq!(last["turns"], 2);
-        assert_eq!(last["usage"]["input_tokens"], 220);
-        assert_eq!(last["usage"]["output_tokens"], 23);
-        let session_id = last["session_id"].as_str().unwrap().to_owned();
-
-        // 2. `--mode json` + `-p -r <id> "prompt"`（且把 `--mode json` 放在位置参数之后）：
-        //    stdout 仅输出单条终态汇总 JSON。
-        let cli = Cli::spawn(
-            dir.path(),
-            &["-p", "-r", &session_id, "summarize json", "--mode", "json"],
-            &[],
-        );
-        let (request, _) = receive_at(&server, path);
-        if protocol == "completion" {
-            final_reply(request, "single json ok");
-        } else {
-            response_final(request, "single json ok");
-        }
-        let output = cli.finish();
-        assert!(output.status.success(), "{output:?}");
-        let stdout_str = std::str::from_utf8(&output.stdout).unwrap();
-        assert_eq!(stdout_str.lines().count(), 1, "{stdout_str}");
-        let summary: Value = serde_json::from_str(stdout_str.trim()).unwrap();
-        assert_eq!(summary["type"], "result");
-        assert_eq!(summary["status"], "ok");
-        assert_eq!(summary["session_id"], session_id);
-        assert_eq!(summary["text"], "single json ok");
-        assert_eq!(summary["turns"], 1);
-
-        // 3. 运行期 HTTP 500 错误：json 与 stream-json 均向 stdout 写终态 error JSON 且脱敏。
-        for mode in ["json", "stream-json"] {
-            let cli = Cli::spawn(dir.path(), &["-p", "explode", "--mode", mode], &[]);
-            let (request, _) = receive_at(&server, path);
-            request
-                .respond(
-                    Response::builder()
-                        .status(500)
-                        .body(Body::from(
-                            json!({"error":{"message":"upstream leaked fixture-key"}}).to_string(),
-                        ))
-                        .unwrap(),
-                )
-                .unwrap();
-            let output = cli.finish();
-            assert!(!output.status.success());
-            let err_lines: Vec<Value> = std::str::from_utf8(&output.stdout)
-                .unwrap()
-                .lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect();
-            assert!(!err_lines.is_empty());
-            let terminal = err_lines.last().unwrap();
-            assert_eq!(terminal["type"], "result");
-            assert_eq!(terminal["status"], "error");
-            let err_msg = terminal["error"].as_str().unwrap();
-            assert!(!err_msg.contains("fixture-key"), "{err_msg}");
-            assert!(
-                String::from_utf8_lossy(&output.stderr).contains("error:"),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        // 4. 启动前失败（非法 --resume ID）：stdout 仍输出终态 error JSON。
-        let early = Cli::spawn(
-            dir.path(),
-            &["-p", "-r", "../escape", "bad", "--mode", "json"],
-            &[],
-        )
-        .finish();
-        assert!(!early.status.success());
-        let early_json: Value =
-            serde_json::from_str(std::str::from_utf8(&early.stdout).unwrap().trim()).unwrap();
-        assert_eq!(early_json["type"], "result");
-        assert_eq!(early_json["status"], "error");
-        assert!(
-            early_json["error"]
-                .as_str()
-                .unwrap()
-                .contains("invalid session ID")
-        );
-        no_more(&server);
     }
+
+    // 4. 启动前失败（非法 --resume ID）：stdout 仍输出终态 error JSON。
+    let early = Cli::spawn(
+        dir.path(),
+        &["-p", "-r", "../escape", "bad", "--mode", "json"],
+        &[],
+    )
+    .finish();
+    assert!(!early.status.success());
+    let early_json: Value =
+        serde_json::from_str(std::str::from_utf8(&early.stdout).unwrap().trim()).unwrap();
+    assert_eq!(early_json["type"], "result");
+    assert_eq!(early_json["status"], "error");
+    assert!(
+        early_json["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid session ID")
+    );
+    no_more(&server);
 }

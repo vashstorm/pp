@@ -1,175 +1,176 @@
-use super::*;
-use crate::permission::{PermissionDecision, PermissionRequest};
-use crate::ports::{PostToolCall, PostToolOutcome, PreToolOutcome, ToolHookCall};
-use pp_config::config::{EvalSettings, PermissionMode};
-use std::sync::{Arc, Mutex};
+mod integration {
+    use super::super::*;
+    use crate::permission::{PermissionDecision, PermissionRequest};
+    use crate::ports::{PostToolCall, PostToolOutcome, PreToolOutcome, ToolHookCall};
+    use pp_config::config::{EvalSettings, PermissionMode};
+    use std::sync::{Arc, Mutex};
 
-struct StubHook {
-    calls: Mutex<Vec<String>>,
-    deny_tool: Option<String>,
-    rewrite_write_content: Option<String>,
-    post_context: Option<String>,
-}
+    struct StubHook {
+        calls: Mutex<Vec<String>>,
+        deny_tool: Option<String>,
+        rewrite_write_content: Option<String>,
+        post_context: Option<String>,
+    }
 
-impl StubHook {
-    fn new() -> Self {
-        Self {
-            calls: Mutex::new(Vec::new()),
-            deny_tool: None,
-            rewrite_write_content: None,
-            post_context: None,
+    impl StubHook {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                deny_tool: None,
+                rewrite_write_content: None,
+                post_context: None,
+            }
         }
     }
-}
 
-impl ToolHookCall for StubHook {
-    fn deny_reason(&self) -> Option<&str> {
-        None
-    }
-
-    fn ask_reason(&self) -> Option<&str> {
-        None
-    }
-
-    fn pre_context(&self) -> &[String] {
-        &[]
-    }
-
-    fn run_pre_nested_tool(
-        &self,
-        name: &str,
-        _call_id: &str,
-        arguments: &str,
-        _cancellation: &CancellationToken,
-        _emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<Option<PreToolOutcome>> {
-        self.calls.lock().unwrap().push(format!("pre:{name}"));
-        if self.deny_tool.as_deref() == Some(name) {
-            return Ok(Some(PreToolOutcome {
-                deny_reason: Some(format!("hook blocked {name}")),
-                ..Default::default()
-            }));
+    impl ToolHookCall for StubHook {
+        fn deny_reason(&self) -> Option<&str> {
+            None
         }
-        if name == "write"
-            && let Some(content) = &self.rewrite_write_content
-        {
-            let mut val: Value = serde_json::from_str(arguments)?;
-            val["content"] = json!(content);
-            return Ok(Some(PreToolOutcome {
-                updated_arguments: Some(val.to_string()),
-                ..Default::default()
-            }));
+
+        fn ask_reason(&self) -> Option<&str> {
+            None
         }
-        Ok(None)
+
+        fn pre_context(&self) -> &[String] {
+            &[]
+        }
+
+        fn run_pre_nested_tool(
+            &self,
+            name: &str,
+            _call_id: &str,
+            arguments: &str,
+            _cancellation: &CancellationToken,
+            _emit: &mut dyn FnMut(AgentEvent),
+        ) -> Result<Option<PreToolOutcome>> {
+            self.calls.lock().unwrap().push(format!("pre:{name}"));
+            if self.deny_tool.as_deref() == Some(name) {
+                return Ok(Some(PreToolOutcome {
+                    deny_reason: Some(format!("hook blocked {name}")),
+                    ..Default::default()
+                }));
+            }
+            if name == "write"
+                && let Some(content) = &self.rewrite_write_content
+            {
+                let mut val: Value = serde_json::from_str(arguments)?;
+                val["content"] = json!(content);
+                return Ok(Some(PreToolOutcome {
+                    updated_arguments: Some(val.to_string()),
+                    ..Default::default()
+                }));
+            }
+            Ok(None)
+        }
+
+        fn run_post_tool(
+            &self,
+            call: PostToolCall<'_>,
+            _cancellation: &CancellationToken,
+            _emit: &mut dyn FnMut(AgentEvent),
+        ) -> Result<Option<PostToolOutcome>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("post:{}", call.name));
+            Ok(Some(PostToolOutcome {
+                additional_context: self.post_context.clone().into_iter().collect(),
+                updated_output: None,
+                stop_reason: None,
+            }))
+        }
     }
 
-    fn run_post_tool(
-        &self,
-        call: PostToolCall<'_>,
-        _cancellation: &CancellationToken,
-        _emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<Option<PostToolOutcome>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("post:{}", call.name));
-        Ok(Some(PostToolOutcome {
-            additional_context: self.post_context.clone().into_iter().collect(),
-            updated_output: None,
-            stop_reason: None,
-        }))
-    }
-}
+    #[test]
+    fn eval_schema_respects_mode_and_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        // `Tools::new` 不再探测 Python：按生产顺序由 `configure_eval` 决定可用性。
+        tools.configure_eval(&EvalSettings::default());
+        if !tools.eval_available() {
+            return;
+        }
 
-#[test]
-fn eval_schema_respects_mode_and_settings() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    // `Tools::new` 不再探测 Python：按生产顺序由 `configure_eval` 决定可用性。
-    tools.configure_eval(&EvalSettings::default());
-    if !tools.eval_available() {
-        return;
-    }
-
-    let exec_names: Vec<_> = tools
-        .all_definitions(WorkMode::Execute)
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
-    assert!(exec_names.iter().any(|n| n == "eval"));
-
-    let plan_names: Vec<_> = tools
-        .all_definitions(WorkMode::Plan)
-        .into_iter()
-        .map(|d| d.name)
-        .collect();
-    assert!(!plan_names.iter().any(|n| n == "eval"));
-
-    tools.configure_eval(&EvalSettings {
-        enabled: false,
-        ..Default::default()
-    });
-    assert!(!tools.eval_available());
-    assert!(
-        !tools
+        let exec_names: Vec<_> = tools
             .all_definitions(WorkMode::Execute)
             .into_iter()
-            .any(|d| d.name == "eval")
-    );
+            .map(|d| d.name)
+            .collect();
+        assert!(exec_names.iter().any(|n| n == "eval"));
 
-    let disabled = execute(&tools, "eval", json!({"language": "py", "code": "1 + 1"}));
-    assert_eq!(disabled["ok"], false);
-    assert!(
-        disabled["error"]
-            .as_str()
-            .unwrap()
-            .contains("disabled in settings")
-    );
-}
+        let plan_names: Vec<_> = tools
+            .all_definitions(WorkMode::Plan)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert!(!plan_names.iter().any(|n| n == "eval"));
 
-#[test]
-fn eval_nested_tools_keep_permission_instructions_and_hooks() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("AGENTS.md"), "# root rules\n").unwrap();
-    fs::create_dir_all(dir.path().join("sub")).unwrap();
-    fs::write(dir.path().join("sub/AGENTS.md"), "# sub rules\n").unwrap();
-    fs::write(dir.path().join("sub/note.txt"), "initial\n").unwrap();
+        tools.configure_eval(&EvalSettings {
+            enabled: false,
+            ..Default::default()
+        });
+        assert!(!tools.eval_available());
+        assert!(
+            !tools
+                .all_definitions(WorkMode::Execute)
+                .into_iter()
+                .any(|d| d.name == "eval")
+        );
 
-    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    tools.configure_eval(&EvalSettings::default());
-    if !tools.eval_available() {
-        return;
+        let disabled = execute(&tools, "eval", json!({"language": "py", "code": "1 + 1"}));
+        assert_eq!(disabled["ok"], false);
+        assert!(
+            disabled["error"]
+                .as_str()
+                .unwrap()
+                .contains("disabled in settings")
+        );
     }
-    tools.reset_project_instructions([]);
-    // 模拟首轮请求：根目录 AGENTS.md 已发送给模型，但尚未加载 sub/AGENTS.md。
-    let _ = tools.project_documents().unwrap();
-    tools.project_request_sent();
 
-    let workflow = WorkflowState::default();
-    let token = CancellationToken::new();
+    #[test]
+    fn eval_nested_tools_keep_permission_instructions_and_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# root rules\n").unwrap();
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/AGENTS.md"), "# sub rules\n").unwrap();
+        fs::write(dir.path().join("sub/note.txt"), "initial\n").unwrap();
 
-    // 1) 未读 sub/AGENTS.md 前，经 eval 内部的 tool.write 写入 sub/out.txt 必须被门禁拒绝。
-    let blocked = execute(
-        &tools,
-        "eval",
-        json!({
-            "language": "py",
-            "code": "try:\n    write('sub/out.txt', 'hello')\n    msg = 'unexpected'\nexcept ToolError as e:\n    msg = str(e)\nprint(msg)"
-        }),
-    );
-    assert_eq!(blocked["ok"], true, "{blocked}");
-    assert!(
-        blocked["output"].as_str().unwrap().contains("AGENTS.md"),
-        "{blocked}"
-    );
-    assert!(!dir.path().join("sub/out.txt").exists());
-    // 门禁触发后会封锁当前批次后续调用，模拟下一轮模型请求刷新规则并解除封锁。
-    let _ = tools.project_documents().unwrap();
-    tools.project_request_sent();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        tools.configure_eval(&EvalSettings::default());
+        if !tools.eval_available() {
+            return;
+        }
+        tools.reset_project_instructions([]);
+        // 模拟首轮请求：根目录 AGENTS.md 已发送给模型，但尚未加载 sub/AGENTS.md。
+        let _ = tools.project_documents().unwrap();
+        tools.project_request_sent();
 
-    // 2) 在 eval 内调用 read('sub/note.txt') 自动激活 sub/AGENTS.md 后，再写成功且发出 FileChanged。
-    let mut events = Vec::new();
-    let allowed = tools.execute(
+        let workflow = WorkflowState::default();
+        let token = CancellationToken::new();
+
+        // 1) 未读 sub/AGENTS.md 前，经 eval 内部的 tool.write 写入 sub/out.txt 必须被门禁拒绝。
+        let blocked = execute(
+            &tools,
+            "eval",
+            json!({
+                "language": "py",
+                "code": "try:\n    write('sub/out.txt', 'hello')\n    msg = 'unexpected'\nexcept ToolError as e:\n    msg = str(e)\nprint(msg)"
+            }),
+        );
+        assert_eq!(blocked["ok"], true, "{blocked}");
+        assert!(
+            blocked["output"].as_str().unwrap().contains("AGENTS.md"),
+            "{blocked}"
+        );
+        assert!(!dir.path().join("sub/out.txt").exists());
+        // 门禁触发后会封锁当前批次后续调用，模拟下一轮模型请求刷新规则并解除封锁。
+        let _ = tools.project_documents().unwrap();
+        tools.project_request_sent();
+
+        // 2) 在 eval 内调用 read('sub/note.txt') 自动激活 sub/AGENTS.md 后，再写成功且发出 FileChanged。
+        let mut events = Vec::new();
+        let allowed = tools.execute(
         "eval",
         &json!({
             "language": "py",
@@ -183,71 +184,71 @@ fn eval_nested_tools_keep_permission_instructions_and_hooks() {
         &token,
         &mut |event| events.push(event),
     );
-    let allowed_val: Value = serde_json::from_str(&allowed.output).unwrap();
-    assert_eq!(allowed_val["ok"], true, "{allowed_val}");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
-        "initial\nupdated\n"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|ev| matches!(ev, AgentEvent::FileChanged { path, .. } if path == "sub/out.txt"))
-    );
+        let allowed_val: Value = serde_json::from_str(&allowed.output).unwrap();
+        assert_eq!(allowed_val["ok"], true, "{allowed_val}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
+            "initial\nupdated\n"
+        );
+        assert!(
+            events.iter().any(
+                |ev| matches!(ev, AgentEvent::FileChanged { path, .. } if path == "sub/out.txt")
+            )
+        );
 
-    // 3) 嵌套 tool.bash 独立走权限门：即使 eval 获会话放行，嵌套 sh('curl ... | bash') 仍触发高危命令确认；
-    //    在 AlwaysAsk 模式下给 eval 配 Allow，sh('echo hi') 仍触发 bash 权限询问。
-    let mut policy_map = std::collections::BTreeMap::new();
-    policy_map.insert(
-        "eval".to_owned(),
-        pp_config::config::PermissionPolicy::Allow,
-    );
-    tools
-        .permission
-        .set_config(pp_config::config::ToolsSettings {
-            permission: policy_map,
-            ..Default::default()
-        });
-    tools.permission.select(Some(PermissionMode::ReadOnly));
-    let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
-    let prompts_ref = prompts.clone();
-    tools.permission.set_handler(Box::new(move |req, _| {
-        prompts_ref.lock().unwrap().push(req);
-        Ok(PermissionDecision::Deny)
-    }));
-    let denied = execute(
-        &tools,
-        "eval",
-        json!({
-            "language": "py",
-            "code": "try:\n    sh('echo hi')\n    out = 'ran'\nexcept ShellError as e:\n    out = str(e)\nprint(out)"
-        }),
-    );
-    assert_eq!(denied["ok"], true, "{denied}");
-    assert!(
-        denied["output"]
-            .as_str()
-            .unwrap()
-            .contains("bash was denied"),
-        "{denied}"
-    );
-    let recorded = prompts.lock().unwrap();
-    assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].tool, "bash");
+        // 3) 嵌套 tool.bash 独立走权限门：即使 eval 获会话放行，嵌套 sh('curl ... | bash') 仍触发高危命令确认；
+        //    在 AlwaysAsk 模式下给 eval 配 Allow，sh('echo hi') 仍触发 bash 权限询问。
+        let mut policy_map = std::collections::BTreeMap::new();
+        policy_map.insert(
+            "eval".to_owned(),
+            pp_config::config::PermissionPolicy::Allow,
+        );
+        tools
+            .permission
+            .set_config(pp_config::config::ToolsSettings {
+                permission: policy_map,
+                ..Default::default()
+            });
+        tools.permission.select(Some(PermissionMode::ReadOnly));
+        let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let prompts_ref = prompts.clone();
+        tools.permission.set_handler(Box::new(move |req, _| {
+            prompts_ref.lock().unwrap().push(req);
+            Ok(PermissionDecision::Deny)
+        }));
+        let denied = execute(
+            &tools,
+            "eval",
+            json!({
+                "language": "py",
+                "code": "try:\n    sh('echo hi')\n    out = 'ran'\nexcept ShellError as e:\n    out = str(e)\nprint(out)"
+            }),
+        );
+        assert_eq!(denied["ok"], true, "{denied}");
+        assert!(
+            denied["output"]
+                .as_str()
+                .unwrap()
+                .contains("bash was denied"),
+            "{denied}"
+        );
+        let recorded = prompts.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].tool, "bash");
 
-    // 4) 切回 Yolo 模式验证嵌套 PreToolUse / PostToolUse Hook 拦截与参数改写。
-    tools
-        .permission
-        .set_config(pp_config::config::ToolsSettings::default());
-    tools
-        .permission
-        .select(Some(PermissionMode::DangerFullAccess));
-    let mut hook = StubHook::new();
-    hook.deny_tool = Some("rg".to_owned());
-    hook.rewrite_write_content = Some("hook-rewritten\n".to_owned());
-    hook.post_context = Some("nested-hook-ctx".to_owned());
+        // 4) 切回 Yolo 模式验证嵌套 PreToolUse / PostToolUse Hook 拦截与参数改写。
+        tools
+            .permission
+            .set_config(pp_config::config::ToolsSettings::default());
+        tools
+            .permission
+            .select(Some(PermissionMode::DangerFullAccess));
+        let mut hook = StubHook::new();
+        hook.deny_tool = Some("rg".to_owned());
+        hook.rewrite_write_content = Some("hook-rewritten\n".to_owned());
+        hook.post_context = Some("nested-hook-ctx".to_owned());
 
-    let execution = tools.execute_with_fetch(
+        let execution = tools.execute_with_fetch(
         "eval",
         &json!({
             "language": "py",
@@ -263,150 +264,156 @@ fn eval_nested_tools_keep_permission_instructions_and_hooks() {
         &mut |_| {},
         &mut |_, _| unreachable!(),
     );
-    let hook_val: Value = serde_json::from_str(&execution.output).unwrap();
-    assert_eq!(hook_val["ok"], true, "{hook_val}");
-    assert!(
-        hook_val["output"]
-            .as_str()
-            .unwrap()
-            .contains("hook blocked rg"),
-        "{hook_val}"
-    );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
-        "hook-rewritten\n"
-    );
-    assert!(
-        execution
-            .hook_context
-            .iter()
-            .any(|c| c == "nested-hook-ctx"),
-        "{:?}",
-        execution.hook_context
-    );
-    let hook_calls = hook.calls.lock().unwrap().clone();
-    assert!(hook_calls.contains(&"pre:rg".to_owned()));
-    assert!(hook_calls.contains(&"pre:write".to_owned()));
-    assert!(hook_calls.contains(&"post:write".to_owned()));
-}
-
-#[test]
-fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
-    use crate::ports::SubagentHost;
-    use async_openai::types::chat::FunctionObject;
-    use std::sync::Mutex;
-
-    struct StubHost {
-        acked: Mutex<Vec<String>>,
+        let hook_val: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(hook_val["ok"], true, "{hook_val}");
+        assert!(
+            hook_val["output"]
+                .as_str()
+                .unwrap()
+                .contains("hook blocked rg"),
+            "{hook_val}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
+            "hook-rewritten\n"
+        );
+        assert!(
+            execution
+                .hook_context
+                .iter()
+                .any(|c| c == "nested-hook-ctx"),
+            "{:?}",
+            execution.hook_context
+        );
+        let hook_calls = hook.calls.lock().unwrap().clone();
+        assert!(hook_calls.contains(&"pre:rg".to_owned()));
+        assert!(hook_calls.contains(&"pre:write".to_owned()));
+        assert!(hook_calls.contains(&"post:write".to_owned()));
     }
-    impl SubagentHost for StubHost {
-        fn definitions(&self, _: WorkMode) -> Vec<FunctionObject> {
-            vec![FunctionObject {
-                name: "task".into(),
-                description: Some("task".into()),
-                parameters: Some(json!({"type": "object"})),
-                strict: None,
-            }]
+
+    #[test]
+    fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
+        use crate::ports::SubagentHost;
+        use async_openai::types::chat::FunctionObject;
+        use std::sync::Mutex;
+
+        struct StubHost {
+            acked: Mutex<Vec<String>>,
         }
-        fn pending(&self) -> bool {
-            false
-        }
-        fn plan_mode(&self) -> bool {
-            false
-        }
-        fn is_root(&self) -> bool {
-            true
-        }
-        fn bind_session(&self, _: &Path, _: &str) {}
-        fn execute_task(&self, _: &str, _: bool, _: &CancellationToken) -> Result<Value> {
-            Ok(json!({
-                "ok": true,
-                "tasks": [{
-                    "run_id": "run-1",
-                    "results": {
-                        "results": [{"run": {"id": "run-1", "output": "done"}}]
-                    }
+        impl SubagentHost for StubHost {
+            fn definitions(&self, _: WorkMode) -> Vec<FunctionObject> {
+                vec![FunctionObject {
+                    name: "task".into(),
+                    description: Some("task".into()),
+                    parameters: Some(json!({"type": "object"})),
+                    strict: None,
                 }]
-            }))
+            }
+            fn pending(&self) -> bool {
+                false
+            }
+            fn plan_mode(&self) -> bool {
+                false
+            }
+            fn is_root(&self) -> bool {
+                true
+            }
+            fn bind_session(&self, _: &Path, _: &str) {}
+            fn execute_task(&self, _: &str, _: bool, _: &CancellationToken) -> Result<Value> {
+                Ok(json!({
+                    "ok": true,
+                    "tasks": [{
+                        "run_id": "run-1",
+                        "results": {
+                            "results": [{"run": {"id": "run-1", "output": "done"}}]
+                        }
+                    }]
+                }))
+            }
+            fn uri(
+                &self,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+                _: &CancellationToken,
+            ) -> Result<Value> {
+                unreachable!()
+            }
+            fn read_agent_result(
+                &self,
+                _: &str,
+                _: &CancellationToken,
+            ) -> Result<(Value, Option<Value>)> {
+                unreachable!()
+            }
+            fn wait_jobs(&self, _: &[String]) -> Result<Vec<pp_workspace::WaitJob>> {
+                Ok(vec![pp_workspace::WaitJob {
+                    id: "run-1".into(),
+                    r#type: "task".into(),
+                    label: "explorer".into(),
+                    status: "completed".into(),
+                    duration_ms: 1,
+                    delivered: false,
+                }])
+            }
+            fn acknowledge(&self, ids: &[String]) -> Result<()> {
+                self.acked.lock().unwrap().extend(ids.iter().cloned());
+                Ok(())
+            }
+            fn check_lsp_cleanup(&self) -> Result<()> {
+                Ok(())
+            }
+            fn cancel_runs(&self, _: &[String]) -> Result<()> {
+                Ok(())
+            }
+            fn reap_runs(&self, _: &[String]) -> Result<()> {
+                Ok(())
+            }
+            fn shutdown(&self) -> Result<()> {
+                Ok(())
+            }
         }
-        fn uri(&self, _: &str, _: &str, _: Option<&str>, _: &CancellationToken) -> Result<Value> {
-            unreachable!()
-        }
-        fn read_agent_result(
-            &self,
-            _: &str,
-            _: &CancellationToken,
-        ) -> Result<(Value, Option<Value>)> {
-            unreachable!()
-        }
-        fn wait_jobs(&self, _: &[String]) -> Result<Vec<pp_workspace::WaitJob>> {
-            Ok(vec![pp_workspace::WaitJob {
-                id: "run-1".into(),
-                r#type: "task".into(),
-                label: "explorer".into(),
-                status: "completed".into(),
-                duration_ms: 1,
-                delivered: false,
-            }])
-        }
-        fn acknowledge(&self, ids: &[String]) -> Result<()> {
-            self.acked.lock().unwrap().extend(ids.iter().cloned());
-            Ok(())
-        }
-        fn check_lsp_cleanup(&self) -> Result<()> {
-            Ok(())
-        }
-        fn cancel_runs(&self, _: &[String]) -> Result<()> {
-            Ok(())
-        }
-        fn reap_runs(&self, _: &[String]) -> Result<()> {
-            Ok(())
-        }
-        fn shutdown(&self) -> Result<()> {
-            Ok(())
-        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+        tools.configure_eval(&pp_config::config::EvalSettings {
+            enabled: true,
+            ..Default::default()
+        });
+        let host = Arc::new(StubHost {
+            acked: Mutex::new(Vec::new()),
+        });
+        tools.subagent = Some(host.clone());
+
+        tools.start_wait_batch();
+        let res = execute(
+            &tools,
+            "eval",
+            json!({
+                "language": "py",
+                "code": "r = tool.task(role='explorer', prompt='hi')\nw = tool.wait(timeout_ms=0)\nprint(len(r['tasks']), len(w['jobs']))"
+            }),
+        );
+        assert_eq!(res["ok"], true, "{res}");
+        assert_eq!(res["output"], "1 0\n");
+        tools.commit_wait_results().unwrap();
+        assert_eq!(*host.acked.lock().unwrap(), vec!["run-1".to_owned()]);
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
-    tools.configure_eval(&pp_config::config::EvalSettings {
-        enabled: true,
-        ..Default::default()
-    });
-    let host = Arc::new(StubHost {
-        acked: Mutex::new(Vec::new()),
-    });
-    tools.subagent = Some(host.clone());
-
-    tools.start_wait_batch();
-    let res = execute(
-        &tools,
-        "eval",
-        json!({
-            "language": "py",
-            "code": "r = tool.task(role='explorer', prompt='hi')\nw = tool.wait(timeout_ms=0)\nprint(len(r['tasks']), len(w['jobs']))"
-        }),
-    );
-    assert_eq!(res["ok"], true, "{res}");
-    assert_eq!(res["output"], "1 0\n");
-    tools.commit_wait_results().unwrap();
-    assert_eq!(*host.acked.lock().unwrap(), vec!["run-1".to_owned()]);
-}
-
-#[test]
-fn eval_multiple_todo_calls_propagate_evolving_snapshot() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
-    tools.configure_eval(&EvalSettings {
-        enabled: true,
-        ..Default::default()
-    });
-    if !tools.eval_available() {
-        return;
-    }
-    let workflow = WorkflowState::default();
-    let token = CancellationToken::new();
-    let execution = tools.execute(
+    #[test]
+    fn eval_multiple_todo_calls_propagate_evolving_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+        tools.configure_eval(&EvalSettings {
+            enabled: true,
+            ..Default::default()
+        });
+        if !tools.eval_available() {
+            return;
+        }
+        let workflow = WorkflowState::default();
+        let token = CancellationToken::new();
+        let execution = tools.execute(
         "eval",
         &json!({
             "language": "py",
@@ -420,97 +427,97 @@ fn eval_multiple_todo_calls_propagate_evolving_snapshot() {
         &token,
         &mut |_| {},
     );
-    assert!(execution.stop_error.is_none());
-    let output: Value = serde_json::from_str(&execution.output).unwrap();
-    assert_eq!(output["ok"], true, "{output}");
-    assert_eq!(output["output"], "True\n");
-    let change = execution.todo_change.expect("merged todo change");
-    assert_eq!(
-        change.phases[0].tasks[0].status,
-        pp_core::todo::TodoStatus::Completed
-    );
-    assert_eq!(
-        change.phases[0].tasks[1].status,
-        pp_core::todo::TodoStatus::InProgress
-    );
-}
-
-#[test]
-fn eval_schema_exposes_available_languages_and_js_override() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    tools.configure_eval(&EvalSettings::default());
-    if !tools.eval_available() {
-        return;
+        assert!(execution.stop_error.is_none());
+        let output: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(output["ok"], true, "{output}");
+        assert_eq!(output["output"], "True\n");
+        let change = execution.todo_change.expect("merged todo change");
+        assert_eq!(
+            change.phases[0].tasks[0].status,
+            pp_core::todo::TodoStatus::Completed
+        );
+        assert_eq!(
+            change.phases[0].tasks[1].status,
+            pp_core::todo::TodoStatus::InProgress
+        );
     }
 
-    let defs = tools.all_definitions(WorkMode::Execute);
-    let eval_def = defs.iter().find(|d| d.name == "eval").unwrap();
-    let langs = eval_def.parameters.as_ref().unwrap()["properties"]["language"]["enum"]
-        .as_array()
-        .unwrap();
-    assert!(!langs.is_empty());
+    #[test]
+    fn eval_schema_exposes_available_languages_and_js_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        tools.configure_eval(&EvalSettings::default());
+        if !tools.eval_available() {
+            return;
+        }
 
-    // 若本机同时安装 node，验证 js_runtime: Some("node") 精确反映在 schema 描述与返回字段上。
-    if pp_eval::probe_js(dir.path(), Some("node")).is_ok() {
-        tools.configure_eval(&EvalSettings {
-            enabled: true,
-            js_runtime: Some("node".to_owned()),
-            ..Default::default()
-        });
         let defs = tools.all_definitions(WorkMode::Execute);
         let eval_def = defs.iter().find(|d| d.name == "eval").unwrap();
-        let desc = eval_def.description.as_deref().unwrap();
-        assert!(desc.contains("Node.js"), "{desc}");
-        let res = execute(&tools, "eval", json!({"language": "js", "code": "1 + 2"}));
-        assert_eq!(res["ok"], true, "{res}");
-        assert_eq!(res["language"], "js");
-        assert_eq!(res["runtime"], "node");
-        assert_eq!(res["output"], "3\n");
+        let langs = eval_def.parameters.as_ref().unwrap()["properties"]["language"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(!langs.is_empty());
+
+        // 若本机同时安装 node，验证 js_runtime: Some("node") 精确反映在 schema 描述与返回字段上。
+        if pp_eval::probe_js(dir.path(), Some("node")).is_ok() {
+            tools.configure_eval(&EvalSettings {
+                enabled: true,
+                js_runtime: Some("node".to_owned()),
+                ..Default::default()
+            });
+            let defs = tools.all_definitions(WorkMode::Execute);
+            let eval_def = defs.iter().find(|d| d.name == "eval").unwrap();
+            let desc = eval_def.description.as_deref().unwrap();
+            assert!(desc.contains("Node.js"), "{desc}");
+            let res = execute(&tools, "eval", json!({"language": "js", "code": "1 + 2"}));
+            assert_eq!(res["ok"], true, "{res}");
+            assert_eq!(res["language"], "js");
+            assert_eq!(res["runtime"], "node");
+            assert_eq!(res["output"], "3\n");
+        }
     }
-}
 
-#[test]
-fn eval_js_nested_tools_keep_permission_instructions_and_hooks() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("AGENTS.md"), "# root rules\n").unwrap();
-    fs::create_dir_all(dir.path().join("sub")).unwrap();
-    fs::write(dir.path().join("sub/AGENTS.md"), "# sub rules\n").unwrap();
-    fs::write(dir.path().join("sub/note.txt"), "initial\n").unwrap();
+    #[test]
+    fn eval_js_nested_tools_keep_permission_instructions_and_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("AGENTS.md"), "# root rules\n").unwrap();
+        fs::create_dir_all(dir.path().join("sub")).unwrap();
+        fs::write(dir.path().join("sub/AGENTS.md"), "# sub rules\n").unwrap();
+        fs::write(dir.path().join("sub/note.txt"), "initial\n").unwrap();
 
-    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    tools.configure_eval(&EvalSettings::default());
-    if tools.eval_js_available.is_none() {
-        return;
-    }
-    tools.reset_project_instructions([]);
-    let _ = tools.project_documents().unwrap();
-    tools.project_request_sent();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        tools.configure_eval(&EvalSettings::default());
+        if tools.eval_js_available.is_none() {
+            return;
+        }
+        tools.reset_project_instructions([]);
+        let _ = tools.project_documents().unwrap();
+        tools.project_request_sent();
 
-    let workflow = WorkflowState::default();
-    let token = CancellationToken::new();
+        let workflow = WorkflowState::default();
+        let token = CancellationToken::new();
 
-    // 1) 未读 sub/AGENTS.md 前，经 JS eval 内部 write('sub/out.txt', ...) 必须被门禁拒绝。
-    let blocked = execute(
-        &tools,
-        "eval",
-        json!({
-            "language": "js",
-            "code": "let msg = 'unexpected'; try { write('sub/out.txt', 'hello'); } catch (e) { msg = e.message; } console.log(msg);"
-        }),
-    );
-    assert_eq!(blocked["ok"], true, "{blocked}");
-    assert!(
-        blocked["output"].as_str().unwrap().contains("AGENTS.md"),
-        "{blocked}"
-    );
-    assert!(!dir.path().join("sub/out.txt").exists());
-    let _ = tools.project_documents().unwrap();
-    tools.project_request_sent();
+        // 1) 未读 sub/AGENTS.md 前，经 JS eval 内部 write('sub/out.txt', ...) 必须被门禁拒绝。
+        let blocked = execute(
+            &tools,
+            "eval",
+            json!({
+                "language": "js",
+                "code": "let msg = 'unexpected'; try { write('sub/out.txt', 'hello'); } catch (e) { msg = e.message; } console.log(msg);"
+            }),
+        );
+        assert_eq!(blocked["ok"], true, "{blocked}");
+        assert!(
+            blocked["output"].as_str().unwrap().contains("AGENTS.md"),
+            "{blocked}"
+        );
+        assert!(!dir.path().join("sub/out.txt").exists());
+        let _ = tools.project_documents().unwrap();
+        tools.project_request_sent();
 
-    // 2) read('sub/note.txt') 激活规则后再写成功并触发 FileChanged。
-    let mut events = Vec::new();
-    let allowed = tools.execute(
+        // 2) read('sub/note.txt') 激活规则后再写成功并触发 FileChanged。
+        let mut events = Vec::new();
+        let allowed = tools.execute(
         "eval",
         &json!({
             "language": "js",
@@ -524,67 +531,67 @@ fn eval_js_nested_tools_keep_permission_instructions_and_hooks() {
         &token,
         &mut |event| events.push(event),
     );
-    let allowed_val: Value = serde_json::from_str(&allowed.output).unwrap();
-    assert_eq!(allowed_val["ok"], true, "{allowed_val}");
-    assert_eq!(
-        fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
-        "initial\nupdated\n"
-    );
-    assert!(
-        events
-            .iter()
-            .any(|ev| matches!(ev, AgentEvent::FileChanged { path, .. } if path == "sub/out.txt"))
-    );
+        let allowed_val: Value = serde_json::from_str(&allowed.output).unwrap();
+        assert_eq!(allowed_val["ok"], true, "{allowed_val}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
+            "initial\nupdated\n"
+        );
+        assert!(
+            events.iter().any(
+                |ev| matches!(ev, AgentEvent::FileChanged { path, .. } if path == "sub/out.txt")
+            )
+        );
 
-    // 3) 嵌套 sh(...) 独立走 bash 权限门与 hook。
-    let mut policy_map = std::collections::BTreeMap::new();
-    policy_map.insert(
-        "eval".to_owned(),
-        pp_config::config::PermissionPolicy::Allow,
-    );
-    tools
-        .permission
-        .set_config(pp_config::config::ToolsSettings {
-            permission: policy_map,
-            ..Default::default()
-        });
-    tools.permission.select(Some(PermissionMode::ReadOnly));
-    let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
-    let prompts_ref = prompts.clone();
-    tools.permission.set_handler(Box::new(move |req, _| {
-        prompts_ref.lock().unwrap().push(req);
-        Ok(PermissionDecision::Deny)
-    }));
-    let denied = execute(
-        &tools,
-        "eval",
-        json!({
-            "language": "js",
-            "code": "let out = 'ran'; try { sh('echo hi'); } catch (e) { out = e.message; } console.log(out);"
-        }),
-    );
-    assert_eq!(denied["ok"], true, "{denied}");
-    assert!(
-        denied["output"]
-            .as_str()
-            .unwrap()
-            .contains("bash was denied"),
-        "{denied}"
-    );
-    assert_eq!(prompts.lock().unwrap()[0].tool, "bash");
+        // 3) 嵌套 sh(...) 独立走 bash 权限门与 hook。
+        let mut policy_map = std::collections::BTreeMap::new();
+        policy_map.insert(
+            "eval".to_owned(),
+            pp_config::config::PermissionPolicy::Allow,
+        );
+        tools
+            .permission
+            .set_config(pp_config::config::ToolsSettings {
+                permission: policy_map,
+                ..Default::default()
+            });
+        tools.permission.select(Some(PermissionMode::ReadOnly));
+        let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let prompts_ref = prompts.clone();
+        tools.permission.set_handler(Box::new(move |req, _| {
+            prompts_ref.lock().unwrap().push(req);
+            Ok(PermissionDecision::Deny)
+        }));
+        let denied = execute(
+            &tools,
+            "eval",
+            json!({
+                "language": "js",
+                "code": "let out = 'ran'; try { sh('echo hi'); } catch (e) { out = e.message; } console.log(out);"
+            }),
+        );
+        assert_eq!(denied["ok"], true, "{denied}");
+        assert!(
+            denied["output"]
+                .as_str()
+                .unwrap()
+                .contains("bash was denied"),
+            "{denied}"
+        );
+        assert_eq!(prompts.lock().unwrap()[0].tool, "bash");
 
-    tools
-        .permission
-        .set_config(pp_config::config::ToolsSettings::default());
-    tools
-        .permission
-        .select(Some(PermissionMode::DangerFullAccess));
-    let mut hook = StubHook::new();
-    hook.deny_tool = Some("rg".to_owned());
-    hook.rewrite_write_content = Some("hook-js-rewritten\n".to_owned());
-    hook.post_context = Some("nested-js-hook-ctx".to_owned());
+        tools
+            .permission
+            .set_config(pp_config::config::ToolsSettings::default());
+        tools
+            .permission
+            .select(Some(PermissionMode::DangerFullAccess));
+        let mut hook = StubHook::new();
+        hook.deny_tool = Some("rg".to_owned());
+        hook.rewrite_write_content = Some("hook-js-rewritten\n".to_owned());
+        hook.post_context = Some("nested-js-hook-ctx".to_owned());
 
-    let execution = tools.execute_with_fetch(
+        let execution = tools.execute_with_fetch(
         "eval",
         &json!({
             "language": "js",
@@ -600,25 +607,26 @@ fn eval_js_nested_tools_keep_permission_instructions_and_hooks() {
         &mut |_| {},
         &mut |_, _| unreachable!(),
     );
-    let hook_val: Value = serde_json::from_str(&execution.output).unwrap();
-    assert_eq!(hook_val["ok"], true, "{hook_val}");
-    assert!(
-        hook_val["output"]
-            .as_str()
-            .unwrap()
-            .contains("hook blocked rg"),
-        "{hook_val}"
-    );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
-        "hook-js-rewritten\n"
-    );
-    assert!(
-        execution
-            .hook_context
-            .iter()
-            .any(|c| c == "nested-js-hook-ctx"),
-        "{:?}",
-        execution.hook_context
-    );
+        let hook_val: Value = serde_json::from_str(&execution.output).unwrap();
+        assert_eq!(hook_val["ok"], true, "{hook_val}");
+        assert!(
+            hook_val["output"]
+                .as_str()
+                .unwrap()
+                .contains("hook blocked rg"),
+            "{hook_val}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
+            "hook-js-rewritten\n"
+        );
+        assert!(
+            execution
+                .hook_context
+                .iter()
+                .any(|c| c == "nested-js-hook-ctx"),
+            "{:?}",
+            execution.hook_context
+        );
+    }
 }

@@ -24,103 +24,131 @@ fn render(panel: &mut Panel, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn auth_panel_matches_provider_status_and_logout_scope() {
-    let mut panel = Panel::new(false);
-    panel.listed(vec![Provider::OpenaiCodex, Provider::Zai]);
-    let screen = render(&mut panel, 120, 30);
-    assert!(screen.contains("Select provider to login"));
-    assert!(screen.contains("ChatGPT Plus/Pro (Codex Subscription) ● logged in (login)"));
-    assert!(screen.contains("Z.AI (GLM Coding Plan) ● logged in (api key)"));
-    assert!(screen.contains('╭') && screen.contains('╰'));
-    for (width, height) in [(20, 6), (1, 1), (80, 20)] {
-        render(&mut panel, width, height);
-    }
-    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
-    let screen = render(&mut panel, 120, 30);
-    assert!(screen.contains("Log in again") && screen.contains("Retry model discovery"));
-    panel.handle(key(KeyCode::Down));
-    assert!(matches!(
-        panel.handle(key(KeyCode::Enter)),
-        Action::Discover(Provider::OpenaiCodex)
-    ));
-    assert!(matches!(panel.handle(key(KeyCode::Esc)), Action::Cancel));
-    assert!(panel.closing);
-
-    let mut logout = Panel::new(true);
-    logout.listed(vec![Provider::GithubCopilot]);
-    let screen = render(&mut logout, 100, 20);
-    assert!(screen.contains("Select provider to logout") && screen.contains("GitHub Copilot"));
-    assert!(!screen.contains("ChatGPT") && !screen.contains("Kimi Code"));
-    assert!(matches!(
-        logout.handle(key(KeyCode::Enter)),
-        Action::Logout(Provider::GithubCopilot)
-    ));
-    let mut empty = Panel::new(true);
-    empty.listed(Vec::new());
-    assert!(render(&mut empty, 100, 20).contains("No providers are logged in."));
-}
-
-#[test]
-fn auth_key_panel_masks_paste_and_routes_links_without_leaking_input() {
-    let mut panel = Panel::new(false);
-    panel.listed(Vec::new());
-    panel.handle(key(KeyCode::Down));
-    let url = match panel.handle(key(KeyCode::Enter)) {
-        Action::Open(url) => url,
-        _ => panic!("必须打开密钥管理页"),
-    };
-    assert_eq!(url, Provider::Zai.key_url().unwrap());
-    panel.handle(Event::Paste("private-key-marker".into()));
-    let screen = render(&mut panel, 100, 30);
-    assert!(!screen.contains("private-key-marker"));
-    assert!(screen.contains('•') && screen.contains("Paste your Z.AI API key"));
-    assert!(matches!(panel.handle(key(KeyCode::F(2))), Action::Open(value) if value == url));
-    assert!(
-        matches!(panel.handle(key(KeyCode::Enter)), Action::Login(Provider::Zai, Some(value)) if value == "private-key-marker")
-    );
-    assert!(!render(&mut panel, 100, 30).contains("private-key-marker"));
-}
-
-#[test]
-fn auth_commandcode_key_panel_masks_input_and_submits_to_correct_provider() {
-    let mut panel = Panel::new(false);
-    panel.listed(Vec::new());
-    assert!(render(&mut panel, 100, 30).contains("Command Code"));
-    for _ in 0..Provider::ALL
-        .iter()
-        .position(|p| *p == Provider::CommandCode)
-        .unwrap()
+fn auth_panel_status_logout_scope_and_mouse_urls() {
     {
+        let mut panel = Panel::new(false);
+        panel.listed(vec![Provider::OpenaiCodex, Provider::Zai]);
+        let screen = render(&mut panel, 120, 30);
+        assert!(screen.contains("Select provider to login"));
+        assert!(screen.contains("ChatGPT Plus/Pro (Codex Subscription) ● logged in (login)"));
+        assert!(screen.contains("Z.AI (GLM Coding Plan) ● logged in (api key)"));
+        assert!(screen.contains('╭') && screen.contains('╰'));
+        for (width, height) in [(20, 6), (1, 1), (80, 20)] {
+            render(&mut panel, width, height);
+        }
+        assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+        let screen = render(&mut panel, 120, 30);
+        assert!(screen.contains("Log in again") && screen.contains("Retry model discovery"));
         panel.handle(key(KeyCode::Down));
-    }
-    let url = match panel.handle(key(KeyCode::Enter)) {
-        Action::Open(url) => url,
-        _ => panic!("必须打开 Command Code 控制台"),
-    };
-    assert_eq!(url, Provider::CommandCode.key_url().unwrap());
-    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
-    panel.handle(Event::Paste("user_private-commandcode-key".into()));
-    let screen = render(&mut panel, 100, 30);
-    assert!(screen.contains("Paste your Command Code API key"));
-    assert!(screen.contains("user_...") && screen.contains('•'));
-    assert!(!screen.contains("user_private-commandcode-key"));
-    assert!(matches!(
-        panel.handle(key(KeyCode::Enter)),
-        Action::Login(Provider::CommandCode, Some(value)) if value == "user_private-commandcode-key"
-    ));
-    assert!(!render(&mut panel, 100, 30).contains("user_private-commandcode-key"));
+        assert!(matches!(
+            panel.handle(key(KeyCode::Enter)),
+            Action::Discover(Provider::OpenaiCodex)
+        ));
+        assert!(matches!(panel.handle(key(KeyCode::Esc)), Action::Cancel));
+        assert!(panel.closing);
 
-    let mut logout = Panel::new(true);
-    logout.listed(vec![Provider::CommandCode]);
-    assert!(render(&mut logout, 100, 30).contains("Command Code ● logged in (api key)"));
-    assert!(matches!(
-        logout.handle(key(KeyCode::Enter)),
-        Action::Logout(Provider::CommandCode)
-    ));
+        let mut logout = Panel::new(true);
+        logout.listed(vec![Provider::GithubCopilot]);
+        let screen = render(&mut logout, 100, 20);
+        assert!(screen.contains("Select provider to logout") && screen.contains("GitHub Copilot"));
+        assert!(!screen.contains("ChatGPT") && !screen.contains("Kimi Code"));
+        assert!(matches!(
+            logout.handle(key(KeyCode::Enter)),
+            Action::Logout(Provider::GithubCopilot)
+        ));
+        let mut empty = Panel::new(true);
+        empty.listed(Vec::new());
+        assert!(render(&mut empty, 100, 20).contains("No providers are logged in."));
+    }
+
+    {
+        let mut panel = Panel::new(false);
+        panel.listed(Vec::new());
+        render(&mut panel, 100, 30);
+        // 面板顶边 y=1，首条项目位于 y=2。
+        let click = |x, y| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            panel.handle(click(5, 2)),
+            Action::Login(Provider::OpenaiCodex, None)
+        ));
+        panel.progress(pp_config::auth::service::Progress::Verification {
+            url: "https://auth.openai.com/long-authorization-page".into(),
+            code: "ABC-123".into(),
+        });
+        let screen = render(&mut panel, 30, 20);
+        assert!(screen.contains("ABC-123"));
+        assert!(
+            matches!(panel.handle(click(5, 3)), Action::Open(url) if url.starts_with("https://auth.openai.com/"))
+        );
+    }
 }
 
 #[test]
-fn auth_opencode_key_panel_masks_input_and_submits_to_correct_provider() {
+fn auth_key_panels_mask_input_route_links_and_submit() {
+    {
+        let mut panel = Panel::new(false);
+        panel.listed(Vec::new());
+        panel.handle(key(KeyCode::Down));
+        let url = match panel.handle(key(KeyCode::Enter)) {
+            Action::Open(url) => url,
+            _ => panic!("必须打开密钥管理页"),
+        };
+        assert_eq!(url, Provider::Zai.key_url().unwrap());
+        panel.handle(Event::Paste("private-key-marker".into()));
+        let screen = render(&mut panel, 100, 30);
+        assert!(!screen.contains("private-key-marker"));
+        assert!(screen.contains('•') && screen.contains("Paste your Z.AI API key"));
+        assert!(matches!(panel.handle(key(KeyCode::F(2))), Action::Open(value) if value == url));
+        assert!(
+            matches!(panel.handle(key(KeyCode::Enter)), Action::Login(Provider::Zai, Some(value)) if value == "private-key-marker")
+        );
+        assert!(!render(&mut panel, 100, 30).contains("private-key-marker"));
+    }
+
+    {
+        let mut panel = Panel::new(false);
+        panel.listed(Vec::new());
+        assert!(render(&mut panel, 100, 30).contains("Command Code"));
+        for _ in 0..Provider::ALL
+            .iter()
+            .position(|p| *p == Provider::CommandCode)
+            .unwrap()
+        {
+            panel.handle(key(KeyCode::Down));
+        }
+        let url = match panel.handle(key(KeyCode::Enter)) {
+            Action::Open(url) => url,
+            _ => panic!("必须打开 Command Code 控制台"),
+        };
+        assert_eq!(url, Provider::CommandCode.key_url().unwrap());
+        assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+        panel.handle(Event::Paste("user_private-commandcode-key".into()));
+        let screen = render(&mut panel, 100, 30);
+        assert!(screen.contains("Paste your Command Code API key"));
+        assert!(screen.contains("user_...") && screen.contains('•'));
+        assert!(!screen.contains("user_private-commandcode-key"));
+        assert!(matches!(
+            panel.handle(key(KeyCode::Enter)),
+            Action::Login(Provider::CommandCode, Some(value)) if value == "user_private-commandcode-key"
+        ));
+        assert!(!render(&mut panel, 100, 30).contains("user_private-commandcode-key"));
+
+        let mut logout = Panel::new(true);
+        logout.listed(vec![Provider::CommandCode]);
+        assert!(render(&mut logout, 100, 30).contains("Command Code ● logged in (api key)"));
+        assert!(matches!(
+            logout.handle(key(KeyCode::Enter)),
+            Action::Logout(Provider::CommandCode)
+        ));
+    }
+
     for (provider, prompt) in [
         (Provider::OpencodeZen, "Paste your OpenCode Zen API key"),
         (Provider::OpencodeGo, "Paste your OpenCode Go API key"),
@@ -158,35 +186,6 @@ fn auth_opencode_key_panel_masks_input_and_submits_to_correct_provider() {
             Action::Logout(p) if p == provider
         ));
     }
-}
-
-#[test]
-fn auth_panel_mouse_selects_and_opens_wrapped_urls_during_wait() {
-    let mut panel = Panel::new(false);
-    panel.listed(Vec::new());
-    render(&mut panel, 100, 30);
-    // 面板顶边 y=1，首条项目位于 y=2。
-    let click = |x, y| {
-        Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: x,
-            row: y,
-            modifiers: KeyModifiers::NONE,
-        })
-    };
-    assert!(matches!(
-        panel.handle(click(5, 2)),
-        Action::Login(Provider::OpenaiCodex, None)
-    ));
-    panel.progress(pp_config::auth::service::Progress::Verification {
-        url: "https://auth.openai.com/long-authorization-page".into(),
-        code: "ABC-123".into(),
-    });
-    let screen = render(&mut panel, 30, 20);
-    assert!(screen.contains("ABC-123"));
-    assert!(
-        matches!(panel.handle(click(5, 3)), Action::Open(url) if url.starts_with("https://auth.openai.com/"))
-    );
 }
 
 #[test]

@@ -162,114 +162,109 @@ fn assert_incomplete_responses(items: Vec<r::InputItem>) {
 }
 
 #[test]
-fn context_chat_plain_final_replies_close_each_exchange() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer one"),
-        chat_user("second"),
-        chat_assistant("answer two"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![3, 5]);
+fn context_chat_exchange_boundaries_and_summaries() {
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("first"),
+            chat_assistant("answer one"),
+            chat_user("second"),
+            chat_assistant("answer two"),
+        ];
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![3, 5]);
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("read both"),
+            chat_assistant_calls(&["a", "b"]),
+            chat_tool("a", "result a"),
+            chat_tool("b", "result b"),
+            chat_user("second"),
+            chat_assistant("answer two"),
+        ];
+        // The boundary sits after the complete batch (index 5), never between
+        // the two results or between the assistant and its results.
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![5, 7]);
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("task"),
+            chat_assistant_calls(&["a"]),
+            chat_tool("a", "result a"),
+            chat_assistant_calls(&["b"]),
+            chat_tool("b", "result b"),
+            chat_assistant("final answer"),
+        ];
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![4, 6, 7]);
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("read both"),
+            chat_assistant_calls(&["a", "b"]),
+            chat_tool("b", "result b"),
+            chat_tool("a", "result a"),
+        ];
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![5]);
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("first"),
+            chat_assistant("answer one"),
+            chat_user("unanswered"),
+        ];
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![3]);
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("part one"),
+            chat_user("part two"),
+            chat_assistant("answer"),
+        ];
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![4]);
+    }
+
+    {
+        assert_eq!(completion_boundaries(&[]).unwrap(), Vec::<usize>::new());
+        let system_only = vec![chat_system("system")];
+        assert_eq!(
+            completion_boundaries(&system_only).unwrap(),
+            Vec::<usize>::new()
+        );
+        let pending = vec![chat_system("system"), chat_user("unanswered")];
+        assert_eq!(
+            completion_boundaries(&pending).unwrap(),
+            Vec::<usize>::new()
+        );
+    }
+
+    {
+        // A previously compacted history keeps its summary as an ordinary user
+        // message: it joins the following assistant reply and is not treated as a
+        // special boundary of its own.
+        let messages = vec![
+            chat_system("system"),
+            chat_summary_user(),
+            chat_assistant("kept reply"),
+            chat_user("later"),
+            chat_assistant("later reply"),
+        ];
+        assert_eq!(completion_boundaries(&messages).unwrap(), vec![3, 5]);
+    }
 }
 
 #[test]
-fn context_chat_tool_batch_closes_only_after_all_results() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read both"),
-        chat_assistant_calls(&["a", "b"]),
-        chat_tool("a", "result a"),
-        chat_tool("b", "result b"),
-        chat_user("second"),
-        chat_assistant("answer two"),
-    ];
-    // The boundary sits after the complete batch (index 5), never between
-    // the two results or between the assistant and its results.
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![5, 7]);
-}
-
-#[test]
-fn context_chat_consecutive_tool_batches_are_separate_exchanges() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("task"),
-        chat_assistant_calls(&["a"]),
-        chat_tool("a", "result a"),
-        chat_assistant_calls(&["b"]),
-        chat_tool("b", "result b"),
-        chat_assistant("final answer"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![4, 6, 7]);
-}
-
-#[test]
-fn context_chat_batch_results_in_any_order_close_together() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read both"),
-        chat_assistant_calls(&["a", "b"]),
-        chat_tool("b", "result b"),
-        chat_tool("a", "result a"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![5]);
-}
-
-#[test]
-fn context_chat_pending_user_gets_no_boundary() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer one"),
-        chat_user("unanswered"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![3]);
-}
-
-#[test]
-fn context_chat_multiple_users_join_the_next_exchange() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("part one"),
-        chat_user("part two"),
-        chat_assistant("answer"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![4]);
-}
-
-#[test]
-fn context_chat_empty_or_pending_only_histories_have_no_boundaries() {
-    assert_eq!(completion_boundaries(&[]).unwrap(), Vec::<usize>::new());
-    let system_only = vec![chat_system("system")];
-    assert_eq!(
-        completion_boundaries(&system_only).unwrap(),
-        Vec::<usize>::new()
-    );
-    let pending = vec![chat_system("system"), chat_user("unanswered")];
-    assert_eq!(
-        completion_boundaries(&pending).unwrap(),
-        Vec::<usize>::new()
-    );
-}
-
-#[test]
-fn context_chat_existing_summary_is_a_regular_user_prefix() {
-    // A previously compacted history keeps its summary as an ordinary user
-    // message: it joins the following assistant reply and is not treated as a
-    // special boundary of its own.
-    let messages = vec![
-        chat_system("system"),
-        chat_summary_user(),
-        chat_assistant("kept reply"),
-        chat_user("later"),
-        chat_assistant("later reply"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![3, 5]);
-}
-
-#[test]
-fn context_chat_tool_result_error_shapes_rejected() {
-    let shapes: [Vec<ChatCompletionRequestMessage>; 5] = [
+fn context_chat_rejected_shapes_and_developer_boundaries() {
+    let shapes: Vec<Vec<ChatCompletionRequestMessage>> = vec![
         // missing：批内缺少结果。
         vec![
             chat_system("system"),
@@ -306,116 +301,157 @@ fn context_chat_tool_result_error_shapes_rejected() {
             chat_tool("a", "result a"),
             chat_tool("b", "orphan"),
         ],
+        // unsupported legacy function message
+        vec![
+            chat_system("system"),
+            chat_user("question"),
+            unsupported_chat(),
+        ],
+        // system message outside first position
+        vec![
+            chat_system("system"),
+            chat_user("question"),
+            chat_system("mid-history system"),
+            chat_assistant("answer"),
+        ],
+        // assistant between batch and results
+        vec![
+            chat_system("system"),
+            chat_user("read both"),
+            chat_assistant_calls(&["a", "b"]),
+            chat_tool("a", "result a"),
+            chat_assistant("answer before results complete"),
+        ],
+        // user between batch and results
+        vec![
+            chat_system("system"),
+            chat_user("read"),
+            chat_assistant_calls(&["a"]),
+            chat_user("interjected"),
+            chat_tool("a", "result a"),
+        ],
+        // blank tool call id
+        vec![
+            chat_system("system"),
+            chat_user("read"),
+            chat_assistant_calls(&[""]),
+            chat_tool("", "result"),
+        ],
+        // developer message inside open tool batch
+        vec![
+            chat_system("system"),
+            chat_user("read"),
+            chat_assistant_calls(&["a"]),
+            chat_developer("interjected developer note"),
+            chat_tool("a", "result a"),
+        ],
     ];
     for messages in shapes {
         assert_incomplete_chat(messages);
     }
-}
 
-#[test]
-fn context_chat_unsupported_message_rejected() {
-    let messages = vec![
+    let dev_ok = vec![
         chat_system("system"),
         chat_user("question"),
-        unsupported_chat(),
+        chat_assistant("answer one"),
+        chat_developer("Todo list still has unfinished items:\n- [in_progress] step"),
+        chat_assistant("answer two"),
+        chat_developer("LSP diagnostics (late):\nerror"),
     ];
-    assert_incomplete_chat(messages);
+    assert_eq!(completion_boundaries(&dev_ok).unwrap(), vec![3, 5]);
+    assert_eq!(chat_cutoff(&dev_ok, None).unwrap(), Some(3));
 }
 
 #[test]
-fn context_responses_reasoning_calls_and_results_form_one_group() {
-    let items = vec![
-        res_user("read both"),
-        res_reasoning("reason-1", Some("encrypted-blob")),
-        res_call("a"),
-        res_call("b"),
-        res_output("a", "result a"),
-        res_output("b", "result b"),
-        res_user("second"),
-        res_assistant("msg-1", "answer two"),
-    ];
-    // The encrypted reasoning stays inside the same exchange as the calls it
-    // precedes: the only boundary before the next user item sits after the
-    // final result (index 6), never between reasoning and the calls.
-    assert_eq!(response_boundaries(&items).unwrap(), vec![6, 8]);
+fn context_responses_exchange_groups_and_summaries() {
+    {
+        let items = vec![
+            res_user("read both"),
+            res_reasoning("reason-1", Some("encrypted-blob")),
+            res_call("a"),
+            res_call("b"),
+            res_output("a", "result a"),
+            res_output("b", "result b"),
+            res_user("second"),
+            res_assistant("msg-1", "answer two"),
+        ];
+        // The encrypted reasoning stays inside the same exchange as the calls it
+        // precedes: the only boundary before the next user item sits after the
+        // final result (index 6), never between reasoning and the calls.
+        assert_eq!(response_boundaries(&items).unwrap(), vec![6, 8]);
+    }
+
+    {
+        let items = vec![
+            res_user("read both"),
+            res_call("a"),
+            res_call("b"),
+            res_output("b", "result b"),
+            res_output("a", "result a"),
+        ];
+        assert_eq!(response_boundaries(&items).unwrap(), vec![5]);
+    }
+
+    {
+        let items = vec![
+            res_user("task"),
+            res_reasoning("reason-1", None),
+            res_assistant("msg-1", "I will read"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_user("next"),
+            res_assistant("msg-2", "answer"),
+        ];
+        assert_eq!(response_boundaries(&items).unwrap(), vec![5, 7]);
+    }
+
+    {
+        let items = vec![
+            res_user("first"),
+            res_reasoning("reason-1", Some("encrypted-blob")),
+            res_assistant("msg-1", "answer one"),
+            res_user("second"),
+            res_reasoning("reason-2", None),
+            res_assistant("msg-2", "answer two"),
+        ];
+        // The plain assistant output group only closes when the next user item
+        // appears, so reasoning can never be cut from its output message.
+        assert_eq!(response_boundaries(&items).unwrap(), vec![3, 6]);
+    }
+
+    {
+        let items = vec![
+            res_user("first"),
+            res_reasoning("reason-1", None),
+            res_assistant("msg-1", "answer one"),
+        ];
+        assert_eq!(response_boundaries(&items).unwrap(), vec![3]);
+    }
+
+    {
+        let items = vec![
+            res_user("first"),
+            res_assistant("msg-1", "answer one"),
+            res_user("unanswered"),
+        ];
+        assert_eq!(response_boundaries(&items).unwrap(), vec![2]);
+    }
+
+    {
+        let items = vec![
+            res_user("[Context summary]\nremembered constraint\n[/Context summary]"),
+            res_reasoning("reason-1", None),
+            res_assistant("msg-1", "kept reply"),
+            res_user("later"),
+            res_assistant("msg-2", "later reply"),
+        ];
+        assert_eq!(response_boundaries(&items).unwrap(), vec![3, 5]);
+    }
 }
 
 #[test]
-fn context_responses_call_group_closes_only_after_all_results() {
-    let items = vec![
-        res_user("read both"),
-        res_call("a"),
-        res_call("b"),
-        res_output("b", "result b"),
-        res_output("a", "result a"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![5]);
-}
-
-#[test]
-fn context_responses_message_inside_call_group_stays_in_group() {
-    let items = vec![
-        res_user("task"),
-        res_reasoning("reason-1", None),
-        res_assistant("msg-1", "I will read"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_user("next"),
-        res_assistant("msg-2", "answer"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![5, 7]);
-}
-
-#[test]
-fn context_responses_no_call_group_closes_at_next_user() {
-    let items = vec![
-        res_user("first"),
-        res_reasoning("reason-1", Some("encrypted-blob")),
-        res_assistant("msg-1", "answer one"),
-        res_user("second"),
-        res_reasoning("reason-2", None),
-        res_assistant("msg-2", "answer two"),
-    ];
-    // The plain assistant output group only closes when the next user item
-    // appears, so reasoning can never be cut from its output message.
-    assert_eq!(response_boundaries(&items).unwrap(), vec![3, 6]);
-}
-
-#[test]
-fn context_responses_no_call_group_closes_at_end() {
-    let items = vec![
-        res_user("first"),
-        res_reasoning("reason-1", None),
-        res_assistant("msg-1", "answer one"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![3]);
-}
-
-#[test]
-fn context_responses_pending_user_gets_no_boundary() {
-    let items = vec![
-        res_user("first"),
-        res_assistant("msg-1", "answer one"),
-        res_user("unanswered"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![2]);
-}
-
-#[test]
-fn context_responses_existing_summary_is_a_regular_user_prefix() {
-    let items = vec![
-        res_user("[Context summary]\nremembered constraint\n[/Context summary]"),
-        res_reasoning("reason-1", None),
-        res_assistant("msg-1", "kept reply"),
-        res_user("later"),
-        res_assistant("msg-2", "later reply"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![3, 5]);
-}
-
-#[test]
-fn context_responses_tool_output_error_shapes_rejected() {
-    let shapes: [Vec<r::InputItem>; 5] = [
+fn context_responses_rejected_shapes_and_developer_boundaries() {
+    let shapes: Vec<Vec<r::InputItem>> = vec![
         // missing：批内缺少结果。
         vec![
             res_user("read both"),
@@ -445,16 +481,104 @@ fn context_responses_tool_output_error_shapes_rejected() {
             res_output("a", "result a"),
             res_output("b", "orphan"),
         ],
+        // unsupported web search item
+        vec![res_user("question"), unsupported_response_item()],
+        // Reusing an already-answered call_id while the same batch is still open
+        vec![
+            res_user("read"),
+            res_call("a"),
+            res_call("b"),
+            res_output("a", "result one"),
+            res_call("a"),
+            res_output("b", "result b"),
+            res_output("a", "result two"),
+        ],
+        // developer message mid-batch
+        vec![
+            res_user("read"),
+            res_call("a"),
+            res_developer("interjected developer note"),
+            res_output("a", "result a"),
+        ],
+        vec![res_user("task"), res_reasoning("reason", Some("encrypted"))],
+        vec![
+            res_user("task"),
+            res_reasoning("reason", None),
+            res_user("next"),
+        ],
+        vec![
+            res_user("task"),
+            res_call(" a "),
+            res_output("a", "wrong identity"),
+        ],
     ];
     for items in shapes {
         assert_incomplete_responses(items);
     }
-}
 
-#[test]
-fn context_responses_unsupported_item_rejected() {
-    let items = vec![res_user("question"), unsupported_response_item()];
-    assert_incomplete_responses(items);
+    // Chat consecutive call_ids & trailing assistant & converted assistant & developer boundaries
+    assert_incomplete_chat(vec![
+        chat_system("system"),
+        chat_user("task"),
+        chat_assistant_calls(&["a"]),
+        chat_assistant_calls(&["b"]),
+        chat_tool("a", "one"),
+        chat_tool("b", "two"),
+    ]);
+    assert_incomplete_chat(vec![
+        chat_system("system"),
+        chat_user("task"),
+        chat_assistant_calls(&[" a "]),
+        chat_tool("a", "wrong identity"),
+    ]);
+
+    let chat_reused = vec![
+        chat_system("system"),
+        chat_user("read"),
+        chat_assistant_calls(&["a"]),
+        chat_tool("a", "result one"),
+        chat_assistant_calls(&["a"]),
+        chat_tool("a", "result two"),
+    ];
+    assert_eq!(completion_boundaries(&chat_reused).unwrap(), vec![4, 6]);
+    assert_eq!(chat_cutoff(&chat_reused, None).unwrap(), Some(4));
+
+    let res_reused = vec![
+        res_user("read"),
+        res_call("a"),
+        res_output("a", "result one"),
+        res_call("a"),
+        res_output("a", "result two"),
+    ];
+    assert_eq!(response_boundaries(&res_reused).unwrap(), vec![3, 5]);
+    assert_eq!(response_cutoff(&res_reused, None).unwrap(), Some(3));
+
+    let trailing = vec![
+        res_user("read"),
+        res_call("a"),
+        res_output("a", "result a"),
+        res_assistant("msg-1", "final answer"),
+    ];
+    assert_eq!(response_boundaries(&trailing).unwrap(), vec![3, 4]);
+
+    let converted = vec![
+        res_user("question"),
+        res_assistant_easy("reply"),
+        res_user("next"),
+        res_assistant("native", "next reply"),
+    ];
+    assert_eq!(response_boundaries(&converted).unwrap(), vec![2, 4]);
+    assert_eq!(response_cutoff(&converted, None).unwrap(), Some(2));
+
+    let dev_res = vec![
+        res_user("question"),
+        res_assistant("msg-1", "answer one"),
+        res_developer("Todo list still has unfinished items:\n- [in_progress] step"),
+        res_assistant("msg-2", "answer two"),
+        res_structured_developer("LSP diagnostics (late):\nerror"),
+    ];
+    assert_eq!(response_boundaries(&dev_res).unwrap(), vec![2, 4]);
+    assert_eq!(response_cutoff(&dev_res, None).unwrap(), Some(2));
 }
 
 fn chat_developer(text: &str) -> ChatCompletionRequestMessage {
@@ -493,190 +617,6 @@ fn res_structured_developer(text: &str) -> r::InputItem {
     })))
 }
 
-#[test]
-fn context_chat_developer_messages_preserve_exchange_boundaries_and_reject_mid_batch() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("question"),
-        chat_assistant("answer one"),
-        chat_developer("Todo list still has unfinished items:\n- [in_progress] step"),
-        chat_assistant("answer two"),
-        chat_developer("LSP diagnostics (late):\nerror"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![3, 5]);
-    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
-
-    // A developer message interjected inside an open tool batch is still invalid.
-    let invalid = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&["a"]),
-        chat_developer("interjected developer note"),
-        chat_tool("a", "result a"),
-    ];
-    assert_incomplete_chat(invalid);
-}
-
-#[test]
-fn context_chat_system_message_outside_first_position_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("question"),
-        chat_system("mid-history system"),
-        chat_assistant("answer"),
-    ];
-    assert_incomplete_chat(messages);
-}
-
-#[test]
-fn context_chat_assistant_between_batch_and_results_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read both"),
-        chat_assistant_calls(&["a", "b"]),
-        chat_tool("a", "result a"),
-        chat_assistant("answer before results complete"),
-    ];
-    assert_incomplete_chat(messages);
-}
-
-#[test]
-fn context_chat_user_between_batch_and_results_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&["a"]),
-        chat_user("interjected"),
-        chat_tool("a", "result a"),
-    ];
-    assert_incomplete_chat(messages);
-}
-
-#[test]
-fn context_chat_blank_tool_call_id_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&[""]),
-        chat_tool("", "result"),
-    ];
-    assert_incomplete_chat(messages);
-}
-
-#[test]
-fn context_call_id_reused_across_closed_batches_allowed_but_same_batch_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&["a"]),
-        chat_tool("a", "result one"),
-        chat_assistant_calls(&["a"]),
-        chat_tool("a", "result two"),
-    ];
-    assert_eq!(completion_boundaries(&messages).unwrap(), vec![4, 6]);
-    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(4));
-
-    let items = vec![
-        res_user("read"),
-        res_call("a"),
-        res_output("a", "result one"),
-        res_call("a"),
-        res_output("a", "result two"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![3, 5]);
-    assert_eq!(response_cutoff(&items, None).unwrap(), Some(3));
-
-    // Reusing an already-answered call_id while the same batch is still open is rejected.
-    let interleaved = vec![
-        res_user("read"),
-        res_call("a"),
-        res_call("b"),
-        res_output("a", "result one"),
-        res_call("a"),
-        res_output("b", "result b"),
-        res_output("a", "result two"),
-    ];
-    assert_incomplete_responses(interleaved);
-}
-
-#[test]
-fn context_responses_trailing_assistant_after_batch_is_new_group() {
-    let items = vec![
-        res_user("read"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_assistant("msg-1", "final answer"),
-    ];
-    // The call batch closes at its own boundary; the trailing plain output
-    // opens a fresh group closed at the end of the history.
-    assert_eq!(response_boundaries(&items).unwrap(), vec![3, 4]);
-}
-
-#[test]
-fn context_responses_converted_assistant_messages_remain_compactable() {
-    let items = vec![
-        res_user("question"),
-        res_assistant_easy("reply"),
-        res_user("next"),
-        res_assistant("native", "next reply"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![2, 4]);
-    assert_eq!(response_cutoff(&items, None).unwrap(), Some(2));
-}
-
-#[test]
-fn context_responses_developer_messages_close_open_group_and_reject_mid_batch() {
-    let items = vec![
-        res_user("question"),
-        res_assistant("msg-1", "answer one"),
-        res_developer("Todo list still has unfinished items:\n- [in_progress] step"),
-        res_assistant("msg-2", "answer two"),
-        res_structured_developer("LSP diagnostics (late):\nerror"),
-    ];
-    assert_eq!(response_boundaries(&items).unwrap(), vec![2, 4]);
-    assert_eq!(response_cutoff(&items, None).unwrap(), Some(2));
-
-    let invalid = vec![
-        res_user("read"),
-        res_call("a"),
-        res_developer("interjected developer note"),
-        res_output("a", "result a"),
-    ];
-    assert_incomplete_responses(invalid);
-}
-
-#[test]
-fn context_incomplete_groups_and_normalized_call_ids_are_rejected() {
-    assert_incomplete_chat(vec![
-        chat_system("system"),
-        chat_user("task"),
-        chat_assistant_calls(&["a"]),
-        chat_assistant_calls(&["b"]),
-        chat_tool("a", "one"),
-        chat_tool("b", "two"),
-    ]);
-    assert_incomplete_chat(vec![
-        chat_system("system"),
-        chat_user("task"),
-        chat_assistant_calls(&[" a "]),
-        chat_tool("a", "wrong identity"),
-    ]);
-    assert_incomplete_responses(vec![
-        res_user("task"),
-        res_reasoning("reason", Some("encrypted")),
-    ]);
-    assert_incomplete_responses(vec![
-        res_user("task"),
-        res_reasoning("reason", None),
-        res_user("next"),
-    ]);
-    assert_incomplete_responses(vec![
-        res_user("task"),
-        res_call(" a "),
-        res_output("a", "wrong identity"),
-    ]);
-}
-
 fn chat_cutoff(
     messages: &[ChatCompletionRequestMessage],
     context_window: Option<u64>,
@@ -699,175 +639,172 @@ fn response_cutoff(items: &[r::InputItem], context_window: Option<u64>) -> Resul
 }
 
 #[test]
-fn context_chat_retention_earliest_cutoff_when_budget_fits() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer one"),
-        chat_user("second"),
-        chat_assistant("answer two"),
-        chat_user("third"),
-        chat_assistant("answer three"),
-    ];
-    // Every exchange is small, so the earliest safe cutoff (right after the
-    // first complete exchange) already fits the default budget.
-    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
-    assert_eq!(chat_cutoff(&messages, Some(1_000_000)).unwrap(), Some(3));
+fn context_chat_retention_cutoffs_and_budgets() {
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("first"),
+            chat_assistant("answer one"),
+            chat_user("second"),
+            chat_assistant("answer two"),
+            chat_user("third"),
+            chat_assistant("answer three"),
+        ];
+        // Every exchange is small, so the earliest safe cutoff (right after the
+        // first complete exchange) already fits the default budget.
+        assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
+        assert_eq!(chat_cutoff(&messages, Some(1_000_000)).unwrap(), Some(3));
+    }
+
+    {
+        let big = "x".repeat(55_000);
+        let messages = vec![
+            chat_system("system"),
+            chat_user("first"),
+            chat_assistant("answer one"),
+            chat_user(&big),
+            chat_assistant("answer two"),
+            chat_user("third"),
+            chat_assistant("answer three"),
+        ];
+        // The suffix from cutoff 3 holds the huge second exchange.
+        let suffix = &messages[3..];
+        let suffix_tokens = estimate_tokens(&suffix).unwrap();
+        assert!(suffix_tokens > 16_384);
+        // Unknown capacity keeps the fixed 16384 budget instead of an unlimited one.
+        assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(5));
+        // The budget is capped at 16384 rather than growing with window/5.
+        assert_eq!(chat_cutoff(&messages, Some(1_000_000)).unwrap(), Some(5));
+        // A smaller exchange exercises window/5 below the fixed cap.
+        let mut messages = messages;
+        messages[3] = chat_user(&"x".repeat(1000));
+        let suffix_tokens = estimate_tokens(&&messages[3..]).unwrap();
+        // An exact fit keeps the earliest cutoff.
+        assert_eq!(
+            chat_cutoff(&messages, Some(5 * suffix_tokens)).unwrap(),
+            Some(3)
+        );
+        // One token short pushes the cutoff to the next boundary.
+        assert_eq!(
+            chat_cutoff(&messages, Some(5 * (suffix_tokens - 1))).unwrap(),
+            Some(5)
+        );
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("first"),
+            chat_assistant("answer one"),
+            chat_user("second"),
+            chat_assistant("answer two"),
+        ];
+        // Even a near-zero budget never splits the retained exchange: the cutoff
+        // falls on the only candidate boundary rather than inside the suffix.
+        assert_eq!(chat_cutoff(&messages, Some(5)).unwrap(), Some(3));
+    }
+
+    {
+        let messages = vec![
+            chat_system("system"),
+            chat_user("first"),
+            chat_assistant("answer one"),
+            chat_user("second"),
+            chat_assistant("answer two"),
+            chat_user("unanswered"),
+        ];
+        assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
+    }
+
+    {
+        // A stored summary is regular history: it can be re-summarized together
+        // with the exchanges that follow it, never pinned as a fixed prefix.
+        let messages = vec![
+            chat_system("system"),
+            chat_summary_user(),
+            chat_assistant("kept reply"),
+            chat_user("later"),
+            chat_assistant("later reply"),
+        ];
+        assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
+        let only_summary = vec![
+            chat_system("system"),
+            chat_summary_user(),
+            chat_assistant("kept reply"),
+        ];
+        assert_eq!(chat_cutoff(&only_summary, None).unwrap(), None::<usize>);
+    }
 }
 
 #[test]
-fn context_chat_retention_budget_follows_window_fifth_and_cap() {
-    let big = "x".repeat(55_000);
-    let messages = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer one"),
-        chat_user(&big),
-        chat_assistant("answer two"),
-        chat_user("third"),
-        chat_assistant("answer three"),
-    ];
-    // The suffix from cutoff 3 holds the huge second exchange.
-    let suffix = &messages[3..];
-    let suffix_tokens = estimate_tokens(&suffix).unwrap();
-    assert!(suffix_tokens > 16_384);
-    // Unknown capacity keeps the fixed 16384 budget instead of an unlimited one.
-    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(5));
-    // The budget is capped at 16384 rather than growing with window/5.
-    assert_eq!(chat_cutoff(&messages, Some(1_000_000)).unwrap(), Some(5));
-    // A smaller exchange exercises window/5 below the fixed cap.
-    let mut messages = messages;
-    messages[3] = chat_user(&"x".repeat(1000));
-    let suffix_tokens = estimate_tokens(&&messages[3..]).unwrap();
-    // An exact fit keeps the earliest cutoff.
-    assert_eq!(
-        chat_cutoff(&messages, Some(5 * suffix_tokens)).unwrap(),
-        Some(3)
-    );
-    // One token short pushes the cutoff to the next boundary.
-    assert_eq!(
-        chat_cutoff(&messages, Some(5 * (suffix_tokens - 1))).unwrap(),
-        Some(5)
-    );
+fn context_responses_retention_cutoffs_and_budgets() {
+    {
+        let items = vec![
+            res_user("first"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_user("second"),
+            res_assistant("msg-1", "answer two"),
+        ];
+        assert_eq!(response_cutoff(&items, None).unwrap(), Some(3));
+    }
+
+    {
+        let big = "x".repeat(55_000);
+        let items = vec![
+            res_user("first"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_user(&big),
+            res_assistant("msg-1", "answer two"),
+            res_user("third"),
+            res_assistant("msg-2", "answer three"),
+        ];
+        // The suffix from cutoff 3 holds the oversized middle exchange, so the
+        // cutoff moves to the next boundary and keeps the last exchange intact.
+        assert_eq!(response_cutoff(&items, None).unwrap(), Some(5));
+        assert_eq!(response_cutoff(&items, Some(1_000_000)).unwrap(), Some(5));
+    }
+
+    {
+        let items = vec![
+            res_user("first"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_user("second"),
+            res_reasoning("reason-2", Some("opaque-native-state")),
+            res_call("b"),
+            res_output("b", "result b"),
+        ];
+        let cutoff = response_cutoff(&items, None).unwrap().unwrap();
+        assert_eq!(cutoff, 3);
+        // The retained suffix keeps the whole second exchange, encrypted reasoning
+        // included, exactly as it appeared in the native history.
+        let suffix = &items[cutoff..];
+        assert_eq!(suffix.len(), 4);
+        let r::InputItem::Item(r::Item::Reasoning(reasoning)) = &suffix[1] else {
+            panic!("retained suffix must keep the native reasoning item");
+        };
+        assert_eq!(
+            reasoning.encrypted_content.as_deref(),
+            Some("opaque-native-state")
+        );
+    }
+
+    {
+        let items = vec![
+            res_user("first"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_user("second"),
+            res_assistant("msg-1", "answer two"),
+        ];
+        assert_eq!(response_cutoff(&items, Some(5)).unwrap(), Some(3));
+    }
 }
 
 #[test]
-fn context_chat_retention_keeps_last_exchange_whole_when_over_budget() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer one"),
-        chat_user("second"),
-        chat_assistant("answer two"),
-    ];
-    // Even a near-zero budget never splits the retained exchange: the cutoff
-    // falls on the only candidate boundary rather than inside the suffix.
-    assert_eq!(chat_cutoff(&messages, Some(5)).unwrap(), Some(3));
-}
-
-#[test]
-fn context_chat_retention_keeps_trailing_pending_user_in_suffix() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer one"),
-        chat_user("second"),
-        chat_assistant("answer two"),
-        chat_user("unanswered"),
-    ];
-    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
-}
-
-#[test]
-fn context_chat_retention_summary_prefix_is_removable_again() {
-    // A stored summary is regular history: it can be re-summarized together
-    // with the exchanges that follow it, never pinned as a fixed prefix.
-    let messages = vec![
-        chat_system("system"),
-        chat_summary_user(),
-        chat_assistant("kept reply"),
-        chat_user("later"),
-        chat_assistant("later reply"),
-    ];
-    assert_eq!(chat_cutoff(&messages, None).unwrap(), Some(3));
-    let only_summary = vec![
-        chat_system("system"),
-        chat_summary_user(),
-        chat_assistant("kept reply"),
-    ];
-    assert_eq!(chat_cutoff(&only_summary, None).unwrap(), None::<usize>);
-}
-
-#[test]
-fn context_responses_retention_earliest_cutoff_when_budget_fits() {
-    let items = vec![
-        res_user("first"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_user("second"),
-        res_assistant("msg-1", "answer two"),
-    ];
-    assert_eq!(response_cutoff(&items, None).unwrap(), Some(3));
-}
-
-#[test]
-fn context_responses_retention_moves_past_exchange_that_exceeds_budget() {
-    let big = "x".repeat(55_000);
-    let items = vec![
-        res_user("first"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_user(&big),
-        res_assistant("msg-1", "answer two"),
-        res_user("third"),
-        res_assistant("msg-2", "answer three"),
-    ];
-    // The suffix from cutoff 3 holds the oversized middle exchange, so the
-    // cutoff moves to the next boundary and keeps the last exchange intact.
-    assert_eq!(response_cutoff(&items, None).unwrap(), Some(5));
-    assert_eq!(response_cutoff(&items, Some(1_000_000)).unwrap(), Some(5));
-}
-
-#[test]
-fn context_responses_retention_preserves_encrypted_reasoning_in_suffix() {
-    let items = vec![
-        res_user("first"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_user("second"),
-        res_reasoning("reason-2", Some("opaque-native-state")),
-        res_call("b"),
-        res_output("b", "result b"),
-    ];
-    let cutoff = response_cutoff(&items, None).unwrap().unwrap();
-    assert_eq!(cutoff, 3);
-    // The retained suffix keeps the whole second exchange, encrypted reasoning
-    // included, exactly as it appeared in the native history.
-    let suffix = &items[cutoff..];
-    assert_eq!(suffix.len(), 4);
-    let r::InputItem::Item(r::Item::Reasoning(reasoning)) = &suffix[1] else {
-        panic!("retained suffix must keep the native reasoning item");
-    };
-    assert_eq!(
-        reasoning.encrypted_content.as_deref(),
-        Some("opaque-native-state")
-    );
-}
-
-#[test]
-fn context_responses_retention_keeps_last_exchange_whole_when_over_budget() {
-    let items = vec![
-        res_user("first"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_user("second"),
-        res_assistant("msg-1", "answer two"),
-    ];
-    assert_eq!(response_cutoff(&items, Some(5)).unwrap(), Some(3));
-}
-
-#[test]
-fn context_automatic_candidate_must_shrink_and_be_strictly_below_threshold() {
+fn context_cutoff_selection_and_automatic_candidate_thresholds() {
     let mut spec = SummarySpec {
         edit_mode: pp_config::config::EditMode::Replace,
         fallback: None,
@@ -891,20 +828,11 @@ fn context_automatic_candidate_must_shrink_and_be_strictly_below_threshold() {
     spec.before_tokens = 12000;
     assert!(!candidate_accepted(&spec, 8000));
     assert!(candidate_accepted(&spec, 7999));
-}
 
-#[test]
-fn context_select_cutoff_requires_two_boundaries() {
-    // Without a removable older exchange there is never a cutoff, whatever the
-    // budget allows.
     let cheap = |_: usize| Ok(0_u64);
     assert_eq!(select_cutoff(&[], 100, cheap).unwrap(), None::<usize>);
     assert_eq!(select_cutoff(&[5], u64::MAX, cheap).unwrap(), None::<usize>);
-}
 
-#[test]
-fn context_select_cutoff_picks_earliest_fitting_boundary() {
-    // Costs shrink as the cutoff moves later, mirroring real suffix costs.
     let cost = |boundary: usize| {
         Ok(match boundary {
             3 => 100_u64,
@@ -912,12 +840,8 @@ fn context_select_cutoff_picks_earliest_fitting_boundary() {
             _ => 10,
         })
     };
-    // The earliest boundary fits.
     assert_eq!(select_cutoff(&[3, 5, 7], 100, cost).unwrap(), Some(3));
-    // The earliest boundary no longer fits, so the next one is chosen.
     assert_eq!(select_cutoff(&[3, 5, 7], 50, cost).unwrap(), Some(5));
-    // An exact fit still counts as safe.
     assert_eq!(select_cutoff(&[3, 5, 7], 99, cost).unwrap(), Some(5));
-    // Nothing fits: the last exchange is kept whole on the final candidate.
     assert_eq!(select_cutoff(&[3, 5, 7], 1, cost).unwrap(), Some(5));
 }

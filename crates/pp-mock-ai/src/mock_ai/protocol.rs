@@ -459,274 +459,268 @@ mod tests {
     }
 
     #[test]
-    fn accepts_bare_and_wrapped_scripts_with_defaults() {
-        let bare = parse(r#"[{"content":"hello"}]"#).unwrap();
-        assert_eq!(bare.len(), 1);
-        assert_eq!(bare[0].content.joined(), "hello");
-        assert!(bare[0].think.is_empty());
-        assert_eq!(bare[0].tokens_per_second, 0.0);
-        assert!(bare[0].response.is_none());
-        assert!(!bare[0].auto_continue);
-        assert!(bare[0].tool.is_none());
-        assert!(bare[0].usage.is_none());
+    fn script_parsing_validation_failures_and_token_rates() {
+        {
+            let bare = parse(r#"[{"content":"hello"}]"#).unwrap();
+            assert_eq!(bare.len(), 1);
+            assert_eq!(bare[0].content.joined(), "hello");
+            assert!(bare[0].think.is_empty());
+            assert_eq!(bare[0].tokens_per_second, 0.0);
+            assert!(bare[0].response.is_none());
+            assert!(!bare[0].auto_continue);
+            assert!(bare[0].tool.is_none());
+            assert!(bare[0].usage.is_none());
 
-        let wrapped = parse(
-            r#"{"model":"pp-mock-root","input":[],"mock_script":[{"content":["a","","b"]}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            wrapped[0].content,
-            Text::Chunks(vec!["a".into(), "".into(), "b".into()])
-        );
-        assert_eq!(wrapped[0].content.joined(), "ab");
-    }
+            let wrapped = parse(
+                r#"{"model":"pp-mock-root","input":[],"mock_script":[{"content":["a","","b"]}]}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                wrapped[0].content,
+                Text::Chunks(vec!["a".into(), "".into(), "b".into()])
+            );
+            assert_eq!(wrapped[0].content.joined(), "ab");
+        }
+        {
+            assert_eq!(code("{}"), "mock_script_required");
+            assert_eq!(code(r#"{"input":[]}"#), "mock_script_required");
+            assert_eq!(code("null"), "mock_script_required");
+            assert_eq!(code("[]"), "invalid_mock_script");
+            assert_eq!(code(r#"{"mock_script":null}"#), "invalid_mock_script");
+            assert_eq!(code(r#"{"mock_script":{}}"#), "invalid_mock_script");
+            assert_eq!(code("not json"), "invalid_mock_script");
+            assert_eq!(
+                code(r#"[{"content":"x","unknown":1}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(r#"[{"tool":{"name":"","arguments":{}}}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(code(r#"[{"tool":{"name":"read"}}]"#), "invalid_mock_script");
+            assert_eq!(
+                code(r#"[{"content":"x","usage":{"input_tokens":1,"output_tokens":1,"other":2}}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(r#"[{"content":"x","usage":{"input_tokens":1}}]"#),
+                "invalid_mock_script"
+            );
+        }
+        {
+            assert_eq!(code(r#"[{"think":"only"}]"#), "invalid_mock_script");
+            assert_eq!(code(r#"[{"content":["",""]}]"#), "invalid_mock_script");
+            assert_eq!(code(r#"[{"response":null}]"#), "invalid_mock_script");
+            assert_eq!(
+                code(r#"[{"content":"a","auto_continue":false},{"think":"only"}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(
+                    r#"[{"think":"plan","auto_continue":true},{"think":"only","auto_continue":false}]"#
+                ),
+                "invalid_mock_script"
+            );
 
-    #[test]
-    fn distinguishes_missing_from_invalid_scripts() {
-        assert_eq!(code("{}"), "mock_script_required");
-        assert_eq!(code(r#"{"input":[]}"#), "mock_script_required");
-        assert_eq!(code("null"), "mock_script_required");
-        assert_eq!(code("[]"), "invalid_mock_script");
-        assert_eq!(code(r#"{"mock_script":null}"#), "invalid_mock_script");
-        assert_eq!(code(r#"{"mock_script":{}}"#), "invalid_mock_script");
-        assert_eq!(code("not json"), "invalid_mock_script");
-        assert_eq!(
-            code(r#"[{"content":"x","unknown":1}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(r#"[{"tool":{"name":"","arguments":{}}}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(code(r#"[{"tool":{"name":"read"}}]"#), "invalid_mock_script");
-        assert_eq!(
-            code(r#"[{"content":"x","usage":{"input_tokens":1,"output_tokens":1,"other":2}}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(r#"[{"content":"x","usage":{"input_tokens":1}}]"#),
-            "invalid_mock_script"
-        );
-    }
-
-    #[test]
-    fn validates_response_groups() {
-        assert_eq!(code(r#"[{"think":"only"}]"#), "invalid_mock_script");
-        assert_eq!(code(r#"[{"content":["",""]}]"#), "invalid_mock_script");
-        assert_eq!(code(r#"[{"response":null}]"#), "invalid_mock_script");
-        assert_eq!(
-            code(r#"[{"content":"a","auto_continue":false},{"think":"only"}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(
-                r#"[{"think":"plan","auto_continue":true},{"think":"only","auto_continue":false}]"#
-            ),
-            "invalid_mock_script"
-        );
-
-        assert!(parse(r#"[{"think":"plan","auto_continue":true},{"content":"done"}]"#).is_ok());
-        assert!(parse(r#"[{"response":{"echo":true}}]"#).is_ok());
-        assert!(parse(r#"[{"response":"echo"}]"#).is_ok());
-        assert!(
-            parse(r#"[{"response":null,"tool":{"name":"read","arguments":{"path":"a"}}}]"#).is_ok()
-        );
-        assert!(
+            assert!(parse(r#"[{"think":"plan","auto_continue":true},{"content":"done"}]"#).is_ok());
+            assert!(parse(r#"[{"response":{"echo":true}}]"#).is_ok());
+            assert!(parse(r#"[{"response":"echo"}]"#).is_ok());
+            assert!(
+                parse(r#"[{"response":null,"tool":{"name":"read","arguments":{"path":"a"}}}]"#)
+                    .is_ok()
+            );
+            assert!(
             parse(
                 r#"[{"content":"a","auto_continue":false},{"tool":{"name":"read","arguments":{}}}]"#
             )
             .is_ok()
         );
-    }
-
-    #[test]
-    fn failure_instructions_are_standalone_http_errors() {
-        let parsed = parse(r#"[{"status":503},{"content":"recovered"}]"#).unwrap();
-        assert_eq!(parsed[0].status, Some(503));
-        assert_eq!(parsed[1].status, None);
-        // 失败步骤自成一组、不需要正文；携带输出字段或非错误码时拒绝。
-        for script in [
-            r#"[{"status":200}]"#,
-            r#"[{"status":399}]"#,
-            r#"[{"status":600}]"#,
-            r#"[{"status":503,"content":"x"}]"#,
-            r#"[{"status":503,"think":"x"}]"#,
-            r#"[{"status":503,"auto_continue":true}]"#,
-            r#"[{"status":503,"tool":{"name":"read","arguments":{}}}]"#,
-            r#"[{"status":503,"usage":{"input_tokens":1,"output_tokens":1}}]"#,
-            r#"[{"status":503,"response":{"echo":true}}]"#,
-            r#"[{"status":400,"response":"echo"}]"#,
-            r#"[{"status":503},{}]"#,
-        ] {
-            assert_eq!(code(script), "invalid_mock_script", "{script}");
         }
-        // 显式 `response:null` 不产生回显正文，仍是合法的独立失败指令。
-        assert!(parse(r#"[{"status":503,"response":null}]"#).is_ok());
-    }
+        {
+            let parsed = parse(r#"[{"status":503},{"content":"recovered"}]"#).unwrap();
+            assert_eq!(parsed[0].status, Some(503));
+            assert_eq!(parsed[1].status, None);
+            // 失败步骤自成一组、不需要正文；携带输出字段或非错误码时拒绝。
+            for script in [
+                r#"[{"status":200}]"#,
+                r#"[{"status":399}]"#,
+                r#"[{"status":600}]"#,
+                r#"[{"status":503,"content":"x"}]"#,
+                r#"[{"status":503,"think":"x"}]"#,
+                r#"[{"status":503,"auto_continue":true}]"#,
+                r#"[{"status":503,"tool":{"name":"read","arguments":{}}}]"#,
+                r#"[{"status":503,"usage":{"input_tokens":1,"output_tokens":1}}]"#,
+                r#"[{"status":503,"response":{"echo":true}}]"#,
+                r#"[{"status":400,"response":"echo"}]"#,
+                r#"[{"status":503},{}]"#,
+            ] {
+                assert_eq!(code(script), "invalid_mock_script", "{script}");
+            }
+            // 显式 `response:null` 不产生回显正文，仍是合法的独立失败指令。
+            assert!(parse(r#"[{"status":503,"response":null}]"#).is_ok());
+        }
+        {
+            assert!(parse(r#"[{"content":"abc","tokens_per_second":12.5}]"#).is_ok());
+            assert!(parse(r#"[{"content":"abc","tokens_per_second":0}]"#).is_ok());
+            assert!(parse(r#"[{"content":"abc","tokens_per_second":-0.0}]"#).is_ok());
+            assert!(parse(r#"[{"content":"a","tokens_per_second":1e9}]"#).is_ok());
+            // 1e19 秒可表示；两个 Unicode scalar 的最坏累计值溢出。
+            assert_eq!(
+                code(r#"[{"content":"xy","tokens_per_second":1e-19}]"#),
+                "invalid_mock_script"
+            );
+            // 1e20 秒本身已不可表示；即使没有任何 payload token 也拒绝。
+            let empty_payload = Instruction {
+                tokens_per_second: 1e-20,
+                ..instruction(Text::default(), false)
+            };
+            assert!(validate_rate(&empty_payload).is_err());
+            assert_eq!(
+                code(r#"[{"tool":{"name":"read","arguments":{}},"tokens_per_second":1e-20}]"#),
+                "invalid_mock_script"
+            );
+            // 显式分片的空元素不是 token。
+            assert!(parse(r#"[{"content":["","x"],"tokens_per_second":1e-19}]"#).is_ok());
+            assert_eq!(
+                code(r#"[{"content":["","x","y"],"tokens_per_second":1e-19}]"#),
+                "invalid_mock_script"
+            );
+            // 非 string 的 response 按紧凑 JSON 的 scalar 计 token。
+            assert!(parse(r#"[{"response":"x","tokens_per_second":1e-19}]"#).is_ok());
+            assert_eq!(
+                code(r#"[{"response":{"a":1},"tokens_per_second":1e-19}]"#),
+                "invalid_mock_script"
+            );
+            // think 与工具参数同样按该条目的速率计算。
+            assert_eq!(
+                code(r#"[{"think":"xy","content":"a","tokens_per_second":1e-19}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(r#"[{"tool":{"name":"read","arguments":{}},"tokens_per_second":1e-19}]"#),
+                "invalid_mock_script"
+            );
 
-    #[test]
-    fn validates_token_rates_and_scheduling_horizon() {
-        assert!(parse(r#"[{"content":"abc","tokens_per_second":12.5}]"#).is_ok());
-        assert!(parse(r#"[{"content":"abc","tokens_per_second":0}]"#).is_ok());
-        assert!(parse(r#"[{"content":"abc","tokens_per_second":-0.0}]"#).is_ok());
-        assert!(parse(r#"[{"content":"a","tokens_per_second":1e9}]"#).is_ok());
-        // 1e19 秒可表示；两个 Unicode scalar 的最坏累计值溢出。
-        assert_eq!(
-            code(r#"[{"content":"xy","tokens_per_second":1e-19}]"#),
-            "invalid_mock_script"
-        );
-        // 1e20 秒本身已不可表示；即使没有任何 payload token 也拒绝。
-        let empty_payload = Instruction {
-            tokens_per_second: 1e-20,
-            ..instruction(Text::default(), false)
-        };
-        assert!(validate_rate(&empty_payload).is_err());
-        assert_eq!(
-            code(r#"[{"tool":{"name":"read","arguments":{}},"tokens_per_second":1e-20}]"#),
-            "invalid_mock_script"
-        );
-        // 显式分片的空元素不是 token。
-        assert!(parse(r#"[{"content":["","x"],"tokens_per_second":1e-19}]"#).is_ok());
-        assert_eq!(
-            code(r#"[{"content":["","x","y"],"tokens_per_second":1e-19}]"#),
-            "invalid_mock_script"
-        );
-        // 非 string 的 response 按紧凑 JSON 的 scalar 计 token。
-        assert!(parse(r#"[{"response":"x","tokens_per_second":1e-19}]"#).is_ok());
-        assert_eq!(
-            code(r#"[{"response":{"a":1},"tokens_per_second":1e-19}]"#),
-            "invalid_mock_script"
-        );
-        // think 与工具参数同样按该条目的速率计算。
-        assert_eq!(
-            code(r#"[{"think":"xy","content":"a","tokens_per_second":1e-19}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(r#"[{"tool":{"name":"read","arguments":{}},"tokens_per_second":1e-19}]"#),
-            "invalid_mock_script"
-        );
-
-        for rate in [
-            f64::NAN,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            -1.0,
-            f64::MIN_POSITIVE,
-        ] {
+            for rate in [
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                -1.0,
+                f64::MIN_POSITIVE,
+            ] {
+                assert!(
+                    validate_instructions(&[instruction_with_rate(Text::String("x".into()), rate)])
+                        .is_err()
+                );
+            }
             assert!(
-                validate_instructions(&[instruction_with_rate(Text::String("x".into()), rate)])
-                    .is_err()
+                validate_instructions(&[instruction_with_rate(Text::String("x".into()), -0.0)])
+                    .is_ok()
             );
         }
-        assert!(
-            validate_instructions(&[instruction_with_rate(Text::String("x".into()), -0.0)]).is_ok()
-        );
     }
 
     #[test]
-    fn group_usage_uses_openai_fields_and_checked_sums() {
-        let instructions = parse(
+    fn group_usage_summing_overflow_and_per_group_bounds() {
+        {
+            let instructions = parse(
             r#"[{"content":"a","auto_continue":true,"usage":{"input_tokens":120,"output_tokens":30,"cached_tokens":40,"cache_write_tokens":5}},{"content":"b","usage":{"input_tokens":1,"output_tokens":2}}]"#,
         )
         .unwrap();
-        assert_eq!(
-            group_usage(&instructions).unwrap(),
-            Some(json!({
-                "input_tokens": 121,
-                "input_tokens_details": {
-                    "cached_tokens": 40,
-                    "cache_write_tokens": 5
-                },
-                "output_tokens": 32,
-                "output_tokens_details": { "reasoning_tokens": 0 },
-                "total_tokens": 153
-            }))
-        );
+            assert_eq!(
+                group_usage(&instructions).unwrap(),
+                Some(json!({
+                    "input_tokens": 121,
+                    "input_tokens_details": {
+                        "cached_tokens": 40,
+                        "cache_write_tokens": 5
+                    },
+                    "output_tokens": 32,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 153
+                }))
+            );
 
-        let without_usage = parse(r#"[{"content":"a"}]"#).unwrap();
-        assert_eq!(group_usage(&without_usage).unwrap(), None);
+            let without_usage = parse(r#"[{"content":"a"}]"#).unwrap();
+            assert_eq!(group_usage(&without_usage).unwrap(), None);
 
-        let zero_write = parse(
+            let zero_write = parse(
             r#"[{"content":"a","usage":{"input_tokens":1,"output_tokens":2,"cached_tokens":0,"cache_write_tokens":0}}]"#,
         )
         .unwrap();
-        assert_eq!(
-            group_usage(&zero_write).unwrap().unwrap()["input_tokens_details"]["cache_write_tokens"],
-            json!(0)
-        );
-    }
+            assert_eq!(
+                group_usage(&zero_write).unwrap().unwrap()["input_tokens_details"]["cache_write_tokens"],
+                json!(0)
+            );
+        }
+        {
+            let max = TokenUsage {
+                input_tokens: u64::MAX,
+                output_tokens: 0,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            };
+            let one = TokenUsage {
+                input_tokens: 1,
+                output_tokens: 0,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            };
+            let instructions = [
+                with_usage(Text::String("a".into()), max),
+                with_usage(Text::String("b".into()), one),
+            ];
+            assert!(group_usage(&instructions).is_err());
 
-    #[test]
-    fn group_usage_checks_u64_additions() {
-        let max = TokenUsage {
-            input_tokens: u64::MAX,
-            output_tokens: 0,
-            cached_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: None,
-        };
-        let one = TokenUsage {
-            input_tokens: 1,
-            output_tokens: 0,
-            cached_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: None,
-        };
-        let instructions = [
-            with_usage(Text::String("a".into()), max),
-            with_usage(Text::String("b".into()), one),
-        ];
-        assert!(group_usage(&instructions).is_err());
-
-        let cache_max = TokenUsage {
-            input_tokens: 0,
-            output_tokens: 0,
-            cached_tokens: None,
-            cache_write_tokens: Some(u64::MAX),
-            reasoning_tokens: None,
-        };
-        let instructions = [
-            with_usage(Text::String("a".into()), cache_max),
-            with_usage(
-                Text::String("b".into()),
-                TokenUsage {
-                    cache_write_tokens: Some(1),
-                    ..cache_max
-                },
-            ),
-        ];
-        assert!(group_usage(&instructions).is_err());
-    }
-
-    #[test]
-    fn validates_usage_bounds_per_group() {
-        assert_eq!(
-            code(r#"[{"content":"a","usage":{"input_tokens":4294967296,"output_tokens":0}}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(r#"[{"content":"a","usage":{"input_tokens":4294967295,"output_tokens":1}}]"#),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(
-                r#"[{"content":"a","usage":{"input_tokens":1,"output_tokens":0,"cached_tokens":4294967296}}]"#
-            ),
-            "invalid_mock_script"
-        );
-        assert_eq!(
-            code(
-                r#"[{"content":"a","usage":{"input_tokens":1,"output_tokens":0,"cache_write_tokens":9223372036854775808}}]"#
-            ),
-            "invalid_mock_script"
-        );
-        // 不同响应组各自独立汇总，不把两组输入相加。
-        assert!(
+            let cache_max = TokenUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_tokens: None,
+                cache_write_tokens: Some(u64::MAX),
+                reasoning_tokens: None,
+            };
+            let instructions = [
+                with_usage(Text::String("a".into()), cache_max),
+                with_usage(
+                    Text::String("b".into()),
+                    TokenUsage {
+                        cache_write_tokens: Some(1),
+                        ..cache_max
+                    },
+                ),
+            ];
+            assert!(group_usage(&instructions).is_err());
+        }
+        {
+            assert_eq!(
+                code(r#"[{"content":"a","usage":{"input_tokens":4294967296,"output_tokens":0}}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(r#"[{"content":"a","usage":{"input_tokens":4294967295,"output_tokens":1}}]"#),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(
+                    r#"[{"content":"a","usage":{"input_tokens":1,"output_tokens":0,"cached_tokens":4294967296}}]"#
+                ),
+                "invalid_mock_script"
+            );
+            assert_eq!(
+                code(
+                    r#"[{"content":"a","usage":{"input_tokens":1,"output_tokens":0,"cache_write_tokens":9223372036854775808}}]"#
+                ),
+                "invalid_mock_script"
+            );
+            // 不同响应组各自独立汇总，不把两组输入相加。
+            assert!(
             parse(
                 r#"[{"content":"a","usage":{"input_tokens":4294967295,"output_tokens":0}},{"content":"b","usage":{"input_tokens":4294967295,"output_tokens":0}}]"#
             )
             .is_ok()
         );
+        }
     }
 }

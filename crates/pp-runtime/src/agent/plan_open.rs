@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn open_listed_plan_starts_fresh_context_without_old_history() {
+    fn open_listed_plan_continue_and_execute_intents() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -360,10 +360,7 @@ mod tests {
                 .count();
             assert!(sessions >= 2, "source session must remain restorable");
         }
-    }
 
-    #[test]
-    fn todo_open_listed_plan_defers_tasks_until_approval() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -381,15 +378,42 @@ mod tests {
             assert!(agent.workflow.todos.is_empty());
             assert!(agent.workflow.todo_plan_id.is_none());
             assert!(preparation.todo_snapshot.is_none());
+            // Plan/Ready 预执行审阅状态：validate 显式允许；未批准、无报告。
+            let document = agent.workflow.plan.as_ref().unwrap();
+            assert_eq!(document.content, selection.content);
+            assert_eq!(agent.workflow.mode, WorkMode::Plan);
+            assert_eq!(document.status, PlanStatus::Ready);
+            assert_eq!(document.location, PlanLocation::Drafts);
+            assert_eq!(document.approved_tasks, None);
+            assert!(agent.workflow.review.is_none());
             assert_eq!(
-                agent.workflow.plan.as_ref().unwrap().content,
-                selection.content
+                document.origin_prompt,
+                format!(
+                    "Execute the selected Markdown plan at {} after local approval.",
+                    listed_path()
+                )
             );
+            assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
+            // 审阅 token 由 read_plan 在新会话上补发，绑定候选会话 ID。
+            let review = agent.read_plan().unwrap();
+            assert_eq!(review.token.session_id, agent.journal.id().unwrap());
+            assert_eq!(review.token.plan_id, LISTED_ID);
+            assert_eq!(review.token.content, LISTED_CONTENT);
+            // 无审批就没有执行：候选会话没有助手回复，也不连接 MCP。
+            assert_eq!(user_texts(&agent).len(), 1);
+            let request = serde_json::to_value(&agent.session).unwrap()["request"].clone();
+            let tools = request["tools"].as_array().unwrap();
+            let names: Vec<&str> = tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().or(tool["name"].as_str()))
+                .collect();
+            assert!(names.contains(&"write"));
+            assert!(!names.contains(&"bash"));
         }
     }
 
     #[test]
-    fn open_listed_plan_prepare_failure_keeps_the_original_session() {
+    fn open_listed_plan_failures_keep_original_session() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -425,10 +449,7 @@ mod tests {
                 LISTED_CONTENT
             );
         }
-    }
 
-    #[test]
-    fn open_listed_plan_commit_failure_keeps_the_original_session() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -468,131 +489,86 @@ mod tests {
     }
 
     #[test]
-    fn execute_intent_opens_review_boundary_requiring_local_approval() {
-        for protocol in ["completion", "response"] {
+    fn open_listed_plan_done_prose_and_unsaved_guards() {
+        {
             let dir = tempfile::tempdir().unwrap();
-            let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
-            seed_session(&mut agent, EXPLORATION);
+            let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+            write_plan_bytes(&agent, PlanLocation::Done, LISTED_FILE, LISTED_CONTENT);
+            register_entry(&agent, LISTED_ID, LISTED_FILE, PlanLocation::Done);
+            let selection = PlanSelection {
+                id: LISTED_ID.to_owned(),
+                path: plan::path_for(LISTED_FILE, PlanLocation::Done),
+                content: LISTED_CONTENT.to_owned(),
+            };
+            for intent in [PlanOpenIntent::ContinueDraft, PlanOpenIntent::Execute] {
+                let error = err_message(agent.open_listed_plan(
+                    &selection,
+                    intent,
+                    &CancellationToken::new(),
+                ));
+                assert!(error.contains("cannot be opened"), "{error}");
+            }
+            // 失败不产生任何会话或绑定变化。
+            assert!(agent.workflow.plan.is_none());
+            assert!(agent.journal.id().is_none());
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+            // 无任务正文也可打开菜单，但保持 Draft，执行仍被审批门禁拒绝。
             write_listed_file(&agent);
+            std::fs::write(
+                dir.path().join(listed_path()),
+                "# No tasks\n\nJust prose.\n",
+            )
+            .unwrap();
             register_listed_entry(&agent);
-            let selection = selection();
+            let no_task_selection = PlanSelection {
+                id: LISTED_ID.to_owned(),
+                path: listed_path(),
+                content: "# No tasks\n\nJust prose.\n".to_owned(),
+            };
             let preparation = agent
                 .open_listed_plan(
-                    &selection,
+                    &no_task_selection,
                     PlanOpenIntent::Execute,
                     &CancellationToken::new(),
                 )
                 .unwrap();
-            // Plan/Ready 预执行审阅状态：validate 显式允许；未批准、无报告。
-            let document = agent.workflow.plan.as_ref().unwrap();
-            assert_eq!(agent.workflow.mode, WorkMode::Plan);
-            assert_eq!(document.status, PlanStatus::Ready);
-            assert_eq!(document.location, PlanLocation::Drafts);
-            assert_eq!(document.approved_tasks, None);
-            assert!(agent.workflow.review.is_none());
             assert_eq!(
-                document.origin_prompt,
-                format!(
-                    "Execute the selected Markdown plan at {} after local approval.",
-                    listed_path()
-                )
+                preparation.workflow.plan.as_ref().unwrap().status,
+                PlanStatus::Draft
             );
-            assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
-            // 审阅 token 由 read_plan 在新会话上补发，绑定候选会话 ID。
-            let review = agent.read_plan().unwrap();
-            assert_eq!(review.token.session_id, agent.journal.id().unwrap());
-            assert_eq!(review.token.plan_id, LISTED_ID);
-            assert_eq!(review.token.content, LISTED_CONTENT);
-            // 无审批就没有执行：候选会话没有助手回复，也不连接 MCP。
-            assert_eq!(user_texts(&agent).len(), 1);
-            let request = serde_json::to_value(&agent.session).unwrap()["request"].clone();
-            let tools = request["tools"].as_array().unwrap();
-            let names: Vec<&str> = tools
-                .iter()
-                .filter_map(|tool| tool["function"]["name"].as_str().or(tool["name"].as_str()))
-                .collect();
-            assert!(names.contains(&"write"));
-            assert!(!names.contains(&"bash"));
-        }
-    }
-
-    #[test]
-    fn done_plans_refuse_continue_and_execute_intents() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-        write_plan_bytes(&agent, PlanLocation::Done, LISTED_FILE, LISTED_CONTENT);
-        register_entry(&agent, LISTED_ID, LISTED_FILE, PlanLocation::Done);
-        let selection = PlanSelection {
-            id: LISTED_ID.to_owned(),
-            path: plan::path_for(LISTED_FILE, PlanLocation::Done),
-            content: LISTED_CONTENT.to_owned(),
-        };
-        for intent in [PlanOpenIntent::ContinueDraft, PlanOpenIntent::Execute] {
-            let error =
-                err_message(agent.open_listed_plan(&selection, intent, &CancellationToken::new()));
-            assert!(error.contains("cannot be opened"), "{error}");
-        }
-        // 失败不产生任何会话或绑定变化。
-        assert!(agent.workflow.plan.is_none());
-        assert!(agent.journal.id().is_none());
-    }
-
-    #[test]
-    fn execute_intent_opens_prose_as_draft_and_unsaved_draft_blocks_switch() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-        // 无任务正文也可打开菜单，但保持 Draft，执行仍被审批门禁拒绝。
-        write_listed_file(&agent);
-        std::fs::write(
-            dir.path().join(listed_path()),
-            "# No tasks\n\nJust prose.\n",
-        )
-        .unwrap();
-        register_listed_entry(&agent);
-        let no_task_selection = PlanSelection {
-            id: LISTED_ID.to_owned(),
-            path: listed_path(),
-            content: "# No tasks\n\nJust prose.\n".to_owned(),
-        };
-        let preparation = agent
-            .open_listed_plan(
-                &no_task_selection,
-                PlanOpenIntent::Execute,
+            assert_eq!(preparation.workflow.mode, WorkMode::Plan);
+            // 未首存的 revision-0 草稿拒绝“另开会话”，避免静默丢弃。
+            let mut document = PlanDocument::new().unwrap();
+            document.origin_prompt = "pending first save".to_owned();
+            agent.workflow = WorkflowState {
+                mode: WorkMode::Plan,
+                plan: Some(document),
+                ..Default::default()
+            };
+            let selection = selection();
+            let error = err_message(agent.open_listed_plan(
+                &selection,
+                PlanOpenIntent::ContinueDraft,
                 &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(
-            preparation.workflow.plan.as_ref().unwrap().status,
-            PlanStatus::Draft
-        );
-        assert_eq!(preparation.workflow.mode, WorkMode::Plan);
-        // 未首存的 revision-0 草稿拒绝“另开会话”，避免静默丢弃。
-        let mut document = PlanDocument::new().unwrap();
-        document.origin_prompt = "pending first save".to_owned();
-        agent.workflow = WorkflowState {
-            mode: WorkMode::Plan,
-            plan: Some(document),
-            ..Default::default()
-        };
-        let selection = selection();
-        let error = err_message(agent.open_listed_plan(
-            &selection,
-            PlanOpenIntent::ContinueDraft,
-            &CancellationToken::new(),
-        ));
-        assert_eq!(error, UNSAVED_DRAFT);
-        // 未登记的选择被拒绝：绝不按列表下标直接操作磁盘。
-        agent.workflow = WorkflowState::default();
-        let unregistered = PlanSelection {
-            id: "ffffffffffffffffffffffffffffffff".to_owned(),
-            path: listed_path(),
-            content: LISTED_CONTENT.to_owned(),
-        };
-        let error = err_message(agent.open_listed_plan(
-            &unregistered,
-            PlanOpenIntent::ContinueDraft,
-            &CancellationToken::new(),
-        ));
-        assert!(!error.is_empty());
+            ));
+            assert_eq!(error, UNSAVED_DRAFT);
+            // 未登记的选择被拒绝：绝不按列表下标直接操作磁盘。
+            agent.workflow = WorkflowState::default();
+            let unregistered = PlanSelection {
+                id: "ffffffffffffffffffffffffffffffff".to_owned(),
+                path: listed_path(),
+                content: LISTED_CONTENT.to_owned(),
+            };
+            let error = err_message(agent.open_listed_plan(
+                &unregistered,
+                PlanOpenIntent::ContinueDraft,
+                &CancellationToken::new(),
+            ));
+            assert!(!error.is_empty());
+        }
     }
 }

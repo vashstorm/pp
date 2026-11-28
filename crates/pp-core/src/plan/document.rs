@@ -415,229 +415,225 @@ mod tests {
     use crate::todo::TodoStatus;
 
     #[test]
-    fn todo_workflow_fields_stay_backward_compatible_in_serde() {
-        // 旧会话记录没有 todo 字段：serde default 补齐为空，checkpoint 不升版。
-        let legacy: WorkflowState =
-            serde_json::from_str(r#"{"mode":"execute","plan":null}"#).unwrap();
-        assert_eq!(legacy, WorkflowState::default());
-        assert!(legacy.todos.is_empty());
-        assert_eq!(legacy.todo_plan_id, None);
+    fn plan_document_serde_source_binding_and_revision_validation() {
+        {
+            // 旧会话记录没有 todo 字段：serde default 补齐为空，checkpoint 不升版。
+            let legacy: WorkflowState =
+                serde_json::from_str(r#"{"mode":"execute","plan":null}"#).unwrap();
+            assert_eq!(legacy, WorkflowState::default());
+            assert!(legacy.todos.is_empty());
+            assert_eq!(legacy.todo_plan_id, None);
 
-        // 空投影不写入保存的 workflow 快照。
-        let text = serde_json::to_string(&WorkflowState::default()).unwrap();
-        assert!(!text.contains("todos"));
-        assert!(!text.contains("todo_plan_id"));
+            // 空投影不写入保存的 workflow 快照。
+            let text = serde_json::to_string(&WorkflowState::default()).unwrap();
+            assert!(!text.contains("todos"));
+            assert!(!text.contains("todo_plan_id"));
 
-        // 非空投影与来源完整往返。
-        let planned = WorkflowState {
-            todos: vec![TodoPhase {
+            // 非空投影与来源完整往返。
+            let planned = WorkflowState {
+                todos: vec![TodoPhase {
+                    name: "Write".into(),
+                    tasks: vec![TodoItem {
+                        content: "A".into(),
+                        status: TodoStatus::InProgress,
+                        blocker: None,
+                    }],
+                }],
+                todo_plan_id: Some("0123456789abcdef0123456789abcdef".into()),
+                ..Default::default()
+            };
+            let text = serde_json::to_string(&planned).unwrap();
+            assert!(text.contains("todos") && text.contains("todo_plan_id"));
+            assert_eq!(
+                serde_json::from_str::<WorkflowState>(&text).unwrap(),
+                planned
+            );
+        }
+        {
+            let mut plan = PlanDocument::new().unwrap();
+            plan.revision = 1;
+            plan.title = "Title".into();
+            plan.content = "- [ ] task".into();
+            plan.origin_prompt = "task".into();
+            plan.status = PlanStatus::Executed;
+            plan.location = PlanLocation::Plans;
+            let base = WorkflowState {
+                mode: WorkMode::Execute,
+                plan: Some(plan.clone()),
+                ..Default::default()
+            };
+            base.validate().unwrap();
+
+            // 与当前 plan.id 一致的来源合法；投影条目可有可无。
+            let mut bound = base.clone();
+            bound.todo_plan_id = Some(plan.id.clone());
+            bound.validate().unwrap();
+            bound.todos = vec![TodoPhase {
                 name: "Write".into(),
                 tasks: vec![TodoItem {
-                    content: "A".into(),
+                    content: "task".into(),
                     status: TodoStatus::InProgress,
                     blocker: None,
                 }],
-            }],
-            todo_plan_id: Some("0123456789abcdef0123456789abcdef".into()),
-            ..Default::default()
-        };
-        let text = serde_json::to_string(&planned).unwrap();
-        assert!(text.contains("todos") && text.contains("todo_plan_id"));
-        assert_eq!(
-            serde_json::from_str::<WorkflowState>(&text).unwrap(),
-            planned
-        );
-    }
+            }];
+            bound.validate().unwrap();
 
-    #[test]
-    fn todo_plan_source_validation_requires_current_plan_binding() {
-        let mut plan = PlanDocument::new().unwrap();
-        plan.revision = 1;
-        plan.title = "Title".into();
-        plan.content = "- [ ] task".into();
-        plan.origin_prompt = "task".into();
-        plan.status = PlanStatus::Executed;
-        plan.location = PlanLocation::Plans;
-        let base = WorkflowState {
-            mode: WorkMode::Execute,
-            plan: Some(plan.clone()),
-            ..Default::default()
-        };
-        base.validate().unwrap();
+            // 来源与当前计划不一致拒绝。
+            let mut wrong = bound.clone();
+            wrong.todo_plan_id = Some("ffffffffffffffffffffffffffffffff".into());
+            assert!(wrong.validate().is_err());
 
-        // 与当前 plan.id 一致的来源合法；投影条目可有可无。
-        let mut bound = base.clone();
-        bound.todo_plan_id = Some(plan.id.clone());
-        bound.validate().unwrap();
-        bound.todos = vec![TodoPhase {
-            name: "Write".into(),
-            tasks: vec![TodoItem {
-                content: "task".into(),
-                status: TodoStatus::InProgress,
-                blocker: None,
-            }],
-        }];
-        bound.validate().unwrap();
+            // 有来源但未绑定计划拒绝。
+            let mut detached = bound;
+            detached.plan = None;
+            assert!(detached.validate().is_err());
 
-        // 来源与当前计划不一致拒绝。
-        let mut wrong = bound.clone();
-        wrong.todo_plan_id = Some("ffffffffffffffffffffffffffffffff".into());
-        assert!(wrong.validate().is_err());
-
-        // 有来源但未绑定计划拒绝。
-        let mut detached = bound;
-        detached.plan = None;
-        assert!(detached.validate().is_err());
-
-        // 无来源的普通清单合法。
-        let mut ordinary = base;
-        ordinary.todos = vec![TodoPhase {
-            name: "Tasks".into(),
-            tasks: vec![TodoItem {
-                content: "standalone".into(),
-                status: TodoStatus::Pending,
-                blocker: None,
-            }],
-        }];
-        ordinary.validate().unwrap();
-    }
-
-    #[test]
-    fn plan_loading_rejects_privilege_and_revision_corruption() {
-        let mut plan = PlanDocument::new().unwrap();
-        plan.revision = 1;
-        plan.title = "Create file".into();
-        plan.content = "- [ ] Create file and verify bytes".into();
-        plan.origin_prompt = "Create a file".into();
-        plan.status = PlanStatus::Ready;
-        plan.location = PlanLocation::Drafts;
-        let mut workflow = WorkflowState {
-            mode: WorkMode::Plan,
-            plan: Some(plan),
-            ..Default::default()
-        };
-        workflow.validate().unwrap();
-        workflow.mode = WorkMode::Execute;
-        assert!(workflow.validate().is_err());
-        workflow.mode = WorkMode::Plan;
-        workflow.plan.as_mut().unwrap().revision = 0;
-        assert!(workflow.validate().is_err());
-        workflow.plan.as_mut().unwrap().revision = 1;
-        workflow.plan.as_mut().unwrap().id = "../escape".into();
-        assert!(workflow.validate().is_err());
-    }
-
-    #[test]
-    fn file_name_rules_keep_legacy_names_strict_for_new_names() {
-        // 新 AI 命名：严格 kebab-case。
-        assert!(validate_file_name("fix-config-loading.md").is_ok());
-        assert!(validate_file_name("a.md").is_ok());
-        assert!(validate_file_name(".md").is_err());
-        assert!(validate_file_name("123.md").is_ok());
-        assert!(validate_file_name("-lead.md").is_err());
-        assert!(validate_file_name("trail-.md").is_err());
-        assert!(validate_file_name("double--dash.md").is_err());
-        assert!(validate_file_name("Upper.md").is_err());
-        assert!(validate_file_name("no-extension").is_err());
-        assert!(validate_file_name("nested/name.md").is_err());
-        assert!(validate_file_name(&format!("{}.md", "a".repeat(97))).is_ok());
-        assert!(validate_file_name(&format!("{}.md", "a".repeat(98))).is_err());
-
-        // 旧存储命名：单个普通 component 的 `.md` 文件，保留 Unicode。
-        assert!(validate_stored_file_name("计划-修订.md").is_ok());
-        assert!(validate_stored_file_name(&format!("{}.md", "0".repeat(32))).is_ok());
-        assert!(validate_stored_file_name(".md").is_err());
-        assert!(validate_stored_file_name("nested/name.md").is_err());
-        assert!(validate_stored_file_name("back\\slash.md").is_err());
-        assert!(validate_stored_file_name("nul\0name.md").is_err());
-        assert!(validate_stored_file_name("dot.md\0").is_err());
-        assert!(validate_stored_file_name("../escape.md").is_err());
-        assert!(validate_stored_file_name("..").is_err());
-        assert!(validate_stored_file_name(&format!("{}.md", "长".repeat(84))).is_ok());
-        assert!(validate_stored_file_name(&format!("{}.md", "长".repeat(85))).is_err());
-    }
-
-    #[test]
-    fn document_path_resolves_lifecycle_and_legacy_locations() {
-        // 未保存的新绑定没有路径。
-        let fresh = PlanDocument::new().unwrap();
-        assert_eq!(fresh.path(), None);
-        assert_eq!(fresh.location, PlanLocation::Drafts);
-
-        // 已命名文档按生命周期目录解析。
-        let mut named = PlanDocument::new().unwrap();
-        named.revision = 1;
-        named.file_name = Some("fix-config-loading.md".into());
-        assert_eq!(
-            named.path().as_deref(),
-            Some(".pp/drafts/fix-config-loading.md")
-        );
-        named.location = PlanLocation::Done;
-        assert_eq!(
-            named.path().as_deref(),
-            Some(".pp/done/fix-config-loading.md")
-        );
-        assert_eq!(
-            path_for("done-plan.md", PlanLocation::Done),
-            ".pp/done/done-plan.md"
-        );
-
-        // 旧 revision>=1 缺失文件名：临时旧路径兜底。
-        let mut legacy = PlanDocument::new().unwrap();
-        legacy.revision = 1;
-        legacy.location = PlanLocation::Plans;
-        assert_eq!(
-            legacy.path().as_deref(),
-            Some(format!(".pp/plans/{}.md", legacy.id)).as_deref()
-        );
-    }
-
-    #[test]
-    fn workflow_validation_enforces_location_and_file_names() {
-        let mut plan = PlanDocument::new().unwrap();
-        plan.revision = 1;
-        plan.title = "Title".into();
-        plan.content = "- [ ] task".into();
-        plan.origin_prompt = "task".into();
-        plan.file_name = Some("fix-config-loading.md".into());
-        let workflow = |plan: PlanDocument| WorkflowState {
-            mode: WorkMode::Plan,
-            plan: Some(plan),
-            ..Default::default()
-        };
-        // Draft/Ready 在 Drafts 或 Plans（旧记录）。
-        for location in [PlanLocation::Drafts, PlanLocation::Plans] {
-            let mut document = plan.clone();
-            document.location = location;
-            workflow(document).validate().unwrap();
+            // 无来源的普通清单合法。
+            let mut ordinary = base;
+            ordinary.todos = vec![TodoPhase {
+                name: "Tasks".into(),
+                tasks: vec![TodoItem {
+                    content: "standalone".into(),
+                    status: TodoStatus::Pending,
+                    blocker: None,
+                }],
+            }];
+            ordinary.validate().unwrap();
         }
-        // 已命名时 Completed 只在 Done；Executed 只在 Plans。
-        let mut completed = plan.clone();
-        completed.status = PlanStatus::Completed;
-        completed.location = PlanLocation::Done;
-        workflow(completed.clone()).validate().unwrap();
-        let mut wrong = completed.clone();
-        wrong.location = PlanLocation::Plans;
-        assert!(workflow(wrong).validate().is_err());
-        let mut executed = plan.clone();
-        executed.status = PlanStatus::Executed;
-        executed.location = PlanLocation::Plans;
-        workflow(executed.clone()).validate().unwrap();
-        let mut wrong = executed.clone();
-        wrong.location = PlanLocation::Drafts;
-        assert!(workflow(wrong).validate().is_err());
-        // 旧 Unicode 名称通过 stored 规则。
-        let mut unicode = plan.clone();
-        unicode.file_name = Some("旧计划.md".into());
-        workflow(unicode).validate().unwrap();
-        // 非法名称被拒绝。
-        let mut escape = plan.clone();
-        escape.file_name = Some("../escape.md".into());
-        assert!(workflow(escape).validate().is_err());
-        // 旧记录缺 file_name 仍合法（legacy 兜底路径）。
-        let mut unnamed = plan;
-        unnamed.file_name = None;
-        unnamed.location = PlanLocation::Plans;
-        workflow(unnamed).validate().unwrap();
+        {
+            let mut plan = PlanDocument::new().unwrap();
+            plan.revision = 1;
+            plan.title = "Create file".into();
+            plan.content = "- [ ] Create file and verify bytes".into();
+            plan.origin_prompt = "Create a file".into();
+            plan.status = PlanStatus::Ready;
+            plan.location = PlanLocation::Drafts;
+            let mut workflow = WorkflowState {
+                mode: WorkMode::Plan,
+                plan: Some(plan),
+                ..Default::default()
+            };
+            workflow.validate().unwrap();
+            workflow.mode = WorkMode::Execute;
+            assert!(workflow.validate().is_err());
+            workflow.mode = WorkMode::Plan;
+            workflow.plan.as_mut().unwrap().revision = 0;
+            assert!(workflow.validate().is_err());
+            workflow.plan.as_mut().unwrap().revision = 1;
+            workflow.plan.as_mut().unwrap().id = "../escape".into();
+            assert!(workflow.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn plan_document_paths_and_location_file_name_rules() {
+        {
+            // 新 AI 命名：严格 kebab-case。
+            assert!(validate_file_name("fix-config-loading.md").is_ok());
+            assert!(validate_file_name("a.md").is_ok());
+            assert!(validate_file_name(".md").is_err());
+            assert!(validate_file_name("123.md").is_ok());
+            assert!(validate_file_name("-lead.md").is_err());
+            assert!(validate_file_name("trail-.md").is_err());
+            assert!(validate_file_name("double--dash.md").is_err());
+            assert!(validate_file_name("Upper.md").is_err());
+            assert!(validate_file_name("no-extension").is_err());
+            assert!(validate_file_name("nested/name.md").is_err());
+            assert!(validate_file_name(&format!("{}.md", "a".repeat(97))).is_ok());
+            assert!(validate_file_name(&format!("{}.md", "a".repeat(98))).is_err());
+
+            // 旧存储命名：单个普通 component 的 `.md` 文件，保留 Unicode。
+            assert!(validate_stored_file_name("计划-修订.md").is_ok());
+            assert!(validate_stored_file_name(&format!("{}.md", "0".repeat(32))).is_ok());
+            assert!(validate_stored_file_name(".md").is_err());
+            assert!(validate_stored_file_name("nested/name.md").is_err());
+            assert!(validate_stored_file_name("back\\slash.md").is_err());
+            assert!(validate_stored_file_name("nul\0name.md").is_err());
+            assert!(validate_stored_file_name("dot.md\0").is_err());
+            assert!(validate_stored_file_name("../escape.md").is_err());
+            assert!(validate_stored_file_name("..").is_err());
+            assert!(validate_stored_file_name(&format!("{}.md", "长".repeat(84))).is_ok());
+            assert!(validate_stored_file_name(&format!("{}.md", "长".repeat(85))).is_err());
+        }
+        {
+            // 未保存的新绑定没有路径。
+            let fresh = PlanDocument::new().unwrap();
+            assert_eq!(fresh.path(), None);
+            assert_eq!(fresh.location, PlanLocation::Drafts);
+
+            // 已命名文档按生命周期目录解析。
+            let mut named = PlanDocument::new().unwrap();
+            named.revision = 1;
+            named.file_name = Some("fix-config-loading.md".into());
+            assert_eq!(
+                named.path().as_deref(),
+                Some(".pp/drafts/fix-config-loading.md")
+            );
+            named.location = PlanLocation::Done;
+            assert_eq!(
+                named.path().as_deref(),
+                Some(".pp/done/fix-config-loading.md")
+            );
+            assert_eq!(
+                path_for("done-plan.md", PlanLocation::Done),
+                ".pp/done/done-plan.md"
+            );
+
+            // 旧 revision>=1 缺失文件名：临时旧路径兜底。
+            let mut legacy = PlanDocument::new().unwrap();
+            legacy.revision = 1;
+            legacy.location = PlanLocation::Plans;
+            assert_eq!(
+                legacy.path().as_deref(),
+                Some(format!(".pp/plans/{}.md", legacy.id)).as_deref()
+            );
+        }
+        {
+            let mut plan = PlanDocument::new().unwrap();
+            plan.revision = 1;
+            plan.title = "Title".into();
+            plan.content = "- [ ] task".into();
+            plan.origin_prompt = "task".into();
+            plan.file_name = Some("fix-config-loading.md".into());
+            let workflow = |plan: PlanDocument| WorkflowState {
+                mode: WorkMode::Plan,
+                plan: Some(plan),
+                ..Default::default()
+            };
+            // Draft/Ready 在 Drafts 或 Plans（旧记录）。
+            for location in [PlanLocation::Drafts, PlanLocation::Plans] {
+                let mut document = plan.clone();
+                document.location = location;
+                workflow(document).validate().unwrap();
+            }
+            // 已命名时 Completed 只在 Done；Executed 只在 Plans。
+            let mut completed = plan.clone();
+            completed.status = PlanStatus::Completed;
+            completed.location = PlanLocation::Done;
+            workflow(completed.clone()).validate().unwrap();
+            let mut wrong = completed.clone();
+            wrong.location = PlanLocation::Plans;
+            assert!(workflow(wrong).validate().is_err());
+            let mut executed = plan.clone();
+            executed.status = PlanStatus::Executed;
+            executed.location = PlanLocation::Plans;
+            workflow(executed.clone()).validate().unwrap();
+            let mut wrong = executed.clone();
+            wrong.location = PlanLocation::Drafts;
+            assert!(workflow(wrong).validate().is_err());
+            // 旧 Unicode 名称通过 stored 规则。
+            let mut unicode = plan.clone();
+            unicode.file_name = Some("旧计划.md".into());
+            workflow(unicode).validate().unwrap();
+            // 非法名称被拒绝。
+            let mut escape = plan.clone();
+            escape.file_name = Some("../escape.md".into());
+            assert!(workflow(escape).validate().is_err());
+            // 旧记录缺 file_name 仍合法（legacy 兜底路径）。
+            let mut unnamed = plan;
+            unnamed.file_name = None;
+            unnamed.location = PlanLocation::Plans;
+            workflow(unnamed).validate().unwrap();
+        }
     }
 }

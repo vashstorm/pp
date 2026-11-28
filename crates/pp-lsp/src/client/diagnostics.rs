@@ -606,7 +606,7 @@ pub(super) fn join_notes(notes: Vec<String>) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::*;
     use super::*;
     use pp_core::lsp_report::ReportStatus;
@@ -614,7 +614,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn lsp_client_malformed_pull_is_failed_not_clean() {
+    fn lsp_client_pull_malformed_unchanged_and_issues_transitions() {
         for kind in ["malformed", "missing"] {
             let (dir, client) = fixture_client(&["--pull", kind]);
             let path = dir.path().join("sample.fixture");
@@ -636,127 +636,124 @@ mod tests {
             );
             client.shutdown().unwrap();
         }
+
+        {
+            let (dir, client) = fixture_client(&["--pull", "unchanged"]);
+            let path = dir.path().join("sample.fixture");
+            std::fs::write(&path, "wrong\n").unwrap();
+            let outcome = client
+                .collect_diagnostics(
+                    &path,
+                    Instant::now() + Duration::from_secs(5),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(outcome.status, ReportStatus::ReportedIssues);
+            assert!(outcome.diagnostics.is_some_and(|items| !items.is_empty()));
+            client.shutdown().unwrap();
+        }
+
+        {
+            let (dir, client) = fixture_client(&[]);
+            let path = dir.path().join("sample.fixture");
+            std::fs::write(&path, "wrong\n").unwrap();
+            let issues = client
+                .collect_diagnostics(
+                    &path,
+                    Instant::now() + Duration::from_secs(5),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(issues.status, ReportStatus::ReportedIssues);
+            assert!(issues.diagnostics.is_some_and(|items| !items.is_empty()));
+            std::fs::write(&path, "fine\n").unwrap();
+            let clean = client
+                .collect_diagnostics(
+                    &path,
+                    Instant::now() + Duration::from_secs(5),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(clean.status, ReportStatus::ReportedClean);
+            assert_eq!(clean.diagnostics.as_ref().map(Vec::len), Some(0));
+            client.shutdown().unwrap();
+        }
     }
 
     #[test]
-    fn lsp_client_unchanged_report_requires_matching_fresh_cache() {
-        let diagnostics = Diagnostics::default();
-        assert!(diagnostics.unchanged_report("file:///a", 1).is_none());
-        diagnostics.publish("file:///a", Some(1), Vec::new());
-        assert!(
-            diagnostics.unchanged_report("file:///a", 2).is_none(),
-            "a cache for another document version is not unchanged proof"
-        );
-        assert_eq!(
-            diagnostics
-                .unchanged_report("file:///a", 1)
-                .map(|items| items.len()),
-            Some(0)
-        );
-        diagnostics.invalidate("file:///a");
-        assert!(
-            diagnostics.unchanged_report("file:///a", 1).is_none(),
-            "an invalidated cache entry is not unchanged proof"
-        );
-        diagnostics.publish("file:///a", Some(1), Vec::new());
-        assert!(diagnostics.unchanged_report("file:///a", 1).is_some());
-        diagnostics.refresh();
-        assert!(
-            diagnostics.unchanged_report("file:///a", 1).is_none(),
-            "a refreshed epoch invalidates the unchanged proof"
-        );
-    }
+    fn lsp_client_diagnostics_cache_progress_and_related_docs() {
+        {
+            let diagnostics = Diagnostics::default();
+            assert!(diagnostics.unchanged_report("file:///a", 1).is_none());
+            diagnostics.publish("file:///a", Some(1), Vec::new());
+            assert!(
+                diagnostics.unchanged_report("file:///a", 2).is_none(),
+                "a cache for another document version is not unchanged proof"
+            );
+            assert_eq!(
+                diagnostics
+                    .unchanged_report("file:///a", 1)
+                    .map(|items| items.len()),
+                Some(0)
+            );
+            diagnostics.invalidate("file:///a");
+            assert!(
+                diagnostics.unchanged_report("file:///a", 1).is_none(),
+                "an invalidated cache entry is not unchanged proof"
+            );
+            diagnostics.publish("file:///a", Some(1), Vec::new());
+            assert!(diagnostics.unchanged_report("file:///a", 1).is_some());
+            diagnostics.refresh();
+            assert!(
+                diagnostics.unchanged_report("file:///a", 1).is_none(),
+                "a refreshed epoch invalidates the unchanged proof"
+            );
+        }
 
-    #[test]
-    fn lsp_client_unchanged_uses_fresh_matching_push() {
-        let (dir, client) = fixture_client(&["--pull", "unchanged"]);
-        let path = dir.path().join("sample.fixture");
-        std::fs::write(&path, "wrong\n").unwrap();
-        let outcome = client
-            .collect_diagnostics(
-                &path,
-                Instant::now() + Duration::from_secs(5),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        // didOpen 的 push 已给出当前版本的真实报告；unchanged 复用它而不是凭空干净。
-        assert_eq!(outcome.status, ReportStatus::ReportedIssues);
-        assert!(outcome.diagnostics.is_some_and(|items| !items.is_empty()));
-        client.shutdown().unwrap();
-    }
-
-    #[test]
-    fn lsp_client_pull_status_is_issues_then_clean() {
-        let (dir, client) = fixture_client(&[]);
-        let path = dir.path().join("sample.fixture");
-        std::fs::write(&path, "wrong\n").unwrap();
-        let issues = client
-            .collect_diagnostics(
-                &path,
-                Instant::now() + Duration::from_secs(5),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(issues.status, ReportStatus::ReportedIssues);
-        assert!(issues.diagnostics.is_some_and(|items| !items.is_empty()));
-        std::fs::write(&path, "fine\n").unwrap();
-        let clean = client
-            .collect_diagnostics(
-                &path,
-                Instant::now() + Duration::from_secs(5),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(clean.status, ReportStatus::ReportedClean);
-        assert_eq!(clean.diagnostics.as_ref().map(Vec::len), Some(0));
-        client.shutdown().unwrap();
-    }
-
-    #[test]
-    fn lsp_client_project_load_ignores_stale_progress_end() {
-        let signals = Signals::default();
-        let token = CancellationToken::new();
-        let progress =
-            |value: Value| signals.apply_progress(&json!({"token": "t", "value": value}));
-        progress(json!({"kind": "begin"}));
-        signals.begin_pending_load();
-        progress(json!({"kind": "end"}));
-        assert!(
-            !signals.wait_project_load_with(
-                Instant::now() + Duration::from_millis(80),
+        {
+            let signals = Signals::default();
+            let token = CancellationToken::new();
+            let progress =
+                |value: Value| signals.apply_progress(&json!({"token": "t", "value": value}));
+            progress(json!({"kind": "begin"}));
+            signals.begin_pending_load();
+            progress(json!({"kind": "end"}));
+            assert!(
+                !signals.wait_project_load_with(
+                    Instant::now() + Duration::from_millis(80),
+                    &token,
+                    || false,
+                ),
+                "a progress end that began before the add completed the new root's load"
+            );
+            progress(json!({"kind": "begin"}));
+            progress(json!({"kind": "end"}));
+            assert!(signals.wait_project_load_with(
+                Instant::now() + Duration::from_secs(1),
                 &token,
                 || false,
-            ),
-            "a progress end that began before the add completed the new root's load"
-        );
-        progress(json!({"kind": "begin"}));
-        progress(json!({"kind": "end"}));
-        assert!(signals.wait_project_load_with(
-            Instant::now() + Duration::from_secs(1),
-            &token,
-            || false,
-        ));
-    }
+            ));
+        }
 
-    #[test]
-    fn lsp_client_malformed_related_documents_only_warn() {
-        let report = json!({
-            "kind": "full",
-            "items": [],
-            "relatedDocuments": {
-                "file:///ok": {"kind": "full", "items": []},
-                "file:///bad": {"kind": "full", "items": "invalid"},
-                "file:///missing": {"kind": "full"}
-            }
-        });
-        let (related, warnings) = related_reports(&report);
-        assert_eq!(related.len(), 1, "only the valid related report survives");
-        assert_eq!(related[0].0, "file:///ok");
-        assert_eq!(warnings.len(), 2);
-        assert!(join_notes(warnings).is_some());
-        assert!(full_items(&report).unwrap().is_empty());
-        assert!(full_items(&json!({"kind": "full"})).is_err());
-        assert!(full_items(&json!({"kind": "full", "items": "invalid"})).is_err());
+        {
+            let report = json!({
+                "kind": "full",
+                "items": [],
+                "relatedDocuments": {
+                    "file:///ok": {"kind": "full", "items": []},
+                    "file:///bad": {"kind": "full", "items": "invalid"},
+                    "file:///missing": {"kind": "full"}
+                }
+            });
+            let (related, warnings) = related_reports(&report);
+            assert_eq!(related.len(), 1, "only the valid related report survives");
+            assert_eq!(related[0].0, "file:///ok");
+            assert_eq!(warnings.len(), 2);
+            assert!(join_notes(warnings).is_some());
+            assert!(full_items(&report).unwrap().is_empty());
+            assert!(full_items(&json!({"kind": "full"})).is_err());
+            assert!(full_items(&json!({"kind": "full", "items": "invalid"})).is_err());
+        }
     }
 
     #[test]

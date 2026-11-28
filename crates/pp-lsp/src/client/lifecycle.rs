@@ -208,7 +208,7 @@ impl Client {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::*;
     use super::*;
     use crate::config;

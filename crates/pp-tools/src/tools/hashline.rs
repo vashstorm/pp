@@ -540,8 +540,13 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn apply_patch(source: &str, operations: &str) -> Result<String> {
+        let patch = parse(&format!("[file#A1B2]\n{operations}"))?;
+        apply(source, &patch.edits)
+    }
+
     #[test]
-    fn hashline_hash_matches_upstream_vectors() {
+    fn hashline_hashing_scanning_and_patching() {
         // 上游 pi-edit/src/store.rs 的固定向量，同时覆盖 CRLF 和行尾空白。
         assert_eq!(file_hash("a \n b\t\r\nc"), "80BA");
         assert_eq!(file_hash("hello\n"), "5BF9");
@@ -549,10 +554,7 @@ mod tests {
         assert_eq!(file_hash("\u{feff}hello\r\n"), "5BF9");
         assert_eq!(file_hash("hello\r"), "5BF9");
         assert_ne!(file_hash(" hello\n"), file_hash("hello\n"));
-    }
 
-    #[test]
-    fn hashline_scan_with_tag_matches_separate_passes() {
         // 合并遍历必须与既有 `scan` / `file_hash` 逐字节一致：BOM、CRLF、独立 CR、
         // 行尾空白、无末尾换行与空正文都要覆盖。
         for source in [
@@ -577,15 +579,7 @@ mod tests {
                 );
             }
         }
-    }
 
-    fn apply_patch(source: &str, operations: &str) -> Result<String> {
-        let patch = parse(&format!("[file#A1B2]\n{operations}"))?;
-        apply(source, &patch.edits)
-    }
-
-    #[test]
-    fn hashline_snapshot_order_endings_bom_and_literal_payload() {
         assert_eq!(
             apply_patch(
                 "one\ntwo\nthree\n",
@@ -614,99 +608,100 @@ mod tests {
     }
 
     #[test]
-    fn hashline_store_seen_ranges_lru_and_limits() {
-        let mut store = Store {
-            max_paths: 2,
-            max_bytes: 20,
-            ..Default::default()
-        };
-        let raw: Arc<str> = Arc::from("a\nb\nc\n");
-        let patch = parse(&format!("[a#{}]\nCUT 1.=3", file_hash(&raw))).unwrap();
-        assert!(store.record("a".into(), &patch.tag, raw.clone(), vec![1..2, 3..4]));
-        assert!(
+    fn hashline_store_lru_limits_and_collision_rejection() {
+        {
+            let mut store = Store {
+                max_paths: 2,
+                max_bytes: 20,
+                ..Default::default()
+            };
+            let raw: Arc<str> = Arc::from("a\nb\nc\n");
+            let patch = parse(&format!("[a#{}]\nCUT 1.=3", file_hash(&raw))).unwrap();
+            assert!(store.record("a".into(), &patch.tag, raw.clone(), vec![1..2, 3..4]));
+            assert!(
+                store
+                    .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
+                    .is_err()
+            );
+            store.record(
+                "a".into(),
+                &patch.tag,
+                raw.clone(),
+                std::iter::once(2..3).collect(),
+            );
             store
                 .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
-                .is_err()
-        );
-        store.record(
-            "a".into(),
-            &patch.tag,
-            raw.clone(),
-            std::iter::once(2..3).collect(),
-        );
-        store
-            .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
-            .unwrap();
-        store.record(
-            "b".into(),
-            &patch.tag,
-            raw.clone(),
-            std::iter::once(1..4).collect(),
-        );
-        store
-            .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
-            .unwrap();
-        store.record(
-            "c".into(),
-            &patch.tag,
-            raw.clone(),
-            std::iter::once(1..4).collect(),
-        );
-        assert!(store.entries.contains_key(Path::new("a")));
-        assert!(!store.entries.contains_key(Path::new("b")));
-        store.max_bytes = 5;
-        assert!(!store.record(
-            "d".into(),
-            &patch.tag,
-            raw.clone(),
-            std::iter::once(1..4).collect()
-        ));
-        assert!(store.entries.is_empty());
-        assert!(!store.record(
-            "large".into(),
-            &patch.tag,
-            Arc::from("x".repeat(MAX_FILE_BYTES + 1)),
-            std::iter::once(1..2).collect()
-        ));
-    }
-
-    #[test]
-    fn hashline_store_rejects_known_short_tag_collision() {
-        let mut observed = HashMap::<String, String>::new();
-        let (first, second, tag) = (0..=65536)
-            .find_map(|n| {
-                let text = format!("line {n}\n");
-                let tag = file_hash(&text);
-                observed
-                    .insert(tag.clone(), text.clone())
-                    .map(|first| (first, text, tag))
-            })
-            .expect("65537 个不同文本必定碰撞四位标签");
-        let mut store = Store::default();
-        let intermediate = "intermediate version\n";
-        store.record(
-            "file".into(),
-            &tag,
-            Arc::from(first),
-            std::iter::once(1..2).collect(),
-        );
-        store.record(
-            "file".into(),
-            &file_hash(intermediate),
-            Arc::from(intermediate),
-            std::iter::once(1..2).collect(),
-        );
-        assert!(!store.record(
-            "file".into(),
-            &tag,
-            Arc::from(second.as_str()),
-            std::iter::once(1..2).collect()
-        ));
-        let patch = parse(&format!("[file#{tag}]\nCUT 1.=1")).unwrap();
-        assert!(
+                .unwrap();
+            store.record(
+                "b".into(),
+                &patch.tag,
+                raw.clone(),
+                std::iter::once(1..4).collect(),
+            );
             store
-                .validate(Path::new("file"), &tag, &second, &patch.edits)
-                .is_err()
-        );
+                .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
+                .unwrap();
+            store.record(
+                "c".into(),
+                &patch.tag,
+                raw.clone(),
+                std::iter::once(1..4).collect(),
+            );
+            assert!(store.entries.contains_key(Path::new("a")));
+            assert!(!store.entries.contains_key(Path::new("b")));
+            store.max_bytes = 5;
+            assert!(!store.record(
+                "d".into(),
+                &patch.tag,
+                raw.clone(),
+                std::iter::once(1..4).collect()
+            ));
+            assert!(store.entries.is_empty());
+            assert!(!store.record(
+                "large".into(),
+                &patch.tag,
+                Arc::from("x".repeat(MAX_FILE_BYTES + 1)),
+                std::iter::once(1..2).collect()
+            ));
+        }
+
+        {
+            let mut observed = HashMap::<String, String>::new();
+            let (first, second, tag) = (0..=65536)
+                .find_map(|n| {
+                    let text = format!("line {n}\n");
+                    let tag = file_hash(&text);
+                    observed
+                        .insert(tag.clone(), text.clone())
+                        .map(|first| (first, text, tag))
+                })
+                .expect("65537 个不同文本必定碰撞四位标签");
+            let mut store = Store::default();
+            let intermediate = "intermediate version\n";
+            store.record(
+                "file".into(),
+                &tag,
+                Arc::from(first),
+                std::iter::once(1..2).collect(),
+            );
+            store.record(
+                "file".into(),
+                &file_hash(intermediate),
+                Arc::from(intermediate),
+                std::iter::once(1..2).collect(),
+            );
+            assert!(!store.record(
+                "file".into(),
+                &tag,
+                Arc::from(second.as_str()),
+                std::iter::once(1..2).collect()
+            ));
+            let patch = parse(&format!("[file#{tag}]\nCUT 1.=1")).unwrap();
+            assert!(
+                store
+                    .validate(Path::new("file"), &tag, &second, &patch.edits)
+                    .is_err()
+            );
+        }
     }
 }

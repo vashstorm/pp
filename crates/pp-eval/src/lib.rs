@@ -82,7 +82,7 @@ impl Drop for Session {
 mod js_cases;
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::*;
     use anyhow::bail;
     use base64::Engine as _;
@@ -185,76 +185,71 @@ mod tests {
     }
 
     #[test]
-    fn filter_env_strips_provider_secrets() {
-        let mut vars = BTreeMap::new();
-        vars.insert("PATH", "/usr/bin");
-        vars.insert("HOME", "/tmp/home");
-        vars.insert("LC_ALL", "C.UTF-8");
-        vars.insert("OPENAI_API_KEY", "sk-secret");
-        vars.insert("ANTHROPIC_API_KEY", "sk-ant-secret");
-        vars.insert("GEMINI_API_KEY", "gm-secret");
-        let filtered = filter_env(vars);
-        assert_eq!(filtered.get("PATH").map(String::as_str), Some("/usr/bin"));
-        assert_eq!(filtered.get("LC_ALL").map(String::as_str), Some("C.UTF-8"));
-        assert!(!filtered.contains_key("OPENAI_API_KEY"));
-        assert!(!filtered.contains_key("ANTHROPIC_API_KEY"));
-        assert!(!filtered.contains_key("GEMINI_API_KEY"));
-    }
+    fn python_env_state_isolation_and_duplex_bridge() {
+        {
+            let mut vars = BTreeMap::new();
+            vars.insert("PATH", "/usr/bin");
+            vars.insert("HOME", "/tmp/home");
+            vars.insert("LC_ALL", "C.UTF-8");
+            vars.insert("OPENAI_API_KEY", "sk-secret");
+            vars.insert("ANTHROPIC_API_KEY", "sk-ant-secret");
+            vars.insert("GEMINI_API_KEY", "gm-secret");
+            let filtered = filter_env(vars);
+            assert_eq!(filtered.get("PATH").map(String::as_str), Some("/usr/bin"));
+            assert_eq!(filtered.get("LC_ALL").map(String::as_str), Some("C.UTF-8"));
+            assert!(!filtered.contains_key("OPENAI_API_KEY"));
+            assert!(!filtered.contains_key("ANTHROPIC_API_KEY"));
+            assert!(!filtered.contains_key("GEMINI_API_KEY"));
+        }
+        {
+            let h = Harness::new(65_536);
 
-    #[test]
-    fn persistent_state_top_level_await_echo_and_reset() {
-        let h = Harness::new(65_536);
+            let first = h.run(
+                "import asyncio\nx = 20\nawait asyncio.sleep(0.01)\nx + 22",
+                false,
+                10,
+            );
+            assert_eq!(first.value["ok"], true);
+            assert_eq!(first.value["execution_count"], 1);
+            assert_eq!(first.value["output"], "42\n");
 
-        let first = h.run(
-            "import asyncio\nx = 20\nawait asyncio.sleep(0.01)\nx + 22",
-            false,
-            10,
-        );
-        assert_eq!(first.value["ok"], true);
-        assert_eq!(first.value["execution_count"], 1);
-        assert_eq!(first.value["output"], "42\n");
+            let second = h.run("x * 2", false, 10);
+            assert_eq!(second.value["ok"], true);
+            assert_eq!(second.value["execution_count"], 2);
+            assert_eq!(second.value["output"], "40\n");
 
-        let second = h.run("x * 2", false, 10);
-        assert_eq!(second.value["ok"], true);
-        assert_eq!(second.value["execution_count"], 2);
-        assert_eq!(second.value["output"], "40\n");
+            let reset = h.run("x", true, 10);
+            assert_eq!(reset.value["ok"], false);
+            assert!(
+                reset.value["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("NameError")
+            );
+        }
+        {
+            let h = Harness::new(65_536);
 
-        let reset = h.run("x", true, 10);
-        assert_eq!(reset.value["ok"], false);
-        assert!(
-            reset.value["output"]
-                .as_str()
-                .unwrap()
-                .contains("NameError")
-        );
-    }
-
-    #[test]
-    fn stdin_is_devnull_and_raw_fd_stdout_does_not_corrupt_frames() {
-        let h = Harness::new(65_536);
-
-        let out = h.run(
+            let out = h.run(
             "import os, sys\ntry:\n    input('prompt: ')\n    eof = False\nexcept EOFError:\n    eof = True\nos.write(1, b'raw-fd-line\\n')\nprint('eof=', eof)",
             false,
             10,
         );
-        assert_eq!(out.value["ok"], true);
-        let text = out.value["output"].as_str().unwrap();
-        assert!(text.contains("raw-fd-line"), "{text}");
-        assert!(text.contains("eof= True"), "{text}");
+            assert_eq!(out.value["ok"], true);
+            let text = out.value["output"].as_str().unwrap();
+            assert!(text.contains("raw-fd-line"), "{text}");
+            assert!(text.contains("eof= True"), "{text}");
 
-        // 确认内嵌内核仍健康可读后续变量，且上一个 cell 的 raw fd 输出不会泄漏到下一个 cell。
-        let next = h.run("eof", false, 10);
-        assert_eq!(next.value["ok"], true);
-        assert_eq!(next.value["output"], "True\n");
-    }
+            // 确认内嵌内核仍健康可读后续变量，且上一个 cell 的 raw fd 输出不会泄漏到下一个 cell。
+            let next = h.run("eof", false, 10);
+            assert_eq!(next.value["ok"], true);
+            assert_eq!(next.value["output"], "True\n");
+        }
+        {
+            let h = Harness::new(65_536);
+            let token = CancellationToken::new();
 
-    #[test]
-    fn duplex_tool_bridge_supports_sync_and_await_and_errors() {
-        let h = Harness::new(65_536);
-        let token = CancellationToken::new();
-
-        let res = h.run_with(
+            let res = h.run_with(
             r#"
 a = tool.read(path="alpha.txt")
 b = await tool.rg({"pattern": "hello"})
@@ -275,112 +270,111 @@ print(a["content"], b["matches"], caught)
                 other => bail!("unexpected tool {other}"),
             },
         );
-        assert_eq!(res.value["ok"], true, "{}", res.value);
-        assert_eq!(res.value["output"], "file:alpha.txt 3 denied by policy\n");
+            assert_eq!(res.value["ok"], true, "{}", res.value);
+            assert_eq!(res.value["output"], "file:alpha.txt 3 denied by policy\n");
+        }
     }
 
     #[test]
-    fn sigint_interrupts_loop_while_preserving_kernel_state() {
-        let h = Harness::new(65_536);
+    fn python_signals_timeouts_magic_images_and_spill() {
+        {
+            let h = Harness::new(65_536);
 
-        let setup = h.run("kept = 99", false, 10);
-        assert_eq!(setup.value["ok"], true);
+            let setup = h.run("kept = 99", false, 10);
+            assert_eq!(setup.value["ok"], true);
 
-        let cancel = CancellationToken::new();
-        let cancel_clone = cancel.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(150));
-            cancel_clone.cancel();
-        });
+            let cancel = CancellationToken::new();
+            let cancel_clone = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(150));
+                cancel_clone.cancel();
+            });
 
-        let interrupted = h.run_with(
-            "import time\nwhile True:\n    time.sleep(0.05)",
-            false,
-            10,
-            &cancel,
-            &mut |_, _| unreachable!(),
-        );
-        assert_eq!(interrupted.value["ok"], false);
-        assert_eq!(interrupted.value["cancelled"], true);
+            let interrupted = h.run_with(
+                "import time\nwhile True:\n    time.sleep(0.05)",
+                false,
+                10,
+                &cancel,
+                &mut |_, _| unreachable!(),
+            );
+            assert_eq!(interrupted.value["ok"], false);
+            assert_eq!(interrupted.value["cancelled"], true);
 
-        // 内核被 SIGINT 软中断后仍存活，变量 kept 仍然存在。
-        let after = h.run("kept + 1", false, 10);
-        assert_eq!(after.value["ok"], true);
-        assert_eq!(after.value["output"], "100\n");
-    }
+            // 内核被 SIGINT 软中断后仍存活，变量 kept 仍然存在。
+            let after = h.run("kept + 1", false, 10);
+            assert_eq!(after.value["ok"], true);
+            assert_eq!(after.value["output"], "100\n");
+        }
+        {
+            let h = Harness::new(65_536);
 
-    #[test]
-    fn timeout_escalation_kills_uninterruptible_sleep_and_reports_restart() {
-        let h = Harness::new(65_536);
+            let start = Instant::now();
+            // 屏蔽 SIGINT 模拟卡在 C 扩展或子进程阻塞，逼迫超时后升级强杀进程组。
+            let timed = h.run(
+                "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ntime.sleep(10)",
+                false,
+                1,
+            );
+            assert!(start.elapsed() < Duration::from_secs(7));
+            assert_eq!(timed.value["ok"], false);
+            assert_eq!(timed.value["timed_out"], true);
+            assert_eq!(timed.value["kernel_restarted"], true);
 
-        let start = Instant::now();
-        // 屏蔽 SIGINT 模拟卡在 C 扩展或子进程阻塞，逼迫超时后升级强杀进程组。
-        let timed = h.run(
-            "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ntime.sleep(10)",
-            false,
-            1,
-        );
-        assert!(start.elapsed() < Duration::from_secs(7));
-        assert_eq!(timed.value["ok"], false);
-        assert_eq!(timed.value["timed_out"], true);
-        assert_eq!(timed.value["kernel_restarted"], true);
+            let recovered = h.run("1 + 2", false, 10);
+            assert_eq!(recovered.value["ok"], true);
+            assert_eq!(recovered.value["output"], "3\n");
+            assert!(
+                recovered.value["notice"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Kernel restarted"),
+                "{}",
+                recovered.value
+            );
+        }
+        {
+            let h = Harness::new(128);
 
-        let recovered = h.run("1 + 2", false, 10);
-        assert_eq!(recovered.value["ok"], true);
-        assert_eq!(recovered.value["output"], "3\n");
-        assert!(
-            recovered.value["notice"]
-                .as_str()
-                .unwrap()
-                .contains("Kernel restarted"),
-            "{}",
-            recovered.value
-        );
-    }
-
-    #[test]
-    fn load_magic_and_image_capture_and_artifact_spill() {
-        let h = Harness::new(128);
-
-        fs::write(
-            h.work.path().join("helper.py"),
-            "def greet():\n    return 'hi-from-load'\n",
-        )
-        .unwrap();
-        let loaded = h.run("%load helper.py\ngreet()", false, 10);
-        assert_eq!(loaded.value["ok"], true, "{}", loaded.value);
-        assert!(
-            loaded.value["output"]
-                .as_str()
-                .unwrap()
-                .contains("hi-from-load")
-        );
-
-        // 构造真实 1x1 PNG 图片通过 print(omp_image_dict) 触发捕获。
-        let mut png = Vec::new();
-        image::DynamicImage::new_rgba8(2, 2)
-            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            fs::write(
+                h.work.path().join("helper.py"),
+                "def greet():\n    return 'hi-from-load'\n",
+            )
             .unwrap();
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
-        let img_res = h.run(
-            &format!("print({{'type':'image','mimeType':'image/png','data':'{b64}'}})"),
-            false,
-            10,
-        );
-        assert_eq!(img_res.value["ok"], true);
-        assert_eq!(img_res.images.len(), 1);
-        assert_eq!(img_res.images[0].bytes, png);
+            let loaded = h.run("%load helper.py\ngreet()", false, 10);
+            assert_eq!(loaded.value["ok"], true, "{}", loaded.value);
+            assert!(
+                loaded.value["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("hi-from-load")
+            );
 
-        // 输出超过 spill threshold 自动落盘 artifact://。
-        let spill = h.run("print('A' * 512)", false, 10);
-        assert_eq!(spill.value["ok"], true);
-        assert_eq!(spill.value["truncated"], true);
-        assert!(
-            spill.value["artifact"]["uri"]
-                .as_str()
-                .unwrap()
-                .starts_with("artifact://")
-        );
+            // 构造真实 1x1 PNG 图片通过 print(omp_image_dict) 触发捕获。
+            let mut png = Vec::new();
+            image::DynamicImage::new_rgba8(2, 2)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .unwrap();
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
+            let img_res = h.run(
+                &format!("print({{'type':'image','mimeType':'image/png','data':'{b64}'}})"),
+                false,
+                10,
+            );
+            assert_eq!(img_res.value["ok"], true);
+            assert_eq!(img_res.images.len(), 1);
+            assert_eq!(img_res.images[0].bytes, png);
+
+            // 输出超过 spill threshold 自动落盘 artifact://。
+            let spill = h.run("print('A' * 512)", false, 10);
+            assert_eq!(spill.value["ok"], true);
+            assert_eq!(spill.value["truncated"], true);
+            assert!(
+                spill.value["artifact"]["uri"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("artifact://")
+            );
+        }
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -500,94 +494,91 @@ print(a["content"], b["matches"], caught)
     }
 
     #[test]
-    fn eval_handles_idle_stderr_flooded_shutdown_and_sigint_timeout_cleanly() {
-        let h = Harness::new(65_536);
+    fn python_idle_flood_bridge_budget_and_cleanup_seal() {
+        {
+            let h = Harness::new(65_536);
 
-        // 1. 后台线程在无活动 cell 时直接写入 fd 2，不得自回环死锁。
-        let idle_err = h.run(
-            r#"import os, threading, time
+            // 1. 后台线程在无活动 cell 时直接写入 fd 2，不得自回环死锁。
+            let idle_err = h.run(
+                r#"import os, threading, time
 def bg():
     time.sleep(0.03)
     os.write(2, b'idle-fd2-note\n')
 threading.Thread(target=bg, daemon=True).start()
 print('before-idle')"#,
-            false,
-            10,
-        );
-        assert_eq!(idle_err.value["ok"], true, "{}", idle_err.value);
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let after_idle = h.run("print('after-idle')", false, 10);
-        assert_eq!(after_idle.value["ok"], true, "{}", after_idle.value);
-        assert_eq!(after_idle.value["output"], "after-idle\n");
+                false,
+                10,
+            );
+            assert_eq!(idle_err.value["ok"], true, "{}", idle_err.value);
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let after_idle = h.run("print('after-idle')", false, 10);
+            assert_eq!(after_idle.value["ok"], true, "{}", after_idle.value);
+            assert_eq!(after_idle.value["output"], "after-idle\n");
 
-        // 2. 正常响应 SIGINT 的超时单元格，timed_out 为 true 且 cancelled 为 false。
-        let timed = h.run("import time\ntime.sleep(5)", false, 1);
-        assert_eq!(timed.value["ok"], false, "{}", timed.value);
-        assert_eq!(timed.value["timed_out"], true, "{}", timed.value);
-        assert_eq!(timed.value["cancelled"], false, "{}", timed.value);
+            // 2. 正常响应 SIGINT 的超时单元格，timed_out 为 true 且 cancelled 为 false。
+            let timed = h.run("import time\ntime.sleep(5)", false, 1);
+            assert_eq!(timed.value["ok"], false, "{}", timed.value);
+            assert_eq!(timed.value["timed_out"], true, "{}", timed.value);
+            assert_eq!(timed.value["cancelled"], false, "{}", timed.value);
 
-        // 3. 后台协程发送 > 512 帧填满通道后 reset，shutdown 不得死锁。
-        let flood = h.run(
-            r#"import asyncio
+            // 3. 后台协程发送 > 512 帧填满通道后 reset，shutdown 不得死锁。
+            let flood = h.run(
+                r#"import asyncio
 async def spam():
     await asyncio.sleep(0.02)
     for i in range(600):
         print(f'spam-{i}')
 asyncio.get_running_loop().create_task(spam())
 print('scheduled')"#,
-            false,
-            10,
-        );
-        assert_eq!(flood.value["ok"], true, "{}", flood.value);
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let reset_ok = h.run("print('reset-ok')", true, 10);
-        assert_eq!(reset_ok.value["ok"], true, "{}", reset_ok.value);
-        assert_eq!(reset_ok.value["output"], "reset-ok\n");
-    }
+                false,
+                10,
+            );
+            assert_eq!(flood.value["ok"], true, "{}", flood.value);
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let reset_ok = h.run("print('reset-ok')", true, 10);
+            assert_eq!(reset_ok.value["ok"], true, "{}", reset_ok.value);
+            assert_eq!(reset_ok.value["output"], "reset-ok\n");
+        }
+        {
+            let h = Harness::new(65_536);
 
-    #[test]
-    fn bridge_wall_clock_stays_exempt_from_compute_budget() {
-        let h = Harness::new(65_536);
-
-        // 4 次宿主 bridge 合计约 2.4s 墙钟必须全部豁免计算预算；
-        // 随后纯 Python sleep(3) 超出 2s 计算额度，必须在额度处超时中断。
-        let res = h.run_with(
-            r#"
+            // 4 次宿主 bridge 合计约 2.4s 墙钟必须全部豁免计算预算；
+            // 随后纯 Python sleep(3) 超出 2s 计算额度，必须在额度处超时中断。
+            let res = h.run_with(
+                r#"
 import time
 for _ in range(4):
     tool.slow({})
 time.sleep(3)
 print('never')
 "#,
-            false,
-            2,
-            &CancellationToken::new(),
-            &mut |name, _args| {
-                assert_eq!(name, "slow");
-                std::thread::sleep(Duration::from_millis(600));
-                Ok(json!({"ok": true}))
-            },
-        );
-        assert_eq!(res.value["timed_out"], true, "{}", res.value);
-        assert_eq!(res.value["ok"], false, "{}", res.value);
-        assert_eq!(res.value["cancelled"], false, "{}", res.value);
-        assert_eq!(res.value["kernel_restarted"], Value::Null, "{}", res.value);
+                false,
+                2,
+                &CancellationToken::new(),
+                &mut |name, _args| {
+                    assert_eq!(name, "slow");
+                    std::thread::sleep(Duration::from_millis(600));
+                    Ok(json!({"ok": true}))
+                },
+            );
+            assert_eq!(res.value["timed_out"], true, "{}", res.value);
+            assert_eq!(res.value["ok"], false, "{}", res.value);
+            assert_eq!(res.value["cancelled"], false, "{}", res.value);
+            assert_eq!(res.value["kernel_restarted"], Value::Null, "{}", res.value);
 
-        // 超时走软中断路径：内核存活，后续 cell 可继续执行。
-        let after = h.run("print('alive')", false, 10);
-        assert_eq!(after.value["ok"], true, "{}", after.value);
-        assert_eq!(after.value["output"], "alive\n");
-    }
+            // 超时走软中断路径：内核存活，后续 cell 可继续执行。
+            let after = h.run("print('alive')", false, 10);
+            assert_eq!(after.value["ok"], true, "{}", after.value);
+            assert_eq!(after.value["output"], "alive\n");
+        }
+        {
+            let h = Harness::new(64);
 
-    #[test]
-    fn mid_cell_shutdown_failure_seals_artifact_before_cleanup_error() {
-        let h = Harness::new(64);
+            // 注入一次循环内内核回收故障：artifact 已产生后清理失败，
+            // 资源仍必须在错误上浮前封存（finish 幂等收尾），不伪造 cell 成功。
+            lock(&h.session.python).fail_next_shutdown_for_test();
 
-        // 注入一次循环内内核回收故障：artifact 已产生后清理失败，
-        // 资源仍必须在错误上浮前封存（finish 幂等收尾），不伪造 cell 成功。
-        lock(&h.session.python).fail_next_shutdown_for_test();
-
-        let result = h.session.execute(
+            let result = h.session.execute(
             CellRequest {
                 language: Language::Python,
                 cwd: h.work.path(),
@@ -604,29 +595,30 @@ print('never')
             &mut |_| {},
             &mut |_, _| unreachable!(),
         );
-        let err = result
-            .err()
-            .expect("cleanup failure must surface instead of fake success");
-        assert!(
-            err.downcast_ref::<pp_core::cancellation::CleanupError>()
-                .is_some(),
-            "{err:#}"
-        );
-        assert!(format!("{err:#}").contains("injected for test"), "{err:#}");
+            let err = result
+                .err()
+                .expect("cleanup failure must surface instead of fake success");
+            assert!(
+                err.downcast_ref::<pp_core::cancellation::CleanupError>()
+                    .is_some(),
+                "{err:#}"
+            );
+            assert!(format!("{err:#}").contains("injected for test"), "{err:#}");
 
-        // live 捕获已被摘除并可从磁盘完整读回：等价断言 live_is_empty_for_test()，
-        // 捕获 metadata 已封存发布（complete 为 true 仅在 meta.json 发布后成立）。
-        let snapshot = h
-            .store
-            .snapshot("artifact://0", &CancellationToken::new())
-            .unwrap();
-        assert_eq!(
-            snapshot.metadata["capturing"], false,
-            "{}",
-            snapshot.metadata
-        );
-        assert_eq!(snapshot.metadata["complete"], true, "{}", snapshot.metadata);
-        let text = fs::read_to_string(snapshot.path).unwrap();
-        assert_eq!(text, format!("{}\n", "A".repeat(200)));
+            // live 捕获已被摘除并可从磁盘完整读回：等价断言 live_is_empty_for_test()，
+            // 捕获 metadata 已封存发布（complete 为 true 仅在 meta.json 发布后成立）。
+            let snapshot = h
+                .store
+                .snapshot("artifact://0", &CancellationToken::new())
+                .unwrap();
+            assert_eq!(
+                snapshot.metadata["capturing"], false,
+                "{}",
+                snapshot.metadata
+            );
+            assert_eq!(snapshot.metadata["complete"], true, "{}", snapshot.metadata);
+            let text = fs::read_to_string(snapshot.path).unwrap();
+            assert_eq!(text, format!("{}\n", "A".repeat(200)));
+        }
     }
 }

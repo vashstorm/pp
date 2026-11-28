@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn streaming_scrolling_keeps_viewport_until_follow_is_restored() {
+fn streaming_scrolling_clamp_and_resize_reflow() {
     let mut transcript = Transcript::new();
     for index in 0..60 {
         transcript.append("Assistant", &format!("history-{index:02}"));
@@ -22,80 +22,73 @@ fn streaming_scrolling_keeps_viewport_until_follow_is_restored() {
     assert!(screen(&render(&mut transcript, 40, 8)).contains("live-first"));
     delta(&mut transcript, "-last", false);
     assert!(screen(&render(&mut transcript, 40, 8)).contains("live-first-last"));
-}
 
-#[test]
-fn mouse_scroll_lines_clamp_and_restore_follow() {
-    let mut transcript = Transcript::new();
+    let mut scrolled = Transcript::new();
     let history = (0..60)
         .map(|index| format!("line-{index:02}-abcdefghijk"))
         .collect::<Vec<_>>()
         .join("\n");
-    delta(&mut transcript, &history, false);
-    let bottom = screen(&render(&mut transcript, 12, 8));
+    delta(&mut scrolled, &history, false);
+    let bottom = screen(&render(&mut scrolled, 12, 8));
     assert!(bottom.contains("line-59"));
-    transcript.scroll_up(3);
-    let older = screen(&render(&mut transcript, 12, 8));
+    scrolled.scroll_up(3);
+    let older = screen(&render(&mut scrolled, 12, 8));
     assert_eq!(
         older.lines().skip(3).collect::<Vec<_>>(),
         bottom.lines().take(5).collect::<Vec<_>>()
     );
     assert!(!older.contains("line-59"));
-    delta(&mut transcript, "\nnew-a\nnew-b", false);
-    assert_eq!(screen(&render(&mut transcript, 12, 8)), older);
-    assert!(!transcript.follow_bottom);
+    delta(&mut scrolled, "\nnew-a\nnew-b", false);
+    assert_eq!(screen(&render(&mut scrolled, 12, 8)), older);
+    assert!(!scrolled.follow_bottom);
 
-    transcript.scroll_up(usize::MAX);
-    let top = screen(&render(&mut transcript, 12, 8));
-    assert!(top.starts_with("  line-00"));
-    assert!(top.contains("line-00"));
-    transcript.scroll_up(3);
-    assert_eq!(screen(&render(&mut transcript, 12, 8)), top);
-    transcript.scroll_down(usize::MAX);
-    assert!(screen(&render(&mut transcript, 12, 8)).contains("new-b"));
-    assert!(transcript.follow_bottom);
-    delta(&mut transcript, "\nfollow", false);
-    assert!(screen(&render(&mut transcript, 12, 8)).contains("follow"));
+    scrolled.scroll_up(usize::MAX);
+    let top = screen(&render(&mut scrolled, 12, 8));
+    assert!(top.starts_with("  line-00") && top.contains("line-00"));
+    scrolled.scroll_up(3);
+    assert_eq!(screen(&render(&mut scrolled, 12, 8)), top);
+    scrolled.scroll_down(usize::MAX);
+    assert!(screen(&render(&mut scrolled, 12, 8)).contains("new-b"));
+    assert!(scrolled.follow_bottom);
+    delta(&mut scrolled, "\nfollow", false);
+    assert!(screen(&render(&mut scrolled, 12, 8)).contains("follow"));
 
-    let resized = screen(&render(&mut transcript, 9, 5));
-    transcript.scroll_up(3);
-    let older = screen(&render(&mut transcript, 9, 5));
+    let resized = screen(&render(&mut scrolled, 9, 5));
+    scrolled.scroll_up(3);
+    let older = screen(&render(&mut scrolled, 9, 5));
     assert_eq!(
         older.lines().skip(3).collect::<Vec<_>>(),
         resized.lines().take(2).collect::<Vec<_>>()
     );
-    transcript.scroll_down(usize::MAX);
-    assert_eq!(screen(&render(&mut transcript, 9, 5)), resized);
+    scrolled.scroll_down(usize::MAX);
+    assert_eq!(screen(&render(&mut scrolled, 9, 5)), resized);
 
     for text in ["", "short"] {
-        let mut transcript = Transcript::new();
+        let mut t = Transcript::new();
         if !text.is_empty() {
-            delta(&mut transcript, text, false);
+            delta(&mut t, text, false);
         }
-        let original = render(&mut transcript, 20, 8);
-        transcript.scroll_up(usize::MAX);
-        assert_eq!(render(&mut transcript, 20, 8), original);
-        transcript.scroll_down(usize::MAX);
-        assert_eq!(render(&mut transcript, 20, 8), original);
-        assert!(transcript.follow_bottom);
+        let original = render(&mut t, 20, 8);
+        t.scroll_up(usize::MAX);
+        assert_eq!(render(&mut t, 20, 8), original);
+        t.scroll_down(usize::MAX);
+        assert_eq!(render(&mut t, 20, 8), original);
+        assert!(t.follow_bottom);
     }
-}
 
-#[test]
-fn streaming_resize_reflows_without_losing_text_or_follow_state() {
-    let mut transcript = Transcript::new();
-    transcript.append("You", "draft submitted 中😀");
-    transcript.progress(AgentEvent::AssistantStarted);
-    delta(&mut transcript, "first\n  indented 中😀\n\nlast", false);
-    let before = render(&mut transcript, 40, 8);
-    render(&mut transcript, 5, 2);
-    let after = render(&mut transcript, 40, 8);
+    let mut reflow = Transcript::new();
+    reflow.append("You", "draft submitted 中😀");
+    reflow.progress(AgentEvent::AssistantStarted);
+    delta(&mut reflow, "first\n  indented 中😀\n\nlast", false);
+    let before = render(&mut reflow, 40, 8);
+    render(&mut reflow, 5, 2);
+    let after = render(&mut reflow, 40, 8);
     assert_eq!(before, after);
-    assert_eq!(transcript.entries[1].text, "first\n  indented 中😀\n\nlast");
-    transcript.page_up();
-    render(&mut transcript, 20, 4);
-    assert!(!transcript.follow_bottom);
-    assert!(transcript.offset <= transcript.total.saturating_sub(4));
+    assert_eq!(reflow.entries[1].text, "first\n  indented 中😀\n\nlast");
+    reflow.page_up();
+    render(&mut reflow, 20, 4);
+    assert!(!reflow.follow_bottom);
+    assert!(reflow.offset <= reflow.total.saturating_sub(4));
 }
 
 #[test]
@@ -272,7 +265,7 @@ fn streaming_tool_channels_results_and_reused_ids_are_calibrated() {
 }
 
 #[test]
-fn markdown_visual_rows_cross_u16_and_scrolled_history_stays_anchored() {
+fn streaming_large_u16_rows_and_eval_card() {
     let mut transcript = Transcript::new();
     let text = format!("```text\n{}long-entry-tail\n```", "line\n".repeat(70_000));
     transcript.append("Assistant", &text);
@@ -288,52 +281,45 @@ fn markdown_visual_rows_cross_u16_and_scrolled_history_stays_anchored() {
     delta(&mut transcript, "-after-scroll", false);
     assert_eq!(screen(&render(&mut transcript, 30, 5)), before);
     assert_eq!(transcript.offset, offset);
-}
 
-#[test]
-fn streaming_single_long_logical_line_uses_bounded_grapheme_windows() {
-    let mut transcript = Transcript::new();
-    transcript.append("Assistant", &format!("{}tail中😀", "a".repeat(140_000)));
-    let buffer = render(&mut transcript, 3, 8);
-    assert!(transcript.offset > usize::from(u16::MAX));
+    let mut wide = Transcript::new();
+    wide.append("Assistant", &format!("{}tail中😀", "a".repeat(140_000)));
+    let buffer = render(&mut wide, 3, 8);
+    assert!(wide.offset > usize::from(u16::MAX));
     let narrow = screen(&buffer);
-    assert!(narrow.contains('t'));
-    assert!(narrow.contains('l'));
-    let layout = transcript.entries[0].layout.as_ref().unwrap();
+    assert!(narrow.contains('t') && narrow.contains('l'));
+    let layout = wide.entries[0].layout.as_ref().unwrap();
     assert!(
         layout
             .iter()
             .all(|line| line.height <= usize::from(u16::MAX))
     );
-    // CJK and emoji need two cells; show the same tail at a useful width.
-    assert!(screen(&render(&mut transcript, 30, 5)).contains("tail中"));
-}
+    assert!(screen(&render(&mut wide, 30, 5)).contains("tail中"));
 
-#[test]
-fn eval_card_renders_title_code_and_streaming_output() {
-    let mut transcript = Transcript::new();
-    transcript.progress(AgentEvent::ToolStarted {
+    let mut eval = Transcript::new();
+    eval.progress(AgentEvent::ToolStarted {
         id: "eval-1".into(),
         name: "eval".into(),
         arguments: json!({"language":"py","title":"sum check","code":"x = 20\nprint(x + 22)"})
             .to_string(),
     });
-    assert_eq!(transcript.entries[0].kind, EntryKind::Eval);
-    assert!(transcript.entries[0].title.contains("Python · sum check"));
-
-    transcript.progress(AgentEvent::ToolOutputSnapshot {
+    assert_eq!(eval.entries[0].kind, EntryKind::Eval);
+    assert!(eval.entries[0].title.contains("Python · sum check"));
+    eval.progress(AgentEvent::ToolOutputSnapshot {
         id: "eval-1".into(),
         output: "42\n".into(),
     });
-    transcript.progress(AgentEvent::ToolFinished {
+    eval.progress(AgentEvent::ToolFinished {
         id: "eval-1".into(),
         result: json!({"ok":true,"language":"py","output":"42\n","duration_ms":12}),
     });
-
-    let view = screen(&render(&mut transcript, 80, 12));
-    assert!(view.contains("Python · done"), "{view}");
-    assert!(!view.contains("Eval · "), "{view}");
-    assert!(view.contains("sum check"), "{view}");
-    assert!(view.contains("42"), "{view}");
-    assert!(!view.contains("Bash"), "{view}");
+    let view = screen(&render(&mut eval, 80, 12));
+    assert!(
+        view.contains("Python · done") && !view.contains("Eval · "),
+        "{view}"
+    );
+    assert!(
+        view.contains("sum check") && view.contains("42") && !view.contains("Bash"),
+        "{view}"
+    );
 }

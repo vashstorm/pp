@@ -308,7 +308,7 @@ fn drain_stderr(mut stderr: impl Read, shared: Arc<Shared>) {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::*;
     use super::*;
 

@@ -258,246 +258,242 @@ fn key(code: KeyCode) -> Event {
 }
 
 #[test]
-fn empty_session_renders_grid_and_compact_inline_metrics() {
-    let mut panel = Panel::new();
-    let loading = draw_panel(&mut panel, 110, 26);
-    assert!(loading.contains("Inspecting current session context..."));
+fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
+    {
+        let mut panel = Panel::new();
+        let loading = draw_panel(&mut panel, 110, 26);
+        assert!(loading.contains("Inspecting current session context..."));
 
-    panel.set_report(sample_empty_report());
-    let screen = draw_panel(&mut panel, 120, 26);
-    assert!(screen.contains("Context · test/demo (medium)"));
-    assert!(screen.contains("Used 0 of 500K tokens · 0%"));
-    assert!(screen.contains("425K left before auto-compaction at 85%"));
-    assert!(screen.contains("⛶"));
-    assert!(screen.contains("⛝"));
-    let grid_only: String = screen
-        .lines()
-        .map(|line| line.chars().take(52).collect::<String>())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(grid_only.matches('⛁').count(), 0);
-    assert_eq!(grid_only.matches('⛝').count(), 60);
-    assert_eq!(grid_only.matches('⛶').count(), 340);
+        panel.set_report(sample_empty_report());
+        let screen = draw_panel(&mut panel, 120, 26);
+        assert!(screen.contains("Context · test/demo (medium)"));
+        assert!(screen.contains("Used 0 of 500K tokens · 0%"));
+        assert!(screen.contains("425K left before auto-compaction at 85%"));
+        assert!(screen.contains("⛶"));
+        assert!(screen.contains("⛝"));
+        let grid_only: String = screen
+            .lines()
+            .map(|line| line.chars().take(52).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(grid_only.matches('⛁').count(), 0);
+        assert_eq!(grid_only.matches('⛝').count(), 60);
+        assert_eq!(grid_only.matches('⛶').count(), 340);
 
-    // 具体大小与占比紧跟在分类文字后方（2 空格间隔），绝不推到窗口右边缘对齐；空会话全为 0。
-    assert!(screen.contains("> ⛁ System Prompt  0  0.0%"));
-    assert!(screen.contains("  ⛁ Instruction Files  0  0.0%"));
-    assert!(screen.contains("  ⛁ Skills  0  0.0%"));
-    assert!(screen.contains("  ⛁ Built-in Tools  0  0.0%"));
-    assert!(screen.contains("  ⛁ Custom Tools  0  0.0%"));
-    assert!(screen.contains("  ⛝ Auto-Compact Buffer  75K  15.0%"));
-    assert!(screen.contains("  ⛶ Free Space  425K  85.0%"));
-    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
-    assert!(!panel.expanded[0]);
-    let right_normalized: String = screen
-        .lines()
-        .map(|line| line.chars().skip(53).collect::<String>())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .replace('│', " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(right_normalized.contains(
-        "Category totals split Used by estimated share; the entries inside may not add up to them."
-    ));
-}
+        // 具体大小与占比紧跟在分类文字后方（2 空格间隔），绝不推到窗口右边缘对齐；空会话全为 0。
+        assert!(screen.contains("> ⛁ System Prompt  0  0.0%"));
+        assert!(screen.contains("  ⛁ Instruction Files  0  0.0%"));
+        assert!(screen.contains("  ⛁ Skills  0  0.0%"));
+        assert!(screen.contains("  ⛁ Built-in Tools  0  0.0%"));
+        assert!(screen.contains("  ⛁ Custom Tools  0  0.0%"));
+        assert!(screen.contains("  ⛝ Auto-Compact Buffer  75K  15.0%"));
+        assert!(screen.contains("  ⛶ Free Space  425K  85.0%"));
+        assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+        assert!(!panel.expanded[0]);
+        let right_normalized: String = screen
+            .lines()
+            .map(|line| line.chars().skip(53).collect::<String>())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace('│', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(right_normalized.contains(
+            "Category totals split Used by estimated share; the entries inside may not add up to them."
+        ));
+    }
 
-#[test]
-fn categories_expand_and_collapse_in_place_and_ascii_mode_uses_ascii_glyphs() {
-    let mut panel = Panel::new();
-    panel.set_report(sample_report());
+    {
+        let mut panel = Panel::new();
+        panel.set_report(sample_report());
 
-    // 在 System Prompt 按 Enter 原地展开 2 个子项。
-    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
-    let expanded_screen = draw_panel(&mut panel, 130, 26);
-    assert!(expanded_screen.contains("> ⛁ System Prompt ▾  2.5K  0.5%"));
-    assert!(expanded_screen.contains("Base System Prompt (bundled) · bundled  1.8K  0.4%"));
-    assert!(
-        expanded_screen
-            .contains("Runtime Tool & Environment Rules · prompts/runtime.md  700  0.1%")
-    );
+        let header_screen = draw_panel(&mut panel, 120, 26);
+        assert!(
+            header_screen.contains("400K left before auto-compaction at 85%"),
+            "{header_screen}"
+        );
+        assert!(header_screen.contains("Cache 50%"), "{header_screen}");
+        assert!(header_screen.contains("Reasoning 1.2K"), "{header_screen}");
 
-    // 向下进入第一个子项，按 Left 收起所属分类并将光标拉回分类行。
-    assert!(matches!(panel.handle(key(KeyCode::Down)), Action::None));
-    assert!(matches!(
-        panel.visible_rows()[panel.cursor],
-        RowKind::Child(0, 0)
-    ));
-    assert!(matches!(panel.handle(key(KeyCode::Left)), Action::None));
-    assert_eq!(panel.visible_rows()[panel.cursor], RowKind::Category(0));
-    let collapsed_screen = draw_panel(&mut panel, 110, 26);
-    assert!(!collapsed_screen.contains("Base System Prompt (bundled)"));
+        // 在 System Prompt 按 Enter 原地展开 2 个子项。
+        assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+        let expanded_screen = draw_panel(&mut panel, 130, 26);
+        assert!(expanded_screen.contains("> ⛁ System Prompt ▾  2.5K  0.5%"));
+        assert!(expanded_screen.contains("Base System Prompt (bundled) · bundled  1.8K  0.4%"));
+        assert!(
+            expanded_screen
+                .contains("Runtime Tool & Environment Rules · prompts/runtime.md  700  0.1%")
+        );
 
-    // 移动到 Built-in Tools (index 3) 并用 Right 展开；r 刷新；Esc 关闭。
-    for _ in 0..3 {
+        // 向下进入第一个子项，按 Left 收起所属分类并将光标拉回分类行。
         assert!(matches!(panel.handle(key(KeyCode::Down)), Action::None));
+        assert!(matches!(
+            panel.visible_rows()[panel.cursor],
+            RowKind::Child(0, 0)
+        ));
+        assert!(matches!(panel.handle(key(KeyCode::Left)), Action::None));
+        assert_eq!(panel.visible_rows()[panel.cursor], RowKind::Category(0));
+        let collapsed_screen = draw_panel(&mut panel, 110, 26);
+        assert!(!collapsed_screen.contains("Base System Prompt (bundled)"));
+
+        // 移动到 Built-in Tools (index 3) 并用 Right 展开；r 刷新；Esc 关闭。
+        for _ in 0..3 {
+            assert!(matches!(panel.handle(key(KeyCode::Down)), Action::None));
+        }
+        assert!(matches!(panel.handle(key(KeyCode::Right)), Action::None));
+        let tools_screen = draw_panel(&mut panel, 110, 26);
+        assert!(tools_screen.contains("Read · Read files  1.2K  0.2%"));
+        assert!(tools_screen.contains("Bash · Run shell  3.5K  0.7%"));
+
+        // ASCII 模式下不出现 Unicode 网格字形。
+        crate::tui::themes::set_active(Theme::Default, IconMode::Ascii);
+        let ascii_screen = draw_panel(&mut panel, 110, 26);
+        crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
+        assert!(ascii_screen.contains("# ."));
+        assert!(ascii_screen.contains("x x"));
+        assert!(!ascii_screen.contains('⛁'));
+        assert!(!ascii_screen.contains('⛶'));
+        assert!(!ascii_screen.contains('⛝'));
+
+        // 刷新后保留未失效的展开态。
+        assert!(matches!(
+            panel.handle(key(KeyCode::Char('r'))),
+            Action::Refresh
+        ));
+        panel.set_report(sample_report());
+        assert!(panel.expanded[3]);
+        assert!(matches!(panel.handle(key(KeyCode::Esc)), Action::Close));
     }
-    assert!(matches!(panel.handle(key(KeyCode::Right)), Action::None));
-    let tools_screen = draw_panel(&mut panel, 110, 26);
-    assert!(tools_screen.contains("Read · Read files  1.2K  0.2%"));
-    assert!(tools_screen.contains("Bash · Run shell  3.5K  0.7%"));
-
-    // ASCII 模式下不出现 Unicode 网格字形。
-    crate::tui::themes::set_active(Theme::Default, IconMode::Ascii);
-    let ascii_screen = draw_panel(&mut panel, 110, 26);
-    crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
-    assert!(ascii_screen.contains("# ."));
-    assert!(ascii_screen.contains("x x"));
-    assert!(!ascii_screen.contains('⛁'));
-    assert!(!ascii_screen.contains('⛶'));
-    assert!(!ascii_screen.contains('⛝'));
-
-    // 刷新后保留未失效的展开态。
-    assert!(matches!(
-        panel.handle(key(KeyCode::Char('r'))),
-        Action::Refresh
-    ));
-    panel.set_report(sample_report());
-    assert!(panel.expanded[3]);
-    assert!(matches!(panel.handle(key(KeyCode::Esc)), Action::Close));
 }
 
 #[test]
-fn app_context_does_not_replace_running_or_cancelling_state() {
-    use crate::tui::{App, CancellationToken, State, WorkerEvent};
+fn app_context_command_states_and_compaction_policy_sync() {
+    {
+        use crate::tui::{App, CancellationToken, State, WorkerEvent};
 
-    for (state, command) in [(State::Running, "/context"), (State::Cancelling, "/ctx")] {
-        let original_state = std::mem::discriminant(&state);
-        let mut app = App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
+        for (state, command) in [(State::Running, "/context"), (State::Cancelling, "/ctx")] {
+            let original_state = std::mem::discriminant(&state);
+            let mut app = App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
+            let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+            let cancellation = CancellationToken::new();
+            app.commands = Some(cmd_tx);
+            app.state = state;
+            app.active_cancellation = Some(cancellation.clone());
+            app.insert_input(command.into());
+            let mut dirty = false;
+            app.handle(key(KeyCode::Enter), &mut dirty);
+            assert!(app.context_panel.is_some());
+            assert!(!app.has_pending());
+            assert!(cmd_rx.try_recv().is_err());
+
+            // 迟到的诊断回复不能覆盖主任务的状态。
+            app.receive_event_for_test(WorkerEvent::ContextInspected(Ok(sample_report())));
+            app.handle(key(KeyCode::Char('r')), &mut dirty);
+            assert!(cmd_rx.try_recv().is_err());
+            app.handle(key(KeyCode::Esc), &mut dirty);
+            assert!(app.context_panel.is_none());
+            assert_eq!(std::mem::discriminant(&app.state), original_state);
+            assert!(!cancellation.is_cancelled());
+            assert!(app.active_cancellation.is_some());
+        }
+    }
+
+    {
+        let mut app = crate::tui::App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-        let cancellation = CancellationToken::new();
         app.commands = Some(cmd_tx);
-        app.state = state;
-        app.active_cancellation = Some(cancellation.clone());
-        app.insert_input(command.into());
+        app.state = crate::tui::State::Ready;
+        app.insert_input("/context".into());
         let mut dirty = false;
-        app.handle(key(KeyCode::Enter), &mut dirty);
-        assert!(app.context_panel.is_some());
-        assert!(!app.has_pending());
-        assert!(cmd_rx.try_recv().is_err());
+        assert!(!app.handle(key(KeyCode::Enter), &mut dirty));
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(crate::tui::WorkerCommand::InspectContext)
+        ));
+        assert!(app.needs_alternate());
+        assert!(matches!(app.state, crate::tui::State::InspectingContext));
 
-        // 迟到的诊断回复不能覆盖主任务的状态。
-        app.receive_event_for_test(WorkerEvent::ContextInspected(Ok(sample_report())));
-        app.handle(key(KeyCode::Char('r')), &mut dirty);
-        assert!(cmd_rx.try_recv().is_err());
-        app.handle(key(KeyCode::Esc), &mut dirty);
-        assert!(app.context_panel.is_none());
-        assert_eq!(std::mem::discriminant(&app.state), original_state);
-        assert!(!cancellation.is_cancelled());
-        assert!(app.active_cancellation.is_some());
-    }
-}
+        app.receive_event_for_test(crate::tui::WorkerEvent::ContextInspected(Ok(
+            sample_report(),
+        )));
+        assert!(matches!(app.state, crate::tui::State::Ready));
 
-#[test]
-fn app_submits_context_command_opens_alternate_panel_and_closes_on_escape() {
-    let mut app = crate::tui::App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    app.commands = Some(cmd_tx);
-    app.state = crate::tui::State::Ready;
-    app.insert_input("/context".into());
-    let mut dirty = false;
-    assert!(!app.handle(key(KeyCode::Enter), &mut dirty));
-    assert!(matches!(
-        cmd_rx.try_recv(),
-        Ok(crate::tui::WorkerCommand::InspectContext)
-    ));
-    assert!(app.needs_alternate());
-    assert!(matches!(app.state, crate::tui::State::InspectingContext));
+        let mut terminal = Terminal::new(TestBackend::new(110, 28)).unwrap();
+        terminal
+            .draw(|frame| app.draw(frame, &crate::tui::StatusContext::default()))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(rendered.contains("Context · test/demo"));
+        assert!(rendered.contains("Custom Tools"));
+        assert!(rendered.contains("Assistant Thinking"));
 
-    app.receive_event_for_test(crate::tui::WorkerEvent::ContextInspected(Ok(
-        sample_report(),
-    )));
-    assert!(matches!(app.state, crate::tui::State::Ready));
-
-    let mut terminal = Terminal::new(TestBackend::new(110, 28)).unwrap();
-    terminal
-        .draw(|frame| app.draw(frame, &crate::tui::StatusContext::default()))
-        .unwrap();
-    let rendered: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
-    assert!(rendered.contains("Context · test/demo"));
-    assert!(rendered.contains("Custom Tools"));
-    assert!(rendered.contains("Assistant Thinking"));
-
-    assert!(!app.handle(key(KeyCode::Esc), &mut dirty));
-    assert!(!app.needs_alternate());
-}
-
-#[test]
-fn settings_save_syncs_compaction_policy_to_worker_usage_and_open_context_panel() {
-    let dir = tempfile::tempdir().unwrap();
-    let settings_path = dir.path().join("settings.yml");
-    std::fs::write(&settings_path, "auto_compact_threshold_percent: 80\n").unwrap();
-
-    let mut app = crate::tui::App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
-    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
-    app.commands = Some(cmd_tx);
-    app.settings_path = Some(settings_path.clone());
-    app.usage = Some(pp_core::context::ContextUsage {
-        estimated_tokens: 10_000,
-        context_window: Some(100_000),
-        last_request: None,
-        session_output_tokens: 0,
-        auto_compact: true,
-        threshold_percent: 80,
-    });
-    let mut panel = Panel::new();
-    panel.set_report(sample_empty_report());
-    app.context_panel = Some(panel);
-
-    app.settings_worker
-        .save(
-            &settings_path,
-            pp_config::config::SettingPatch::AutoCompactThresholdPercent(90),
-        )
-        .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !app.receive_settings() {
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        assert!(!app.handle(key(KeyCode::Esc), &mut dirty));
+        assert!(!app.needs_alternate());
     }
 
-    assert!(matches!(
-        cmd_rx.try_recv(),
-        Ok(crate::tui::WorkerCommand::UpdateCompactionPolicy {
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let settings_path = dir.path().join("settings.yml");
+        std::fs::write(&settings_path, "auto_compact_threshold_percent: 80\n").unwrap();
+
+        let mut app = crate::tui::App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        app.commands = Some(cmd_tx);
+        app.settings_path = Some(settings_path.clone());
+        app.usage = Some(pp_core::context::ContextUsage {
+            estimated_tokens: 10_000,
+            context_window: Some(100_000),
+            last_request: None,
+            session_output_tokens: 0,
             auto_compact: true,
-            threshold_percent: 90,
-        })
-    ));
-    let usage = app.usage.unwrap();
-    assert!(usage.auto_compact);
-    assert_eq!(usage.threshold_percent, 90);
+            threshold_percent: 80,
+        });
+        let mut panel = Panel::new();
+        panel.set_report(sample_empty_report());
+        app.context_panel = Some(panel);
 
-    let mut terminal = Terminal::new(TestBackend::new(120, 26)).unwrap();
-    terminal
-        .draw(|frame| app.draw(frame, &crate::tui::StatusContext::default()))
-        .unwrap();
-    let rendered: String = terminal
-        .backend()
-        .buffer()
-        .content
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
-    assert!(rendered.contains("Auto-Compact Buffer  50K  10.0%"));
-    assert!(rendered.contains("Free Space  450K  90.0%"));
-}
+        app.settings_worker
+            .save(
+                &settings_path,
+                pp_config::config::SettingPatch::AutoCompactThresholdPercent(90),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !app.receive_settings() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
 
-#[test]
-fn header_displays_last_request_cache_hit_rate_and_reasoning_tokens() {
-    let mut panel = Panel::new();
-    panel.set_report(sample_report());
-    let screen = draw_panel(&mut panel, 120, 26);
-    assert!(
-        screen.contains("400K left before auto-compaction at 85%"),
-        "{screen}"
-    );
-    assert!(screen.contains("Cache 50%"), "{screen}");
-    assert!(screen.contains("Reasoning 1.2K"), "{screen}");
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(crate::tui::WorkerCommand::UpdateCompactionPolicy {
+                auto_compact: true,
+                threshold_percent: 90,
+            })
+        ));
+        let usage = app.usage.unwrap();
+        assert!(usage.auto_compact);
+        assert_eq!(usage.threshold_percent, 90);
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 26)).unwrap();
+        terminal
+            .draw(|frame| app.draw(frame, &crate::tui::StatusContext::default()))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(rendered.contains("Auto-Compact Buffer  50K  10.0%"));
+        assert!(rendered.contains("Free Space  450K  90.0%"));
+    }
 }

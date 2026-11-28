@@ -376,195 +376,193 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    fn stats_tool_result_totals_keep_unknown_and_zero_distinct() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
-        let now = chrono::Utc::now().timestamp_millis();
-        let session = dir.path().join("session.jsonl");
-        for (key, model) in [("one", "first"), ("two", "second")] {
-            let mut request = fixture(key, now - 1000);
-            request.model_reference = model.into();
-            store
-                .insert(
-                    &request,
-                    &json!({"tool_calls":[
-                        {"function":{"name":"read","arguments":"{}"}},
-                        {"function":{"name":"read","arguments":"{}"}}
-                    ]}),
-                )
-                .unwrap();
-        }
-        for (id, key, chars) in [
-            ("zero", "one", Some(0)),
-            ("updated", "one", Some(99)),
-            ("updated", "one", Some(12)),
-            ("legacy", "two", None),
-            ("error", "two", Some(18)),
-        ] {
-            let mut call = tool_call(
+    fn stats_insights_tool_results_protocols_and_exec_only_tools() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            let session = dir.path().join("session.jsonl");
+            for (key, model) in [("one", "first"), ("two", "second")] {
+                let mut request = fixture(key, now - 1000);
+                request.model_reference = model.into();
+                store
+                    .insert(
+                        &request,
+                        &json!({"tool_calls":[
+                            {"function":{"name":"read","arguments":"{}"}},
+                            {"function":{"name":"read","arguments":"{}"}}
+                        ]}),
+                    )
+                    .unwrap();
+            }
+            for (id, key, chars) in [
+                ("zero", "one", Some(0)),
+                ("updated", "one", Some(99)),
+                ("updated", "one", Some(12)),
+                ("legacy", "two", None),
+                ("error", "two", Some(18)),
+            ] {
+                let mut call = tool_call(
+                    &session,
+                    id,
+                    "read",
+                    crate::ToolStatus::Error,
+                    None,
+                    now,
+                    1.0,
+                );
+                call.request_key = Some(key);
+                call.result_chars = chars;
+                store.tool(&call).unwrap();
+            }
+            let mut old = tool_call(
                 &session,
-                id,
+                "old",
                 "read",
-                crate::ToolStatus::Error,
+                crate::ToolStatus::Ok,
                 None,
-                now,
+                now - 3_600_001,
                 1.0,
             );
-            call.request_key = Some(key);
-            call.result_chars = chars;
-            store.tool(&call).unwrap();
+            old.result_chars = Some(999);
+            store.tool(&old).unwrap();
+            let data = store.tools(Range::Hour, now).unwrap();
+            assert_eq!(data["summary"]["result_chars"], 30);
+            assert_eq!(data["summary"]["result_calls"], 3);
+            let read = &data["tools"][0];
+            assert_eq!(read["calls"], 4);
+            assert_eq!(read["executions"], 4);
+            assert_eq!(read["result_chars"], 30);
+            assert_eq!(read["result_calls"], 3);
+            assert_eq!(read["models"][0]["result_chars"], 12);
+            assert_eq!(read["models"][0]["result_calls"], 2);
+            assert_eq!(read["models"][1]["result_chars"], 18);
+            assert_eq!(read["models"][1]["result_calls"], 1);
+            store
+                .conn
+                .execute("UPDATE tool_calls SET result_chars=NULL", [])
+                .unwrap();
+            let legacy = store.tools(Range::Hour, now).unwrap();
+            assert!(legacy["summary"]["result_chars"].is_null());
+            assert_eq!(legacy["tools"][0]["result_calls"], 0);
+            assert!(legacy["tools"][0]["models"][0]["result_chars"].is_null());
+            let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
+            assert!(empty["summary"]["result_chars"].is_null());
+            assert_eq!(empty["summary"]["result_calls"], 0);
         }
-        let mut old = tool_call(
-            &session,
-            "old",
-            "read",
-            crate::ToolStatus::Ok,
-            None,
-            now - 3_600_001,
-            1.0,
-        );
-        old.result_chars = Some(999);
-        store.tool(&old).unwrap();
-        let data = store.tools(Range::Hour, now).unwrap();
-        assert_eq!(data["summary"]["result_chars"], 30);
-        assert_eq!(data["summary"]["result_calls"], 3);
-        let read = &data["tools"][0];
-        assert_eq!(read["calls"], 4);
-        assert_eq!(read["executions"], 4);
-        assert_eq!(read["result_chars"], 30);
-        assert_eq!(read["result_calls"], 3);
-        assert_eq!(read["models"][0]["result_chars"], 12);
-        assert_eq!(read["models"][0]["result_calls"], 2);
-        assert_eq!(read["models"][1]["result_chars"], 18);
-        assert_eq!(read["models"][1]["result_calls"], 1);
-        store
-            .conn
-            .execute("UPDATE tool_calls SET result_chars=NULL", [])
-            .unwrap();
-        let legacy = store.tools(Range::Hour, now).unwrap();
-        assert!(legacy["summary"]["result_chars"].is_null());
-        assert_eq!(legacy["tools"][0]["result_calls"], 0);
-        assert!(legacy["tools"][0]["models"][0]["result_chars"].is_null());
-        let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
-        assert!(empty["summary"]["result_chars"].is_null());
-        assert_eq!(empty["summary"]["result_calls"], 0);
-    }
-
-    #[test]
-    fn stats_insights_count_both_protocols_without_double_counting_or_leaking_payloads() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join("models.yml"),
-            models_with_cost(json!({"input":2.0,"cacheRead":0.2,"output":8.0})),
-        )
-        .unwrap();
-        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
-        let now = chrono::Utc::now().timestamp_millis();
-        let rates = Rates::load(&store.models_path);
-        let completion = json!({"tool_calls":[
-            {"function":{"name":"read","arguments":"private-arguments"}},
-            {"function":{"name":"bash","arguments":"{}"}}
-        ]});
-        let mut first = fixture("one", now - 1000);
-        first.session_file = Some("/missing/session.jsonl".into());
-        snapshot_for(&rates, &mut first);
-        store.insert(&first, &completion).unwrap();
-        store
-            .link("one", Path::new("/missing/session.jsonl"))
-            .unwrap();
-        let responses = json!([{"type":"function_call","name":"read","arguments":"{}"}]);
-        for n in 0..501 {
-            let mut r = fixture(&format!("response-{n}"), now);
-            r.api = "responses".into();
-            r.cwd = "/other/project".into();
-            r.model_reference = "other/primary".into();
-            r.input_tokens = None;
-            r.output_tokens = None;
-            r.cached_tokens = None;
-            snapshot_for(&rates, &mut r);
-            store.insert(&r, &responses).unwrap();
-        }
-        let mut failed = fixture("failed", now);
-        failed.status = "aborted".into();
-        snapshot_for(&rates, &mut failed);
-        store
-            .insert(
-                &failed,
-                &json!({"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}),
+        {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(
+                dir.path().join("models.yml"),
+                models_with_cost(json!({"input":2.0,"cacheRead":0.2,"output":8.0})),
             )
             .unwrap();
-        store
-            .insert(&fixture("future", now + 1), &responses)
-            .unwrap();
-        store
-            .insert(&fixture("old", now - 3_600_001), &responses)
-            .unwrap();
-        let tools = store.tools(Range::Hour, now).unwrap();
-        assert_eq!(tools["summary"]["calls"], 504);
-        assert_eq!(tools["requests_with_tools"], 503);
-        assert_eq!(tools["partial_requests"], 1);
-        assert_eq!(tools["summary"]["priced"], 3);
-        assert_eq!(tools["summary"]["unpriced"], 501);
-        assert_eq!(tools["summary"]["tokens"], 240.0);
-        assert!((tools["summary"]["cost"].as_f64().unwrap() - 0.000432).abs() < 1e-12);
-        let read = tools["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|g| g["tool"] == "read")
-            .unwrap();
-        assert_eq!(read["calls"], 502);
-        assert_eq!(read["tokens"], 60.0);
-        assert_eq!(read["models"].as_array().unwrap().len(), 2);
-        assert!(tools["summary"]["errors"].is_null());
-        assert!(!tools.to_string().contains("private-arguments"));
-        assert!(!tools.to_string().contains("private-output"));
-        let projects = store.projects(Range::Hour, now).unwrap();
-        assert_eq!(projects["summary"]["requests"], 503);
-        assert_eq!(projects["projects"].as_array().unwrap().len(), 2);
-        let p = projects["projects"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["key"] == "/tmp/project")
-            .unwrap();
-        assert_eq!(p["sessions"], 1);
-        assert_eq!(p["requests_without_session"], 1);
-        assert_eq!(p["requests"], 2);
-        assert!(!projects.to_string().contains("private-output"));
-        let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
-        assert_eq!(empty["summary"]["cost"], 0.0);
-        assert_eq!(empty["summary"]["tokens"], 0.0);
-        assert!(empty["tools"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn stats_tools_keeps_execution_only_tools_when_request_tools_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
-        let now = chrono::Utc::now().timestamp_millis();
-        let req = fixture("exec-only-req", now - 1000);
-        store.insert(&req, &Value::Null).unwrap();
-        store
-            .tool(&crate::ToolCall {
-                request_key: Some("exec-only-req"),
-                session_file: Path::new("/tmp/session.jsonl"),
-                call_id: "call-exec",
-                tool: "eval",
-                status: crate::ToolStatus::Error,
-                error_message: Some("boom"),
-                timestamp: now - 500,
-                duration_ms: 42.0,
-                result_chars: Some(128),
-            })
-            .unwrap();
-        let report = store.tools(Range::Hour, now).unwrap();
-        let tools = report["tools"].as_array().unwrap();
-        let eval_row = tools.iter().find(|t| t["tool"] == "eval").unwrap();
-        assert_eq!(eval_row["executions"], 1);
-        assert_eq!(eval_row["errors"], 1);
-        assert_eq!(eval_row["calls"], 0);
-        assert_eq!(eval_row["models"].as_array().unwrap().len(), 1);
-        assert_eq!(eval_row["models"][0]["executions"], 1);
+            let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            let rates = Rates::load(&store.models_path);
+            let completion = json!({"tool_calls":[
+                {"function":{"name":"read","arguments":"private-arguments"}},
+                {"function":{"name":"bash","arguments":"{}"}}
+            ]});
+            let mut first = fixture("one", now - 1000);
+            first.session_file = Some("/missing/session.jsonl".into());
+            snapshot_for(&rates, &mut first);
+            store.insert(&first, &completion).unwrap();
+            store
+                .link("one", Path::new("/missing/session.jsonl"))
+                .unwrap();
+            let responses = json!([{"type":"function_call","name":"read","arguments":"{}"}]);
+            for n in 0..501 {
+                let mut r = fixture(&format!("response-{n}"), now);
+                r.api = "responses".into();
+                r.cwd = "/other/project".into();
+                r.model_reference = "other/primary".into();
+                r.input_tokens = None;
+                r.output_tokens = None;
+                r.cached_tokens = None;
+                snapshot_for(&rates, &mut r);
+                store.insert(&r, &responses).unwrap();
+            }
+            let mut failed = fixture("failed", now);
+            failed.status = "aborted".into();
+            snapshot_for(&rates, &mut failed);
+            store
+                .insert(
+                    &failed,
+                    &json!({"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}),
+                )
+                .unwrap();
+            store
+                .insert(&fixture("future", now + 1), &responses)
+                .unwrap();
+            store
+                .insert(&fixture("old", now - 3_600_001), &responses)
+                .unwrap();
+            let tools = store.tools(Range::Hour, now).unwrap();
+            assert_eq!(tools["summary"]["calls"], 504);
+            assert_eq!(tools["requests_with_tools"], 503);
+            assert_eq!(tools["partial_requests"], 1);
+            assert_eq!(tools["summary"]["priced"], 3);
+            assert_eq!(tools["summary"]["unpriced"], 501);
+            assert_eq!(tools["summary"]["tokens"], 240.0);
+            assert!((tools["summary"]["cost"].as_f64().unwrap() - 0.000432).abs() < 1e-12);
+            let read = tools["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["tool"] == "read")
+                .unwrap();
+            assert_eq!(read["calls"], 502);
+            assert_eq!(read["tokens"], 60.0);
+            assert_eq!(read["models"].as_array().unwrap().len(), 2);
+            assert!(tools["summary"]["errors"].is_null());
+            assert!(!tools.to_string().contains("private-arguments"));
+            assert!(!tools.to_string().contains("private-output"));
+            let projects = store.projects(Range::Hour, now).unwrap();
+            assert_eq!(projects["summary"]["requests"], 503);
+            assert_eq!(projects["projects"].as_array().unwrap().len(), 2);
+            let p = projects["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["key"] == "/tmp/project")
+                .unwrap();
+            assert_eq!(p["sessions"], 1);
+            assert_eq!(p["requests_without_session"], 1);
+            assert_eq!(p["requests"], 2);
+            assert!(!projects.to_string().contains("private-output"));
+            let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
+            assert_eq!(empty["summary"]["cost"], 0.0);
+            assert_eq!(empty["summary"]["tokens"], 0.0);
+            assert!(empty["tools"].as_array().unwrap().is_empty());
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+            let now = chrono::Utc::now().timestamp_millis();
+            let req = fixture("exec-only-req", now - 1000);
+            store.insert(&req, &Value::Null).unwrap();
+            store
+                .tool(&crate::ToolCall {
+                    request_key: Some("exec-only-req"),
+                    session_file: Path::new("/tmp/session.jsonl"),
+                    call_id: "call-exec",
+                    tool: "eval",
+                    status: crate::ToolStatus::Error,
+                    error_message: Some("boom"),
+                    timestamp: now - 500,
+                    duration_ms: 42.0,
+                    result_chars: Some(128),
+                })
+                .unwrap();
+            let report = store.tools(Range::Hour, now).unwrap();
+            let tools = report["tools"].as_array().unwrap();
+            let eval_row = tools.iter().find(|t| t["tool"] == "eval").unwrap();
+            assert_eq!(eval_row["executions"], 1);
+            assert_eq!(eval_row["errors"], 1);
+            assert_eq!(eval_row["calls"], 0);
+            assert_eq!(eval_row["models"].as_array().unwrap().len(), 1);
+            assert_eq!(eval_row["models"][0]["executions"], 1);
+        }
     }
 }

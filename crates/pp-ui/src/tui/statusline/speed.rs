@@ -121,10 +121,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_speed_samples_from_first_output_and_caches_between_ticks() {
+    fn token_speed_sampling_window_and_live_tokens() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
+        assert_eq!(speed.live_output_tokens(), None);
         speed.start(base);
+        assert_eq!(speed.live_output_tokens(), None);
         let first = base + Duration::from_secs(10);
         assert!(!speed.tick(first));
         assert_eq!(speed.value(), None);
@@ -134,128 +136,94 @@ mod tests {
         assert_eq!(speed.value(), Some((100.0, true)), "不计首字节等待");
         speed.progress(150, first + Duration::from_millis(300));
         speed.progress(90, first + Duration::from_millis(310));
-        assert_eq!(speed.value(), Some((100.0, true)), "delta 不改变显示快照");
+        assert_eq!(speed.value(), Some((100.0, true)));
         assert!(!speed.tick(first + Duration::from_millis(400)));
         speed.tick(first + Duration::from_millis(500));
-        assert_eq!(speed.value(), Some((100.0, true)), "累计字节不能倒退");
-    }
+        assert_eq!(speed.value(), Some((100.0, true)));
 
-    #[test]
-    fn token_speed_window_tracks_recent_output_and_bounds_samples() {
-        let base = Instant::now();
-        let mut speed = TokenSpeed::default();
-        speed.start(base);
+        let mut win = TokenSpeed::default();
+        win.start(base);
         for i in 0..=40 {
             let now = base + TICK_INTERVAL * i;
-            // 前两秒每秒 100 token，之后每秒 200 token。
             let bytes = if i <= 8 {
                 75 * (i + 1)
             } else {
                 675 + 150 * (i - 8)
             };
-            speed.progress(u64::from(bytes), now);
-            speed.tick(now);
-            assert!(speed.samples.len() <= 10, "窗口样本必须有界");
+            win.progress(u64::from(bytes), now);
+            win.tick(now);
+            assert!(win.samples.len() <= 10);
         }
-        assert_eq!(speed.value(), Some((200.0, true)), "旧速率退出窗口");
+        assert_eq!(win.value(), Some((200.0, true)));
         let stopped = base + Duration::from_secs(10);
         for i in 1..=9 {
-            speed.tick(stopped + TICK_INTERVAL * i);
+            win.tick(stopped + TICK_INTERVAL * i);
         }
-        assert_eq!(
-            speed.value(),
-            Some((0.0, true)),
-            "停流后显示零，不能悬挂旧速率"
-        );
+        assert_eq!(win.value(), Some((0.0, true)));
+
+        let mut live = TokenSpeed::default();
+        live.start(base);
+        live.progress(600, base + Duration::from_millis(10));
+        assert_eq!(live.live_output_tokens(), Some(200));
+        live.progress(900, base + Duration::from_millis(20));
+        assert_eq!(live.live_output_tokens(), Some(300));
+        live.finish(1000, Some(280), true);
+        assert_eq!(live.live_output_tokens(), None);
+        live.start(base);
+        live.progress(30, base);
+        live.finish(1000, None, false);
+        assert_eq!(live.live_output_tokens(), None);
     }
 
     #[test]
-    fn token_speed_finish_uses_authoritative_usage_and_stops_ticks() {
+    fn token_speed_finish_usage_and_short_requests() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
         speed.start(base);
         speed.progress(600, base);
         speed.finish(2000, Some(300), true);
-        assert!(!speed.is_active());
-        assert_eq!(speed.value(), Some((150.0, false)));
+        assert!(!speed.is_active() && speed.value() == Some((150.0, false)));
         assert!(!speed.tick(base + Duration::from_secs(60)));
         assert_eq!(speed.value(), Some((150.0, false)));
+
+        let mut short = TokenSpeed::default();
+        short.start(base);
+        short.progress(600, base);
+        short.finish(2000, None, true);
+        assert!(!short.is_active() && short.value() == Some((100.0, true)));
+        short.start(base);
+        short.finish(2000, None, true);
+        assert_eq!(short.value(), Some((100.0, true)));
     }
 
     #[test]
-    fn token_speed_short_request_without_usage_keeps_final_estimate() {
+    fn token_speed_zero_cancel_and_next_request() {
         let base = Instant::now();
         let mut speed = TokenSpeed::default();
         speed.start(base);
         speed.progress(600, base);
-        speed.finish(2000, None, true);
-        assert!(!speed.is_active());
-        assert_eq!(speed.value(), Some((100.0, true)));
-        // 没有新数据的成功请求不抹掉上一笔速度。
-        speed.start(base);
-        speed.finish(2000, None, true);
-        assert_eq!(speed.value(), Some((100.0, true)));
-    }
-
-    #[test]
-    fn token_speed_zero_elapsed_or_cancel_has_no_rate() {
-        let base = Instant::now();
-        let mut speed = TokenSpeed::default();
-        speed.start(base);
-        speed.progress(600, base);
-        assert_eq!(speed.value(), None, "零耗时不产生 inf/NaN");
-        speed.finish(0, Some(300), true);
-        assert!(!speed.is_active());
         assert_eq!(speed.value(), None);
+        speed.finish(0, Some(300), true);
+        assert!(!speed.is_active() && speed.value().is_none());
         speed.start(base);
         speed.progress(600, base);
         speed.tick(base + TICK_INTERVAL);
         speed.finish(500, Some(300), false);
-        assert!(!speed.is_active());
-        assert_eq!(speed.value(), None);
-    }
+        assert!(!speed.is_active() && speed.value().is_none());
 
-    #[test]
-    fn token_speed_next_request_retains_display_but_resets_samples() {
-        let base = Instant::now();
-        let mut speed = TokenSpeed::default();
-        speed.start(base);
-        speed.progress(600, base);
-        speed.finish(2000, Some(300), true);
+        let mut next = TokenSpeed::default();
+        next.start(base);
+        next.progress(600, base);
+        next.finish(2000, Some(300), true);
         let second = base + Duration::from_secs(5);
-        speed.start(second);
-        assert!(speed.is_active());
-        assert!(!speed.tick(second + Duration::from_secs(1)));
-        assert_eq!(speed.value(), Some((150.0, false)), "等待时保留上一笔速度");
-        speed.progress(75, second + Duration::from_secs(2));
-        assert_eq!(speed.value(), Some((150.0, false)), "采样未满时不闪回未知");
-        speed.tick(second + Duration::from_millis(2250));
-        assert_eq!(speed.value(), Some((100.0, true)), "仅计算当前请求字节");
-        speed.clear();
-        assert!(!speed.is_active());
-        assert_eq!(speed.value(), None);
-    }
-
-    #[test]
-    fn token_speed_live_output_grows_with_bytes_and_stops_at_usage() {
-        let base = Instant::now();
-        let mut speed = TokenSpeed::default();
-        assert_eq!(speed.live_output_tokens(), None, "未开始请求时不估算");
-        speed.start(base);
-        assert_eq!(speed.live_output_tokens(), None, "尚无输出时保留上一个数字");
-        speed.progress(600, base + Duration::from_millis(10));
-        assert_eq!(speed.live_output_tokens(), Some(200));
-        speed.progress(900, base + Duration::from_millis(20));
-        assert_eq!(speed.live_output_tokens(), Some(300), "随已接收字节增长");
-        speed.finish(1000, Some(280), true);
-        assert_eq!(
-            speed.live_output_tokens(),
-            None,
-            "完成后必须交给权威 usage，而不是保留估算"
-        );
-        speed.start(base);
-        speed.progress(30, base);
-        speed.finish(1000, None, false);
-        assert_eq!(speed.live_output_tokens(), None, "失败或取消不保留估算");
+        next.start(second);
+        assert!(next.is_active() && !next.tick(second + Duration::from_secs(1)));
+        assert_eq!(next.value(), Some((150.0, false)));
+        next.progress(75, second + Duration::from_secs(2));
+        assert_eq!(next.value(), Some((150.0, false)));
+        next.tick(second + Duration::from_millis(2250));
+        assert_eq!(next.value(), Some((100.0, true)));
+        next.clear();
+        assert!(!next.is_active() && next.value().is_none());
     }
 }

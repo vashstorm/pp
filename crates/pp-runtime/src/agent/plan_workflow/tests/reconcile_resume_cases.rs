@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn plan_run_continues_when_an_archived_file_is_missing() {
+fn plan_missing_archive_continuation_and_restore_detach() {
     use crate::agent::tests::final_for;
 
     for (protocol, already_reconciled) in [("completion", false), ("response", true)] {
@@ -55,10 +55,7 @@ fn plan_run_continues_when_an_archived_file_is_missing() {
         );
         assert!(!archive_dir.join(file_name).exists());
     }
-}
 
-#[test]
-fn plan_restore_detaches_missing_archive_and_only_its_own_todos() {
     for bound in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), "response", "127.0.0.1:1", "");
@@ -215,7 +212,7 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
 }
 
 #[test]
-fn plan_reconcile_migrates_legacy_draft_to_drafts_and_moves_the_file() {
+fn plan_reconcile_migrations_adoption_and_fail_closed() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -266,10 +263,7 @@ fn plan_reconcile_migrates_legacy_draft_to_drafts_and_moves_the_file() {
         agent.reconcile_plan_location().unwrap();
         assert_eq!(agent.workflow, before);
     }
-}
 
-#[test]
-fn plan_reconcile_adopts_registry_and_cleans_confirmed_leftovers() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -305,10 +299,7 @@ fn plan_reconcile_adopts_registry_and_cleans_confirmed_leftovers() {
             ("moved-name.md".to_owned(), PlanLocation::Plans)
         );
     }
-}
 
-#[test]
-fn plan_reconcile_registers_legacy_states_in_place_and_syncs_done() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
@@ -376,10 +367,7 @@ fn plan_reconcile_registers_legacy_states_in_place_and_syncs_done() {
             (format!("{abandoned_id}.md"), PlanLocation::Plans)
         );
     }
-}
 
-#[test]
-fn plan_reconcile_refuses_tombstones_and_missing_files_without_registration() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");

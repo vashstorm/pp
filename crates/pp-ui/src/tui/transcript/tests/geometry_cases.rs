@@ -180,140 +180,138 @@ fn streaming_replacement_of_middle_entry_keeps_anchor_on_same_entry() {
 }
 
 #[test]
-fn read_group_hidden_members_occupy_no_rows_in_geometry() {
-    let mut transcript = Transcript::new();
-    transcript.append("You", "start");
-    for index in 0..5 {
-        tool(
+fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
+    {
+        let mut transcript = Transcript::new();
+        transcript.append("You", "start");
+        for index in 0..5 {
+            tool(
+                &mut transcript,
+                &format!("read-{index}"),
+                "read",
+                json!({"path": format!("file-{index}.txt")}),
+            );
+            transcript.progress(AgentEvent::ToolFinished {
+                id: format!("read-{index}"),
+                result: json!({"ok":true,"content": format!("body-{index}\n")}),
+            });
+        }
+        transcript.append("You", "after the read group");
+        let width = 60;
+        render(&mut transcript, width, 12);
+        transcript.sync_geometry();
+        // 槽位：0=You，1=read 组首（可见），2..5=隐藏成员，6=收尾 You。
+        assert_eq!(transcript.entries.len(), 7);
+        let first_height = transcript.geometry.height(0);
+        let group_height = transcript.geometry.height(1);
+        assert!(group_height > 0, "read 组首应可见");
+        for hidden in 2..6 {
+            assert_eq!(
+                transcript.geometry.height(hidden),
+                0,
+                "隐藏成员槽 {hidden} 不应占行"
+            );
+        }
+        let after_start = transcript.geometry.start(6);
+        let expected = first_height + 1 + group_height + 1;
+        assert_eq!(after_start, expected);
+        // 隐藏成员不占行：定位到收尾条目起点时窗口应从该条目开始。
+        transcript.offset = after_start;
+        transcript.follow_bottom = false;
+        let rows = screen(&render(&mut transcript, width, 12));
+        assert!(rows.contains("after the read group"));
+        assert!(!rows.contains("body-"), "隐藏成员正文不应占行：{rows}");
+    }
+
+    {
+        let mut transcript = Transcript::new();
+        let mut blocks = Vec::new();
+        for index in 0..3 {
+            let entries = transcript.append_tree_node(
+                answer(&format!(
+                    "## Node {index}\n\n{}",
+                    "content line\n".repeat(6)
+                )),
+                "",
+            );
+            blocks.push(TreeBlock {
+                entries,
+                label: Line::raw(format!("node-{index}")),
+            });
+        }
+        // 先以普通视图渲染基线（备用屏几何已建立）。
+        let width = 48;
+        let height = 20;
+        let baseline = screen(&render(&mut transcript, width, height));
+
+        // 进入树视图（接管展示、清空几何），再返回普通视图：屏幕应逐行相同。
+        tree_render(
             &mut transcript,
-            &format!("read-{index}"),
-            "read",
-            json!({"path": format!("file-{index}.txt")}),
+            &blocks,
+            &[0, 1, 2],
+            Some(1),
+            false,
+            width,
+            height,
         );
-        transcript.progress(AgentEvent::ToolFinished {
-            id: format!("read-{index}"),
-            result: json!({"ok":true,"content": format!("body-{index}\n")}),
-        });
+        assert!(transcript.geometry.is_empty(), "树视图接管时应清空几何");
+        let restored = screen(&render(&mut transcript, width, height));
+        assert_eq!(restored, baseline);
     }
-    transcript.append("You", "after the read group");
-    let width = 60;
-    render(&mut transcript, width, 12);
-    transcript.sync_geometry();
-    // 槽位：0=You，1=read 组首（可见），2..5=隐藏成员，6=收尾 You。
-    assert_eq!(transcript.entries.len(), 7);
-    let first_height = transcript.geometry.height(0);
-    let group_height = transcript.geometry.height(1);
-    assert!(group_height > 0, "read 组首应可见");
-    for hidden in 2..6 {
-        assert_eq!(
-            transcript.geometry.height(hidden),
-            0,
-            "隐藏成员槽 {hidden} 不应占行"
+
+    {
+        let mut transcript = Transcript::new();
+        fixed_entry(&mut transcript, "entry", 3);
+        let mut terminal = Terminal::new(TestBackend::new(0, 0)).unwrap();
+        terminal
+            .draw(|frame| transcript.draw(frame, frame.area()))
+            .unwrap();
+        assert!(transcript.geometry.is_empty(), "零尺寸帧不应产生几何");
+        assert!(
+            transcript.entries[0].layout.is_none(),
+            "零尺寸帧不应排版条目"
         );
+        // 恢复正常尺寸后渲染照常。
+        let rows = screen(&render(&mut transcript, 40, 8));
+        assert!(rows.contains("entry"));
     }
-    let after_start = transcript.geometry.start(6);
-    let expected = first_height + 1 + group_height + 1;
-    assert_eq!(after_start, expected);
-    // 隐藏成员不占行：定位到收尾条目起点时窗口应从该条目开始。
-    transcript.offset = after_start;
-    transcript.follow_bottom = false;
-    let rows = screen(&render(&mut transcript, width, 12));
-    assert!(rows.contains("after the read group"));
-    assert!(!rows.contains("body-"), "隐藏成员正文不应占行：{rows}");
-}
 
-#[test]
-fn draw_tree_roundtrip_renders_identical_lines_after_returning_to_normal_view() {
-    let mut transcript = Transcript::new();
-    let mut blocks = Vec::new();
-    for index in 0..3 {
-        let entries = transcript.append_tree_node(
-            answer(&format!(
-                "## Node {index}\n\n{}",
-                "content line\n".repeat(6)
-            )),
-            "",
-        );
-        blocks.push(TreeBlock {
-            entries,
-            label: Line::raw(format!("node-{index}")),
-        });
+    {
+        let mut transcript = Transcript::new();
+        for index in 0..30 {
+            fixed_entry(&mut transcript, &format!("history-{index:02}"), 2);
+        }
+        let width = 40;
+        let height = 12;
+        render(&mut transcript, width, height);
+        transcript.scroll_up(20);
+        let before = screen(&render(&mut transcript, width, height));
+        let anchor = transcript.browse_anchor.unwrap();
+
+        // 主题失效会清空全部布局：几何身份比较应捕获并全量重算。
+        transcript.invalidate_theme();
+        let after = screen(&render(&mut transcript, width, height));
+        assert_eq!(after, before, "同主题往返应得到相同屏幕");
+        let resolved = transcript.browse_anchor.unwrap();
+        assert_eq!(resolved.entry, anchor.entry);
+        assert_eq!(resolved.row, anchor.row);
     }
-    // 先以普通视图渲染基线（备用屏几何已建立）。
-    let width = 48;
-    let height = 20;
-    let baseline = screen(&render(&mut transcript, width, height));
 
-    // 进入树视图（接管展示、清空几何），再返回普通视图：屏幕应逐行相同。
-    tree_render(
-        &mut transcript,
-        &blocks,
-        &[0, 1, 2],
-        Some(1),
-        false,
-        width,
-        height,
-    );
-    assert!(transcript.geometry.is_empty(), "树视图接管时应清空几何");
-    let restored = screen(&render(&mut transcript, width, height));
-    assert_eq!(restored, baseline);
-}
-
-#[test]
-fn zero_sized_first_frame_does_not_panic_and_keeps_state_clean() {
-    let mut transcript = Transcript::new();
-    fixed_entry(&mut transcript, "entry", 3);
-    let mut terminal = Terminal::new(TestBackend::new(0, 0)).unwrap();
-    terminal
-        .draw(|frame| transcript.draw(frame, frame.area()))
-        .unwrap();
-    assert!(transcript.geometry.is_empty(), "零尺寸帧不应产生几何");
-    assert!(
-        transcript.entries[0].layout.is_none(),
-        "零尺寸帧不应排版条目"
-    );
-    // 恢复正常尺寸后渲染照常。
-    let rows = screen(&render(&mut transcript, 40, 8));
-    assert!(rows.contains("entry"));
-}
-
-#[test]
-fn theme_roundtrip_redraws_identical_lines_after_geometry_rebuild() {
-    let mut transcript = Transcript::new();
-    for index in 0..30 {
-        fixed_entry(&mut transcript, &format!("history-{index:02}"), 2);
+    {
+        // gap 行（正高度条目之后那一行）本身没有内容：渲染应跳到下一条目。
+        let mut transcript = Transcript::new();
+        fixed_entry(&mut transcript, "first", 3);
+        fixed_entry(&mut transcript, "second", 2);
+        let width = 40;
+        let height = 6;
+        render(&mut transcript, width, height);
+        transcript.sync_geometry();
+        let first_height = transcript.geometry.height(0);
+        let gap_offset = transcript.geometry.start(0) + first_height;
+        transcript.offset = gap_offset;
+        transcript.follow_bottom = false;
+        transcript.browse_anchor = None;
+        let rows = screen(&render(&mut transcript, width, height));
+        assert!(rows.contains("second"), "gap 行起点应渲染下一条目：{rows}");
     }
-    let width = 40;
-    let height = 12;
-    render(&mut transcript, width, height);
-    transcript.scroll_up(20);
-    let before = screen(&render(&mut transcript, width, height));
-    let anchor = transcript.browse_anchor.unwrap();
-
-    // 主题失效会清空全部布局：几何身份比较应捕获并全量重算。
-    transcript.invalidate_theme();
-    let after = screen(&render(&mut transcript, width, height));
-    assert_eq!(after, before, "同主题往返应得到相同屏幕");
-    let resolved = transcript.browse_anchor.unwrap();
-    assert_eq!(resolved.entry, anchor.entry);
-    assert_eq!(resolved.row, anchor.row);
-}
-
-#[test]
-fn offset_at_gap_line_between_entries_still_renders_following_entry() {
-    // gap 行（正高度条目之后那一行）本身没有内容：渲染应跳到下一条目。
-    let mut transcript = Transcript::new();
-    fixed_entry(&mut transcript, "first", 3);
-    fixed_entry(&mut transcript, "second", 2);
-    let width = 40;
-    let height = 6;
-    render(&mut transcript, width, height);
-    transcript.sync_geometry();
-    let first_height = transcript.geometry.height(0);
-    let gap_offset = transcript.geometry.start(0) + first_height;
-    transcript.offset = gap_offset;
-    transcript.follow_bottom = false;
-    transcript.browse_anchor = None;
-    let rows = screen(&render(&mut transcript, width, height));
-    assert!(rows.contains("second"), "gap 行起点应渲染下一条目：{rows}");
 }

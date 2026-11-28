@@ -50,115 +50,188 @@ fn find<'a>(snapshot: &'a ShellPresentation, needle: &str) -> &'a ShellRow {
 }
 
 #[test]
-fn shell_display_real_execution_short_circuit_loops_and_model_boundary() {
+fn shell_display_execution_pipelines_and_function_overrides() {
     use serde_json::json;
-    let dir = tempfile::tempdir().unwrap();
-    let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    let command = "printf ok; false && echo unreachable; for x in a b c; do printf '%s' \"$x\"; done; if test -f missing; then echo no; else echo yes; fi";
-    let (model, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":command}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    assert!(model.get("shell").is_none(), "展示不能进入模型上下文");
-    assert_eq!(model["ok"], true);
-    assert_eq!(model["output"], "okabcyes\n");
-    let snapshot = shell(&result);
-    assert!(!snapshot.running);
-    assert_eq!(find(&snapshot, "unreachable").state, ShellState::Skipped);
-    assert_eq!(find(&snapshot, "for x").meta, "↻ 3");
-    assert_eq!(find(&snapshot, "print(\"no\")").state, ShellState::Skipped);
-    assert_eq!(find(&snapshot, "print(\"yes\")").state, ShellState::Ok);
-    assert_eq!(
-        find(&snapshot, "is_file").state,
-        ShellState::Ok,
-        "条件的 false 不冒充执行错误"
-    );
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+        let command = "printf ok; false && echo unreachable; for x in a b c; do printf '%s' \"$x\"; done; if test -f missing; then echo no; else echo yes; fi";
+        let (model, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":command}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        assert!(model.get("shell").is_none(), "展示不能进入模型上下文");
+        assert_eq!(model["ok"], true);
+        assert_eq!(model["output"], "okabcyes\n");
+        let snapshot = shell(&result);
+        assert!(!snapshot.running);
+        assert_eq!(find(&snapshot, "unreachable").state, ShellState::Skipped);
+        assert_eq!(find(&snapshot, "for x").meta, "↻ 3");
+        assert_eq!(find(&snapshot, "print(\"no\")").state, ShellState::Skipped);
+        assert_eq!(find(&snapshot, "print(\"yes\")").state, ShellState::Ok);
+        assert_eq!(
+            find(&snapshot, "is_file").state,
+            ShellState::Ok,
+            "条件的 false 不冒充执行错误"
+        );
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"sh -c 'exit 7' | cat"}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        assert_eq!(result["exit_code"], 0);
+        let snapshot = shell(&result);
+        let row = &snapshot.rows[0];
+        assert_eq!(row.state, ShellState::Fail);
+        assert!(row.meta.contains("exit 7"));
+        assert!(
+            row.segments
+                .iter()
+                .any(|s| s.text == "cat" && s.state == ShellState::Ok)
+        );
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"eval 'head() { printf from_function; }'; printf upstream | head -n 1"}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        let snapshot = shell(&result);
+        assert_eq!(result["output"], "from_function");
+        assert!(
+            !snapshot
+                .rows
+                .iter()
+                .flat_map(|row| &row.segments)
+                .any(|s| s.text.contains("first 1"))
+        );
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"if false; then echo() { printf custom; }; fi; echo ordinary"}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        let snapshot = shell(&result);
+        assert_eq!(result["output"], "ordinary\n");
+        assert_eq!(find(&snapshot, "print(\"ordinary\")").state, ShellState::Ok);
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"eval 'f() { echo \"$FOO\"; }'; FOO=value f"}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        assert_eq!(result["output"], "value\n");
+        let snapshot = shell(&result);
+        let row = find(&snapshot, "env(");
+        assert!(
+            row.segments
+                .iter()
+                .any(|segment| segment.text == "env(FOO = \"value\") ")
+        );
+    }
 }
 
 #[test]
-fn shell_display_real_pipeline_failure_and_dynamic_function_resolution() {
-    use serde_json::json;
-    let dir = tempfile::tempdir().unwrap();
-    let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"sh -c 'exit 7' | cat"}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    assert_eq!(result["exit_code"], 0);
-    let snapshot = shell(&result);
-    let row = &snapshot.rows[0];
-    assert_eq!(row.state, ShellState::Fail);
-    assert!(row.meta.contains("exit 7"));
-    assert!(
-        row.segments
-            .iter()
-            .any(|s| s.text == "cat" && s.state == ShellState::Ok)
-    );
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"eval 'head() { printf from_function; }'; printf upstream | head -n 1"}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    let snapshot = shell(&result);
-    assert_eq!(result["output"], "from_function");
-    assert!(
-        !snapshot
-            .rows
-            .iter()
-            .flat_map(|row| &row.segments)
-            .any(|s| s.text.contains("first 1"))
-    );
-}
+fn shell_display_cancel_timeout_and_nested_scripts() {
+    {
+        use pp_core::{cancellation::CancellationToken, events::AgentEvent};
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+        let token = CancellationToken::new();
+        let mut observed = false;
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"sleep 60; echo after"}),
+            &token,
+            &mut |event| {
+                if let AgentEvent::ToolShellSnapshot { snapshot, .. } = event
+                    && snapshot.rows.iter().any(|r| r.state == ShellState::Running)
+                {
+                    observed = true;
+                    token.cancel();
+                }
+            },
+        );
+        assert!(observed, "取消必须由实际运行中快照触发");
+        assert_eq!(result["cancelled"], true);
+        let snapshot = shell(&result);
+        assert_eq!(find(&snapshot, "sleep 60").state, ShellState::Interrupted);
+        assert_eq!(find(&snapshot, "after").state, ShellState::Pending);
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"bash -c 'echo nested; echo nested; echo nested; echo nested; echo nested; echo nested'"}),
+            &CancellationToken::new(),
+            &mut |_| {},
+        );
+        let snapshot = shell(&result);
+        assert_eq!(
+            find(&snapshot, "nested").node,
+            None,
+            "外部脚本内部没有执行身份"
+        );
+        assert_eq!(find(&snapshot, "nested").state, ShellState::Pending);
+    }
 
-#[test]
-fn shell_display_live_snapshot_cancel_and_external_script_have_no_fabricated_success() {
-    use pp_core::{cancellation::CancellationToken, events::AgentEvent};
-    use serde_json::json;
-    let dir = tempfile::tempdir().unwrap();
-    let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    let token = CancellationToken::new();
-    let mut observed = false;
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"sleep 60; echo after"}),
-        &token,
-        &mut |event| {
-            if let AgentEvent::ToolShellSnapshot { snapshot, .. } = event
-                && snapshot.rows.iter().any(|r| r.state == ShellState::Running)
-            {
-                observed = true;
-                token.cancel();
-            }
-        },
-    );
-    assert!(observed, "取消必须由实际运行中快照触发");
-    assert_eq!(result["cancelled"], true);
-    let snapshot = shell(&result);
-    assert_eq!(find(&snapshot, "sleep 60").state, ShellState::Interrupted);
-    assert_eq!(find(&snapshot, "after").state, ShellState::Pending);
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"bash -c 'echo nested; echo nested; echo nested; echo nested; echo nested; echo nested'"}),
-        &CancellationToken::new(),
-        &mut |_| {},
-    );
-    let snapshot = shell(&result);
-    assert_eq!(
-        find(&snapshot, "nested").node,
-        None,
-        "外部脚本内部没有执行身份"
-    );
-    assert_eq!(find(&snapshot, "nested").state, ShellState::Pending);
+    {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"sleep 60; echo after-timeout", "timeout_seconds":1}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        assert_eq!(result["timed_out"], true);
+        let snapshot = shell(&result);
+        assert_eq!(find(&snapshot, "sleep 60").state, ShellState::Interrupted);
+        assert_eq!(find(&snapshot, "after-timeout").state, ShellState::Pending);
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"if sh -c 'exit 2'; then echo wrong; fi"}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        let snapshot = shell(&result);
+        assert_eq!(find(&snapshot, "if ").state, ShellState::Fail);
+        assert!(find(&snapshot, "if ").meta.contains("exit 2"));
+        let (_, result) = execute_shell(
+            &tools,
+            "bash",
+            json!({"command":"while false; do echo never; done"}),
+            &Default::default(),
+            &mut |_| {},
+        );
+        assert_eq!(find(&shell(&result), "while ").meta, "↻ 0");
+    }
 }
 
 #[test]
@@ -211,80 +284,5 @@ fn shell_display_background_snapshot_updates_and_freezes() {
     assert_eq!(
         find(&final_snapshot, "sleep 60").state,
         ShellState::Interrupted
-    );
-}
-
-#[test]
-fn shell_display_unselected_function_definition_does_not_change_builtin_display() {
-    use serde_json::json;
-    let dir = tempfile::tempdir().unwrap();
-    let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"if false; then echo() { printf custom; }; fi; echo ordinary"}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    let snapshot = shell(&result);
-    assert_eq!(result["output"], "ordinary\n");
-    assert_eq!(find(&snapshot, "print(\"ordinary\")").state, ShellState::Ok);
-}
-
-#[test]
-fn shell_display_timeout_and_condition_error_preserve_real_states() {
-    use serde_json::json;
-    let dir = tempfile::tempdir().unwrap();
-    let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"sleep 60; echo after-timeout", "timeout_seconds":1}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    assert_eq!(result["timed_out"], true);
-    let snapshot = shell(&result);
-    assert_eq!(find(&snapshot, "sleep 60").state, ShellState::Interrupted);
-    assert_eq!(find(&snapshot, "after-timeout").state, ShellState::Pending);
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"if sh -c 'exit 2'; then echo wrong; fi"}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    let snapshot = shell(&result);
-    assert_eq!(find(&snapshot, "if ").state, ShellState::Fail);
-    assert!(find(&snapshot, "if ").meta.contains("exit 2"));
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"while false; do echo never; done"}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    assert_eq!(find(&shell(&result), "while ").meta, "↻ 0");
-}
-
-#[test]
-fn shell_display_env_function_override_hides_shell_from_model() {
-    use serde_json::json;
-    let dir = tempfile::tempdir().unwrap();
-    let tools = Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    let (_, result) = execute_shell(
-        &tools,
-        "bash",
-        json!({"command":"eval 'f() { echo \"$FOO\"; }'; FOO=value f"}),
-        &Default::default(),
-        &mut |_| {},
-    );
-    assert_eq!(result["output"], "value\n");
-    let snapshot = shell(&result);
-    let row = find(&snapshot, "env(");
-    assert!(
-        row.segments
-            .iter()
-            .any(|segment| segment.text == "env(FOO = \"value\") ")
     );
 }

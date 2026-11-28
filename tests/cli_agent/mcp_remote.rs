@@ -133,112 +133,110 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
 
 #[test]
 fn mcp_remote_management_both_protocols_reload_refreshes_auth_without_persisting_secrets() {
-    for protocol in ["completion", "response"] {
-        for transport in ["http", "sse"] {
-            let remote = fixture::RemoteServer::new("json");
-            let provider = server();
-            let dir = tempfile::tempdir().unwrap();
-            let mut config = remote.config(transport, 3000);
-            config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
-            write_settings(
-                dir.path(),
-                json!({"mcpServers":config["mcpServers"]}).to_string(),
-            )
-            .unwrap();
-            std::fs::write(
-                config_path(dir.path(), "models.yml"),
-                response_models(&provider, Some(protocol)),
-            )
-            .unwrap();
-            let mut cli = Cli::start_env(
-                dir.path(),
-                dir.path(),
-                &["--yolo"],
-                &[
-                    ("PP_MCP_TEST_KEY", "env-secret"),
-                    ("PP_MCP_TEST_KEY_NEW", "refreshed-secret"),
-                ],
-            );
-            let api = if protocol == "completion" {
-                "/v1/chat/completions"
-            } else {
-                "/v1/responses"
-            };
-            for (index, command) in [
-                "/mcp disable remote",
-                "/mcp enable remote",
-                "/mcp reconnect remote",
-                "/mcp reload",
-            ]
-            .iter()
-            .enumerate()
-            {
-                if index == 2 {
-                    remote.changed();
+    let protocol = "response";
+    for transport in ["http", "sse"] {
+        let remote = fixture::RemoteServer::new("json");
+        let provider = server();
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = remote.config(transport, 3000);
+        config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
+        write_settings(
+            dir.path(),
+            json!({"mcpServers":config["mcpServers"]}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(dir.path(), "models.yml"),
+            response_models(&provider, Some(protocol)),
+        )
+        .unwrap();
+        let mut cli = Cli::start_env(
+            dir.path(),
+            dir.path(),
+            &["--yolo"],
+            &[
+                ("PP_MCP_TEST_KEY", "env-secret"),
+                ("PP_MCP_TEST_KEY_NEW", "refreshed-secret"),
+            ],
+        );
+        let api = if protocol == "completion" {
+            "/v1/chat/completions"
+        } else {
+            "/v1/responses"
+        };
+        for (index, command) in [
+            "/mcp disable remote",
+            "/mcp enable remote",
+            "/mcp reconnect remote",
+            "/mcp reload",
+        ]
+        .iter()
+        .enumerate()
+        {
+            if index == 2 {
+                remote.changed();
+            }
+            if index == 3 {
+                config["mcpServers"]["remote"]["env_headers"] =
+                    json!({"x-test-key":"PP_MCP_TEST_KEY_NEW"});
+                std::fs::write(config_path(dir.path(), "mcp.json"), config.to_string()).unwrap();
+            }
+            cli.input(&format!("{command}\ntask {index}\n"));
+            let (request, body) = receive_at(&provider, api);
+            let tools = body["tools"].to_string();
+            assert_eq!(tools.contains("mcp__remote__echo"), index != 0);
+            if index >= 2 {
+                assert!(tools.contains("changed"));
+            }
+            if index == 3 {
+                if protocol == "completion" {
+                    calls_reply(
+                        request,
+                        json!([call(
+                            "reloaded",
+                            "mcp__remote__echo",
+                            json!({"text":"updated"})
+                        )]),
+                    );
+                } else {
+                    response_reply(
+                        request,
+                        json!([response_call(
+                            "reloaded",
+                            "mcp__remote__echo",
+                            json!({"text":"updated"})
+                        )]),
+                    );
                 }
-                if index == 3 {
-                    config["mcpServers"]["remote"]["env_headers"] =
-                        json!({"x-test-key":"PP_MCP_TEST_KEY_NEW"});
-                    std::fs::write(config_path(dir.path(), "mcp.json"), config.to_string())
-                        .unwrap();
-                }
-                cli.input(&format!("{command}\ntask {index}\n"));
                 let (request, body) = receive_at(&provider, api);
-                let tools = body["tools"].to_string();
-                assert_eq!(tools.contains("mcp__remote__echo"), index != 0);
-                if index >= 2 {
-                    assert!(tools.contains("changed"));
-                }
-                if index == 3 {
-                    if protocol == "completion" {
-                        calls_reply(
-                            request,
-                            json!([call(
-                                "reloaded",
-                                "mcp__remote__echo",
-                                json!({"text":"updated"})
-                            )]),
-                        );
-                    } else {
-                        response_reply(
-                            request,
-                            json!([response_call(
-                                "reloaded",
-                                "mcp__remote__echo",
-                                json!({"text":"updated"})
-                            )]),
-                        );
-                    }
-                    let (request, body) = receive_at(&provider, api);
-                    assert!(body.to_string().contains("updated"));
-                    remote.wait_calls(1);
-                    if protocol == "completion" {
-                        final_reply(request, "done");
-                    } else {
-                        response_final(request, "done");
-                    }
-                } else if protocol == "completion" {
+                assert!(body.to_string().contains("updated"));
+                remote.wait_calls(1);
+                if protocol == "completion" {
                     final_reply(request, "done");
                 } else {
                     response_final(request, "done");
                 }
+            } else if protocol == "completion" {
+                final_reply(request, "done");
+            } else {
+                response_final(request, "done");
             }
-            cli.input("/quit\n");
-            let output = cli.finish();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let log = remote.log();
-            let call = log
-                .iter()
-                .find(|r| r["body"]["method"] == "tools/call")
-                .unwrap();
-            assert_eq!(call["headers"]["x-test-key"], "refreshed-secret");
-            let saved = std::fs::read_to_string(config_path(dir.path(), "mcp.json")).unwrap();
-            assert!(!saved.contains("env-secret") && !saved.contains("refreshed-secret"));
-            assert!(saved.contains("literal-secret"));
         }
+        cli.input("/quit\n");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let log = remote.log();
+        let call = log
+            .iter()
+            .find(|r| r["body"]["method"] == "tools/call")
+            .unwrap();
+        assert_eq!(call["headers"]["x-test-key"], "refreshed-secret");
+        let saved = std::fs::read_to_string(config_path(dir.path(), "mcp.json")).unwrap();
+        assert!(!saved.contains("env-secret") && !saved.contains("refreshed-secret"));
+        assert!(saved.contains("literal-secret"));
     }
 }

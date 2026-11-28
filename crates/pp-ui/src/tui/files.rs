@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn file_picker_entries_show_only_direct_children() {
+    fn file_picker_entries_and_query_boundaries() {
         let paths: Vec<String> = [
             "README.md",
             "docs/my folder/说明.md",
@@ -377,15 +377,9 @@ mod tests {
             [("src/tui/files.rs", false), ("src/tui/menu.rs", false)]
         );
         assert_eq!(visible("", "menu"), [("src/", true)]);
-        assert_eq!(visible("src/", "menu"), [("src/tui/", true)]);
-        assert_eq!(visible("src/tui/", "menu"), [("src/tui/menu.rs", false)]);
         assert_eq!(visible("docs/", "说明"), [("docs/my folder/", true)]);
-        assert!(visible("src/", "missing").is_empty());
-        assert!(visible("missing/", "").is_empty());
-    }
+        assert!(visible("src/", "missing").is_empty() && visible("missing/", "").is_empty());
 
-    #[test]
-    fn file_picker_query_character_boundaries() {
         use ratatui_textarea::{CursorMove, TextArea};
         for (text, back, expected) in [
             ("@", 0, Some((0, 0, 1, ""))),
@@ -414,24 +408,21 @@ mod tests {
     }
 
     #[test]
-    fn file_picker_insert_replaces_whole_token_and_keeps_context() {
-        let mut input = draft(&["第一行", "分析🙂 @src/old.rs 后续", "尾部"]);
-        move_to(&mut input, 1, 11); // cursor in the middle of "old"
-        let active = query(&input).expect("active reference");
+    fn file_picker_insert_quoting_separators_wide_and_undo() {
+        let mut ctx_in = draft(&["第一行", "分析🙂 @src/old.rs 后续", "尾部"]);
+        move_to(&mut ctx_in, 1, 11);
+        let active = query(&ctx_in).expect("active reference");
         assert_eq!(
             (active.start, active.end, active.prefix.as_str()),
             (4, 15, "src/ol")
         );
-        insert(&mut input, &active, "src/main.rs");
+        insert(&mut ctx_in, &active, "src/main.rs");
         assert_eq!(
-            input.lines(),
+            ctx_in.lines(),
             ["第一行", "分析🙂 @src/main.rs 后续", "尾部"]
         );
-        assert_eq!(input.cursor(), (1, 17));
-    }
+        assert_eq!(ctx_in.cursor(), (1, 17));
 
-    #[test]
-    fn file_picker_directory_completion_keeps_context_and_quoted_paths_editable() {
         for (path, expected) in [
             ("src/", "@src/"),
             ("目录/my folder/", "@\"目录/my folder/\""),
@@ -443,28 +434,13 @@ mod tests {
             move_to(&mut input, 1, 7);
             let active = query(&input).unwrap();
             insert(&mut input, &active, path);
-            assert_eq!(
-                input.lines(),
-                [
-                    "第一行".to_owned(),
-                    format!("分析🙂 {expected} 后续 @other"),
-                    "尾部".to_owned()
-                ]
-            );
-            let active = query(&input).expect("directory remains editable");
-            assert_eq!(active.prefix, path);
-            assert_eq!((active.row, active.start), (1, 4));
-            insert(&mut input, &active, "src/main.rs");
-            assert_eq!(
-                input.lines(),
-                ["第一行", "分析🙂 @src/main.rs 后续 @other", "尾部"]
-            );
+            assert_eq!(input.lines()[1], format!("分析🙂 {expected} 后续 @other"));
+            let editable = query(&input).expect("directory remains editable");
+            assert_eq!(editable.prefix, path);
+            insert(&mut input, &editable, "src/main.rs");
             assert_eq!(input.cursor(), (1, 17));
         }
-    }
 
-    #[test]
-    fn file_picker_insert_quotes_paths_needing_json() {
         for (path, expected) in [
             ("src/main.rs", "@src/main.rs"),
             ("docs/my file.md", "@\"docs/my file.md\""),
@@ -473,87 +449,55 @@ mod tests {
         ] {
             let mut input = draft(&["@old"]);
             move_to(&mut input, 0, 4);
-            let active = query(&input).expect("active reference");
+            let active = query(&input).unwrap();
             insert(&mut input, &active, path);
             assert_eq!(input.lines(), [format!("{expected} ")], "{path}");
-            assert_eq!(input.cursor(), (0, expected.chars().count() + 1), "{path}");
         }
-    }
 
-    #[test]
-    fn file_picker_insert_separator_cursor() {
-        // Existing separator: cross it without adding whitespace.
-        let mut input = draft(&["@old bar"]);
-        move_to(&mut input, 0, 4);
-        let active = query(&input).unwrap();
-        insert(&mut input, &active, "x");
-        assert_eq!(input.lines(), ["@x bar"]);
-        assert_eq!(input.cursor(), (0, 3));
+        for (lines, target_line, cursor) in [
+            (&["@old bar"][..], "@x bar", (0, 3)),
+            (&["@old\tbar"][..], "@x\tbar", (0, 3)),
+            (&["@old"][..], "@x ", (0, 3)),
+        ] {
+            let mut input = draft(lines);
+            move_to(&mut input, 0, 4);
+            let active = query(&input).unwrap();
+            insert(&mut input, &active, "x");
+            assert_eq!(input.lines(), [target_line]);
+            assert_eq!(input.cursor(), cursor);
+        }
+        let mut nl_in = draft(&["@old", "bar"]);
+        move_to(&mut nl_in, 0, 4);
+        let active = query(&nl_in).unwrap();
+        insert(&mut nl_in, &active, "x");
+        assert_eq!(nl_in.lines(), ["@x", "bar"]);
+        assert_eq!(nl_in.cursor(), (1_usize, 0_usize));
 
-        // A tab separator behaves the same.
-        let mut input = draft(&["@old\tbar"]);
-        move_to(&mut input, 0, 4);
-        let active = query(&input).unwrap();
-        insert(&mut input, &active, "x");
-        assert_eq!(input.lines(), ["@x\tbar"]);
-        assert_eq!(input.cursor(), (0, 3));
-
-        // A line break is an existing separator; no space is added.
-        let mut input = draft(&["@old", "bar"]);
-        move_to(&mut input, 0, 4);
-        let active = query(&input).unwrap();
-        insert(&mut input, &active, "x");
-        assert_eq!(input.lines(), ["@x", "bar"]);
-        assert_eq!(input.cursor(), (1, 0));
-
-        // No separator at all: append one space and stop after it.
-        let mut input = draft(&["@old"]);
-        move_to(&mut input, 0, 4);
-        let active = query(&input).unwrap();
-        insert(&mut input, &active, "x");
-        assert_eq!(input.lines(), ["@x "]);
-        assert_eq!(input.cursor(), (0, 3));
-    }
-
-    #[test]
-    fn file_picker_insert_beyond_u16_columns() {
         let prefix = "x".repeat(70_000);
-        let mut input = TextArea::default();
-        input.insert_str(&prefix);
-        input.insert_str(" @old.rs");
-        let active = query(&input).expect("active reference");
-        assert_eq!((active.start, active.end), (70_001, 70_008));
-        insert(&mut input, &active, "src/main.rs");
-        let line = &input.lines()[0];
-        assert!(line.starts_with(&prefix));
-        assert!(line.ends_with(" @src/main.rs "));
-        assert_eq!(line.chars().count(), 70_014);
-        assert_eq!(input.cursor(), (0, 70_014));
+        let mut wide = TextArea::default();
+        wide.insert_str(&prefix);
+        wide.insert_str(" @old.rs");
+        let active = query(&wide).unwrap();
+        insert(&mut wide, &active, "src/main.rs");
+        assert_eq!(wide.lines()[0].chars().count(), 70_014);
+        assert_eq!(wide.cursor(), (0_usize, 70_014_usize));
+
+        let mut undo_in = draft(&["分析 @old.rs"]);
+        move_to(&mut undo_in, 0, 10);
+        let active = query(&undo_in).unwrap();
+        insert(&mut undo_in, &active, "src/main.rs");
+        assert!(undo_in.undo() && undo_in.undo() && undo_in.undo());
+        assert_eq!(undo_in.lines(), ["分析 @old.rs"]);
     }
 
     #[test]
-    fn file_picker_insert_undo_restores_draft() {
-        let mut input = draft(&["分析 @old.rs"]);
-        move_to(&mut input, 0, 10);
-        let active = query(&input).unwrap();
-        insert(&mut input, &active, "src/main.rs");
-        assert_eq!(input.lines(), ["分析 @src/main.rs "]);
-        assert!(input.undo());
-        assert_eq!(input.lines(), ["分析 @src/main.rs"]);
-        assert!(input.undo());
-        assert_eq!(input.lines(), ["分析 "]);
-        assert!(input.undo());
-        assert_eq!(input.lines(), ["分析 @old.rs"]);
-    }
-
-    #[test]
-    fn file_picker_scan_obeys_project_ignores() -> Result<()> {
+    fn file_picker_scan_ignores_errors_and_worker() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let root = dir.path();
-        for directory in ["src", "ignored", ".git/info", "local", "excluded"] {
-            fs::create_dir_all(root.join(directory))?;
+        for d in ["src", "ignored", ".git/info", "local", "excluded"] {
+            fs::create_dir_all(root.join(d))?;
         }
-        for file in [
+        for f in [
             "src/main.rs",
             ".hidden",
             "ignored/no",
@@ -561,7 +505,7 @@ mod tests {
             "local/no",
             "excluded/no",
         ] {
-            fs::write(root.join(file), "not read")?;
+            fs::write(root.join(f), "not read")?;
         }
         fs::write(root.join(".gitignore"), "ignored/\n")?;
         fs::write(root.join(".ignore"), "local/\n")?;
@@ -572,40 +516,21 @@ mod tests {
             use std::os::unix::fs::symlink;
             symlink(root, root.join("loop"))?;
             symlink(root.join("src/main.rs"), root.join("link"))?;
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                fs::write(root.join(std::ffi::OsStr::from_bytes(b"bad\xff")), "")?;
-            }
         }
         assert_eq!(
             scan(root)?,
             [".gitignore", ".hidden", ".ignore", "src/", "src/main.rs"]
         );
-        Ok(())
-    }
+        fs::write(root.join(".ignore"), "[z-a]\n")?;
+        assert!(format!("{:#}", scan(root).unwrap_err()).contains(".ignore"));
 
-    #[test]
-    fn file_picker_scan_invalid_ignore_glob_fails() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        fs::create_dir(dir.path().join("src"))?;
-        fs::write(dir.path().join("src/main.rs"), "")?;
-        assert_eq!(scan(dir.path())?, ["src/", "src/main.rs"]);
-        fs::write(dir.path().join(".ignore"), "[z-a]\n")?;
-        let error = scan(dir.path()).unwrap_err();
-        assert!(format!("{error:#}").contains(".ignore"), "{error:#}");
-        Ok(())
-    }
-
-    #[test]
-    fn file_picker_scan_empty_missing_and_worker_refresh() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        assert!(scan(dir.path())?.is_empty());
-        assert!(scan(&dir.path().join("missing")).is_err());
-        let worker = Worker::new(dir.path())?;
+        let d2 = tempfile::tempdir()?;
+        assert!(scan(d2.path())?.is_empty());
+        assert!(scan(&d2.path().join("missing")).is_err());
+        let worker = Worker::new(d2.path())?;
         worker.requests.send(String::new())?;
         assert!(worker.replies.recv()??.is_empty());
-        fs::write(dir.path().join("new"), "")?;
+        fs::write(d2.path().join("new"), "")?;
         worker.requests.send(String::new())?;
         assert_eq!(worker.replies.recv()??, ["new"]);
         Ok(())

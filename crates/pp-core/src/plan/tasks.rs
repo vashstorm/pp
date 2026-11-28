@@ -259,201 +259,197 @@ mod task_tests {
     use super::*;
 
     #[test]
-    fn plan_tasks_extract_marker_text_in_order_and_ignore_prose_and_fences() {
-        let body = "# Plan title\n\nIntro with [ ] text.\n\n```md\n- [ ] fenced example\n### [] fenced heading task\n```\n\n## Phase one\n- [ ] Create the file; done when bytes match.\n  - Location: src/a.rs\n  - Acceptance: read-back equals input\n- [x] **Verify** `behavior` end to end.\n  - [ ] nested child action\n\n## Phase two\n- [ ] Loose item first paragraph.\n\n  Second paragraph is not the task text.\n";
-        let tasks = plan_tasks(body);
-        fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str)> {
-            items
-                .iter()
-                .map(|task| (task.text.as_str(), task.completed, task.phase.as_str()))
-                .collect::<Vec<_>>()
-        }
-        assert_eq!(
-            summary(&tasks),
-            vec![
-                (
-                    "Create the file; done when bytes match.",
-                    false,
-                    "Phase one"
-                ),
-                ("Verify behavior end to end.", true, "Phase one"),
-                ("nested child action", false, "Phase one"),
-                ("Loose item first paragraph.", false, "Phase two"),
-            ]
-        );
-        // marker 恰好指向源文件中的 checkbox 本体。
-        assert_eq!(&body[tasks[0].marker.clone()], "[ ]");
-        assert_eq!(&body[tasks[1].marker.clone()], "[x]");
-        assert_eq!(&body[tasks[2].marker.clone()], "[ ]");
-        assert_eq!(&body[tasks[3].marker.clone()], "[ ]");
-        assert_eq!(task_progress(body), (1, 4));
-    }
-
-    #[test]
-    fn plan_todo_tasks_capture_phase_regions_headings_and_duplicates() {
-        let body = "- [ ] bootstrap task\n\n## Step\n- [ ] first\n\n## Step\n- [ ] second\n\n### Detail\n- [ ] inherits Step region\n\n# Reset\n- [ ] after reset\n\nSetext phase\n------------\n- [ ] setext task\n";
-        let tasks = plan_tasks(body);
-        fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str, usize)> {
-            items
-                .iter()
-                .map(|task| {
-                    (
-                        task.text.as_str(),
-                        task.completed,
-                        task.phase.as_str(),
-                        task.phase_index,
-                    )
-                })
-                .collect::<Vec<_>>()
-        }
-        assert_eq!(
-            summary(&tasks),
-            vec![
-                ("bootstrap task", false, "Tasks", 0),
-                ("first", false, "Step", 1),
-                ("second", false, "Step", 2),
-                ("inherits Step region", false, "Step", 2),
-                ("after reset", false, "Tasks", 3),
-                ("setext task", false, "Setext phase", 4),
-            ]
-        );
-        // 重复标题的两个区域拥有不同的 phase_index，任务保持文档顺序。
-        assert_ne!(tasks[1].phase_index, tasks[2].phase_index);
-        assert_eq!(task_progress(body), (0, 6));
-    }
-
-    #[test]
-    fn plan_todo_patch_updates_state_bytes_and_preserves_everything_else() {
-        let body = "# 计划\r\n\r\n## 写入\r\n- [ ] 写入 canary\t字节。\r\n  - Acceptance: 中文 ✓ 证据\r\n- [X] 已有勾选\r\n\r\n```md\r\n- [ ] fenced example\r\n```\r\n";
-        let tasks = plan_tasks(body);
-        assert_eq!(tasks.len(), 2);
-        assert_eq!(
-            tasks.iter().map(|task| task.completed).collect::<Vec<_>>(),
-            vec![false, true]
-        );
-        let checked = vec![true, false];
-        let patched = patch_task_checks(body, &tasks, &checked)
-            .unwrap()
-            .expect("checked states changed");
-        // 除两个 checkbox 的中间状态字节外逐字节相等。
-        let diff: Vec<usize> = body
-            .bytes()
-            .zip(patched.bytes())
-            .enumerate()
-            .filter_map(|(index, (old, new))| (old != new).then_some(index))
-            .collect();
-        assert_eq!(
-            diff,
-            vec![tasks[0].marker.start + 1, tasks[1].marker.start + 1]
-        );
-        assert_eq!(patched.as_bytes()[diff[0]], b'x');
-        assert_eq!(patched.as_bytes()[diff[1]], b' ');
-        // 与逐字 replacen 的期望一致（含 CRLF、制表符、中文与其他字节）。
-        let expected = body.replacen("[ ]", "[x]", 1).replacen("[X]", "[ ]", 1);
-        assert_eq!(patched, expected);
-        // 状态无变化时不复制正文。
-        assert!(
-            patch_task_checks(body, &tasks, &[false, true])
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn plan_todo_patch_rejects_mismatch_out_of_bounds_ambiguous_and_stale() {
-        let body = "- [ ] one\n- [ ] two\n";
-        let tasks = plan_tasks(body);
-        // 长度不一致。
-        assert!(patch_task_checks(body, &tasks, &[true]).is_err());
-        // marker 区间越界。
-        let mut out_of_bounds = tasks.clone();
-        out_of_bounds[0].marker = 100..110;
-        assert!(patch_task_checks(body, &out_of_bounds, &[true, false]).is_err());
-        // 区间内出现两个 checkbox：拒绝猜测位置。
-        let ambiguous = PlanTask {
-            text: "one".into(),
-            completed: false,
-            phase: "Tasks".into(),
-            phase_index: 0,
-            marker: 0..9,
-        };
-        assert!(patch_task_checks("- [ ] [ ] one", &[ambiguous], &[true]).is_err());
-        // 区间内没有标准 checkbox。
-        let absent = PlanTask {
-            text: "one".into(),
-            completed: false,
-            phase: "Tasks".into(),
-            phase_index: 0,
-            marker: 0..5,
-        };
-        assert!(patch_task_checks("hello world", &[absent], &[true]).is_err());
-        // 旧状态与解析状态不符（stale）：正文仍是 [ ]，解析状态却被标为已勾选。
-        let mut stale = plan_tasks("- [ ] pending\n");
-        stale[0].completed = true;
-        assert!(patch_task_checks("- [ ] pending\n", &stale, &[false]).is_err());
-    }
-
-    #[test]
-    fn plan_todo_task_progress_matches_parsed_tasks_on_real_documents() {
-        let check = |body: &str| {
+    fn plan_tasks_extract_phases_and_progress() {
+        {
+            let body = "# Plan title\n\nIntro with [ ] text.\n\n```md\n- [ ] fenced example\n### [] fenced heading task\n```\n\n## Phase one\n- [ ] Create the file; done when bytes match.\n  - Location: src/a.rs\n  - Acceptance: read-back equals input\n- [x] **Verify** `behavior` end to end.\n  - [ ] nested child action\n\n## Phase two\n- [ ] Loose item first paragraph.\n\n  Second paragraph is not the task text.\n";
             let tasks = plan_tasks(body);
-            let (completed, total) = task_progress(body);
-            assert_eq!(total, tasks.len(), "total mismatch for {body:?}");
+            fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str)> {
+                items
+                    .iter()
+                    .map(|task| (task.text.as_str(), task.completed, task.phase.as_str()))
+                    .collect::<Vec<_>>()
+            }
             assert_eq!(
-                completed,
-                tasks.iter().filter(|task| task.completed).count(),
-                "completed mismatch for {body:?}"
+                summary(&tasks),
+                vec![
+                    (
+                        "Create the file; done when bytes match.",
+                        false,
+                        "Phase one"
+                    ),
+                    ("Verify behavior end to end.", true, "Phase one"),
+                    ("nested child action", false, "Phase one"),
+                    ("Loose item first paragraph.", false, "Phase two"),
+                ]
             );
-        };
-        check(
-            "# 计划\n\nIntro [ ] not a task.\n\n```md\n- [ ] fenced\n```\n\n## 阶段一\n- [ ] 第一项\n  - [ ] 嵌套项\n- [X] 已完成项\n\n## 阶段二\n- [ ] loose\n\n  second paragraph\n",
-        );
-        check(
-            "# Plan\r\n\r\n## Write\r\n- [ ] write bytes\r\n  - Acceptance: read-back\r\n- [x] verify\r\n\r\n## Verify\r\n- [ ] read back\r\n",
-        );
+            // marker 恰好指向源文件中的 checkbox 本体。
+            assert_eq!(&body[tasks[0].marker.clone()], "[ ]");
+            assert_eq!(&body[tasks[1].marker.clone()], "[x]");
+            assert_eq!(&body[tasks[2].marker.clone()], "[ ]");
+            assert_eq!(&body[tasks[3].marker.clone()], "[ ]");
+            assert_eq!(task_progress(body), (1, 4));
+        }
+        {
+            let body = "- [ ] bootstrap task\n\n## Step\n- [ ] first\n\n## Step\n- [ ] second\n\n### Detail\n- [ ] inherits Step region\n\n# Reset\n- [ ] after reset\n\nSetext phase\n------------\n- [ ] setext task\n";
+            let tasks = plan_tasks(body);
+            fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str, usize)> {
+                items
+                    .iter()
+                    .map(|task| {
+                        (
+                            task.text.as_str(),
+                            task.completed,
+                            task.phase.as_str(),
+                            task.phase_index,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }
+            assert_eq!(
+                summary(&tasks),
+                vec![
+                    ("bootstrap task", false, "Tasks", 0),
+                    ("first", false, "Step", 1),
+                    ("second", false, "Step", 2),
+                    ("inherits Step region", false, "Step", 2),
+                    ("after reset", false, "Tasks", 3),
+                    ("setext task", false, "Setext phase", 4),
+                ]
+            );
+            // 重复标题的两个区域拥有不同的 phase_index，任务保持文档顺序。
+            assert_ne!(tasks[1].phase_index, tasks[2].phase_index);
+            assert_eq!(task_progress(body), (0, 6));
+        }
     }
 
     #[test]
-    fn plan_heading_tasks_round_trip_with_legacy_tasks() {
-        let body = concat!(
-            "## 并行实现\r\n",
-            "### [] **实现** `API` ###\r\n",
-            "- [ ] 旧格式任务\r\n",
-            "### [X] b. 补充测试\r\n",
-            "### 普通标题\r\n",
-            "### [] ###\r\n",
-            "```markdown\r\n### [] 围栏内示例\r\n```\r\n",
-            "## 集成\r\n",
-            "### [] 验收\r\n",
-        );
-        let tasks = plan_tasks(body);
-        let summary = |tasks: &[PlanTask]| {
-            tasks
-                .iter()
-                .map(|task| (task.text.clone(), task.phase_index))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(
-            summary(&tasks),
-            vec![
-                ("实现 API".into(), 1),
-                ("旧格式任务".into(), 1),
-                ("b. 补充测试".into(), 1),
-                ("验收".into(), 2),
-            ]
-        );
-        assert_eq!(task_progress(body), (1, 4));
-        let patched = patch_task_checks(body, &tasks, &[true, true, false, true])
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            patched,
-            body.replace("[] **实现**", "[x] **实现**")
-                .replace("- [ ] 旧格式任务", "- [x] 旧格式任务")
-                .replace("[X] b.", "[] b.")
-                .replace("[] 验收", "[x] 验收")
-        );
-        assert_eq!(summary(&plan_tasks(&patched)), summary(&tasks));
-        assert_eq!(task_progress(&patched), (3, 4));
+    fn plan_tasks_patch_validation_progress_and_headings() {
+        {
+            let body = "# 计划\r\n\r\n## 写入\r\n- [ ] 写入 canary\t字节。\r\n  - Acceptance: 中文 ✓ 证据\r\n- [X] 已有勾选\r\n\r\n```md\r\n- [ ] fenced example\r\n```\r\n";
+            let tasks = plan_tasks(body);
+            assert_eq!(tasks.len(), 2);
+            assert_eq!(
+                tasks.iter().map(|task| task.completed).collect::<Vec<_>>(),
+                vec![false, true]
+            );
+            let checked = vec![true, false];
+            let patched = patch_task_checks(body, &tasks, &checked)
+                .unwrap()
+                .expect("checked states changed");
+            // 除两个 checkbox 的中间状态字节外逐字节相等。
+            let diff: Vec<usize> = body
+                .bytes()
+                .zip(patched.bytes())
+                .enumerate()
+                .filter_map(|(index, (old, new))| (old != new).then_some(index))
+                .collect();
+            assert_eq!(
+                diff,
+                vec![tasks[0].marker.start + 1, tasks[1].marker.start + 1]
+            );
+            assert_eq!(patched.as_bytes()[diff[0]], b'x');
+            assert_eq!(patched.as_bytes()[diff[1]], b' ');
+            // 与逐字 replacen 的期望一致（含 CRLF、制表符、中文与其他字节）。
+            let expected = body.replacen("[ ]", "[x]", 1).replacen("[X]", "[ ]", 1);
+            assert_eq!(patched, expected);
+            // 状态无变化时不复制正文。
+            assert!(
+                patch_task_checks(body, &tasks, &[false, true])
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        {
+            let body = "- [ ] one\n- [ ] two\n";
+            let tasks = plan_tasks(body);
+            // 长度不一致。
+            assert!(patch_task_checks(body, &tasks, &[true]).is_err());
+            // marker 区间越界。
+            let mut out_of_bounds = tasks.clone();
+            out_of_bounds[0].marker = 100..110;
+            assert!(patch_task_checks(body, &out_of_bounds, &[true, false]).is_err());
+            // 区间内出现两个 checkbox：拒绝猜测位置。
+            let ambiguous = PlanTask {
+                text: "one".into(),
+                completed: false,
+                phase: "Tasks".into(),
+                phase_index: 0,
+                marker: 0..9,
+            };
+            assert!(patch_task_checks("- [ ] [ ] one", &[ambiguous], &[true]).is_err());
+            // 区间内没有标准 checkbox。
+            let absent = PlanTask {
+                text: "one".into(),
+                completed: false,
+                phase: "Tasks".into(),
+                phase_index: 0,
+                marker: 0..5,
+            };
+            assert!(patch_task_checks("hello world", &[absent], &[true]).is_err());
+            // 旧状态与解析状态不符（stale）：正文仍是 [ ]，解析状态却被标为已勾选。
+            let mut stale = plan_tasks("- [ ] pending\n");
+            stale[0].completed = true;
+            assert!(patch_task_checks("- [ ] pending\n", &stale, &[false]).is_err());
+        }
+        {
+            let check = |body: &str| {
+                let tasks = plan_tasks(body);
+                let (completed, total) = task_progress(body);
+                assert_eq!(total, tasks.len(), "total mismatch for {body:?}");
+                assert_eq!(
+                    completed,
+                    tasks.iter().filter(|task| task.completed).count(),
+                    "completed mismatch for {body:?}"
+                );
+            };
+            check(
+                "# 计划\n\nIntro [ ] not a task.\n\n```md\n- [ ] fenced\n```\n\n## 阶段一\n- [ ] 第一项\n  - [ ] 嵌套项\n- [X] 已完成项\n\n## 阶段二\n- [ ] loose\n\n  second paragraph\n",
+            );
+            check(
+                "# Plan\r\n\r\n## Write\r\n- [ ] write bytes\r\n  - Acceptance: read-back\r\n- [x] verify\r\n\r\n## Verify\r\n- [ ] read back\r\n",
+            );
+        }
+        {
+            let body = concat!(
+                "## 并行实现\r\n",
+                "### [] **实现** `API` ###\r\n",
+                "- [ ] 旧格式任务\r\n",
+                "### [X] b. 补充测试\r\n",
+                "### 普通标题\r\n",
+                "### [] ###\r\n",
+                "```markdown\r\n### [] 围栏内示例\r\n```\r\n",
+                "## 集成\r\n",
+                "### [] 验收\r\n",
+            );
+            let tasks = plan_tasks(body);
+            let summary = |tasks: &[PlanTask]| {
+                tasks
+                    .iter()
+                    .map(|task| (task.text.clone(), task.phase_index))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                summary(&tasks),
+                vec![
+                    ("实现 API".into(), 1),
+                    ("旧格式任务".into(), 1),
+                    ("b. 补充测试".into(), 1),
+                    ("验收".into(), 2),
+                ]
+            );
+            assert_eq!(task_progress(body), (1, 4));
+            let patched = patch_task_checks(body, &tasks, &[true, true, false, true])
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                patched,
+                body.replace("[] **实现**", "[x] **实现**")
+                    .replace("- [ ] 旧格式任务", "- [x] 旧格式任务")
+                    .replace("[X] b.", "[] b.")
+                    .replace("[] 验收", "[x] 验收")
+            );
+            assert_eq!(summary(&plan_tasks(&patched)), summary(&tasks));
+            assert_eq!(task_progress(&patched), (3, 4));
+        }
     }
 }

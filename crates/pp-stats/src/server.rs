@@ -313,7 +313,7 @@ fn ensure_limit(errors: bool, limit: usize) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::*;
     use crate::server;
     use std::collections::{BTreeSet, VecDeque};
@@ -397,104 +397,104 @@ mod tests {
     }
 
     #[test]
-    fn stats_server_serves_traces_assets() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = open_store(&dir.path().join("stats.db")).unwrap();
-        for (path, kind) in [
-            ("/traces.js", "text/javascript"),
-            ("/traces.css", "text/css"),
-            ("/modern.css", "text/css"),
-        ] {
-            let (status, content_type, body) = server::dispatch(&store, path, &[]);
-            assert_eq!(status, 200, "{path}");
-            assert_eq!(content_type, kind, "{path}");
-            assert!(!body.is_empty(), "{path}");
+    fn stats_server_traces_and_static_esm_graph() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open_store(&dir.path().join("stats.db")).unwrap();
+            for (path, kind) in [
+                ("/traces.js", "text/javascript"),
+                ("/traces.css", "text/css"),
+                ("/modern.css", "text/css"),
+            ] {
+                let (status, content_type, body) = server::dispatch(&store, path, &[]);
+                assert_eq!(status, 200, "{path}");
+                assert_eq!(content_type, kind, "{path}");
+                assert!(!body.is_empty(), "{path}");
+            }
         }
-    }
+        {
+            let (_, html) = server::static_text("/index.html").expect("index.html");
+            // CSP `script-src 'self'` 下禁止内联脚本或内联事件属性。
+            assert!(!html.contains("onclick="));
+            assert!(!html.contains("<style"));
+            for chunk in html.split("<script").skip(1) {
+                let tag_end = chunk.find('>').unwrap();
+                assert!(
+                    chunk[..tag_end].contains("src="),
+                    "inline script tag found in index.html"
+                );
+            }
 
-    #[test]
-    fn stats_server_static_assets_and_esm_graph_are_complete() {
-        let (_, html) = server::static_text("/index.html").expect("index.html");
-        // CSP `script-src 'self'` 下禁止内联脚本或内联事件属性。
-        assert!(!html.contains("onclick="));
-        assert!(!html.contains("<style"));
-        for chunk in html.split("<script").skip(1) {
-            let tag_end = chunk.find('>').unwrap();
+            let mut linked_css = BTreeSet::new();
+            let mut entry_scripts = Vec::new();
+            for attr in ["href", "src"] {
+                for target in extract_quoted_attrs(html, attr) {
+                    if !target.starts_with('/') {
+                        continue;
+                    }
+                    let (kind, body) = server::static_text(&target)
+                        .unwrap_or_else(|| panic!("unregistered HTML asset: {target}"));
+                    assert!(!body.is_empty(), "{target}");
+                    if target.ends_with(".css") {
+                        assert_eq!(kind, "text/css", "{target}");
+                        linked_css.insert(target);
+                    } else if target.ends_with(".js") {
+                        assert_eq!(kind, "text/javascript", "{target}");
+                        entry_scripts.push(target);
+                    }
+                }
+            }
             assert!(
-                chunk[..tag_end].contains("src="),
-                "inline script tag found in index.html"
+                !entry_scripts.is_empty(),
+                "no entry module script in index.html"
             );
-        }
 
-        let mut linked_css = BTreeSet::new();
-        let mut entry_scripts = Vec::new();
-        for attr in ["href", "src"] {
-            for target in extract_quoted_attrs(html, attr) {
-                if !target.starts_with('/') {
+            let mut visited_js = BTreeSet::new();
+            let mut queue: VecDeque<String> = entry_scripts.into();
+            while let Some(module) = queue.pop_front() {
+                if !visited_js.insert(module.clone()) {
                     continue;
                 }
-                let (kind, body) = server::static_text(&target)
-                    .unwrap_or_else(|| panic!("unregistered HTML asset: {target}"));
-                assert!(!body.is_empty(), "{target}");
-                if target.ends_with(".css") {
-                    assert_eq!(kind, "text/css", "{target}");
-                    linked_css.insert(target);
-                } else if target.ends_with(".js") {
-                    assert_eq!(kind, "text/javascript", "{target}");
-                    entry_scripts.push(target);
+                let (kind, source) = server::static_text(&module)
+                    .unwrap_or_else(|| panic!("missing ESM target: {module}"));
+                assert_eq!(kind, "text/javascript", "{module}");
+                for spec in extract_esm_specifiers(source) {
+                    if !spec.starts_with("./") && !spec.starts_with("../") {
+                        continue;
+                    }
+                    let resolved = resolve_web_path(&module, &spec);
+                    assert!(
+                        server::static_text(&resolved).is_some(),
+                        "{module} imports unregistered asset {spec} -> {resolved}"
+                    );
+                    if resolved.ends_with(".js") && !visited_js.contains(&resolved) {
+                        queue.push_back(resolved);
+                    }
                 }
             }
-        }
-        assert!(
-            !entry_scripts.is_empty(),
-            "no entry module script in index.html"
-        );
 
-        let mut visited_js = BTreeSet::new();
-        let mut queue: VecDeque<String> = entry_scripts.into();
-        while let Some(module) = queue.pop_front() {
-            if !visited_js.insert(module.clone()) {
-                continue;
-            }
-            let (kind, source) = server::static_text(&module)
-                .unwrap_or_else(|| panic!("missing ESM target: {module}"));
-            assert_eq!(kind, "text/javascript", "{module}");
-            for spec in extract_esm_specifiers(source) {
-                if !spec.starts_with("./") && !spec.starts_with("../") {
-                    continue;
-                }
-                let resolved = resolve_web_path(&module, &spec);
-                assert!(
-                    server::static_text(&resolved).is_some(),
-                    "{module} imports unregistered asset {spec} -> {resolved}"
-                );
-                if resolved.ends_with(".js") && !visited_js.contains(&resolved) {
-                    queue.push_back(resolved);
-                }
-            }
-        }
-
-        let mut disk_assets = BTreeSet::new();
-        collect_disk_assets(
-            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
-            "",
-            &mut disk_assets,
-        );
-        for asset in disk_assets {
-            assert!(
-                server::static_text(&asset).is_some(),
-                "disk asset missing from static_text: {asset}"
+            let mut disk_assets = BTreeSet::new();
+            collect_disk_assets(
+                Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+                "",
+                &mut disk_assets,
             );
-            if asset.ends_with(".css") {
+            for asset in disk_assets {
                 assert!(
-                    linked_css.contains(&asset),
-                    "orphan CSS not linked in index.html: {asset}"
+                    server::static_text(&asset).is_some(),
+                    "disk asset missing from static_text: {asset}"
                 );
-            } else if asset.ends_with(".js") {
-                assert!(
-                    visited_js.contains(&asset),
-                    "orphan JS not reachable from index.html: {asset}"
-                );
+                if asset.ends_with(".css") {
+                    assert!(
+                        linked_css.contains(&asset),
+                        "orphan CSS not linked in index.html: {asset}"
+                    );
+                } else if asset.ends_with(".js") {
+                    assert!(
+                        visited_js.contains(&asset),
+                        "orphan JS not reachable from index.html: {asset}"
+                    );
+                }
             }
         }
     }

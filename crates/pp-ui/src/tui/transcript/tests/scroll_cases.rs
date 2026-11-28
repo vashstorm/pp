@@ -99,7 +99,7 @@ fn streaming_table_keeps_viewport_stable_until_row_is_complete() {
 }
 
 #[test]
-fn streaming_scroll_live_tail_updates_before_background_layout_finishes() {
+fn streaming_scroll_live_tail_anchors_and_resize() {
     let worker = Worker::start().unwrap();
     for thinking in [false, true] {
         let mut transcript = Transcript::new();
@@ -131,16 +131,10 @@ fn streaming_scroll_live_tail_updates_before_background_layout_finishes() {
         assert!(transcript.next_native_batch(60, 8, true).is_none());
         drop(pause);
         assert!(screen(&wait_exact(&mut transcript, 60)).contains("-newest"));
-    }
-}
 
-#[test]
-fn streaming_scroll_keeps_markdown_snapshot_and_long_position_while_pending() {
-    let worker = Worker::start().unwrap();
-    for thinking in [false, true] {
         for long in [false, true] {
-            let mut transcript = Transcript::new();
-            transcript.progress(AgentEvent::AssistantStarted);
+            let mut anchored = Transcript::new();
+            anchored.progress(AgentEvent::AssistantStarted);
             let text = if long {
                 format!(
                     "```text\n{}",
@@ -153,74 +147,53 @@ fn streaming_scroll_keeps_markdown_snapshot_and_long_position_while_pending() {
                     .map(|i| format!("- **line-{i:04}** `value`\n"))
                     .collect()
             };
-            let event = |text: String| {
-                if thinking {
-                    AgentEvent::ThinkingDelta { text }
-                } else {
-                    AgentEvent::AssistantDelta {
-                        text,
-                        refusal: false,
-                    }
-                }
-            };
-            transcript.progress(event(text));
-            wait_exact(&mut transcript, 60);
-            transcript.scroll_up(12);
-            let before = render(&mut transcript, 60, 8);
-            let offset = transcript.offset;
+            anchored.progress(event(&text));
+            wait_exact(&mut anchored, 60);
+            anchored.scroll_up(12);
+            let before = render(&mut anchored, 60, 8);
+            let offset = anchored.offset;
             let pause = worker.pause();
-            transcript.progress(event("new-tail\n".into()));
-            assert!(
-                !transcript.entries[0].render.exact,
-                "新分片立即撤销精确资格"
-            );
-            let pending = render(&mut transcript, 60, 8);
+            anchored.progress(event("new-tail\n"));
+            assert!(!anchored.entries[0].render.exact);
+            let pending = render(&mut anchored, 60, 8);
             pause.wait();
-            assert_eq!(before, pending, "等待后台时正文和样式应稳定");
-            assert_eq!(transcript.offset, offset);
-            assert!(
-                transcript.next_native_batch(60, 8, true).is_none(),
-                "旧快照不能提交原生历史"
-            );
+            assert_eq!(before, pending);
+            assert_eq!(anchored.offset, offset);
+            assert!(anchored.next_native_batch(60, 8, true).is_none());
             drop(pause);
-            assert_eq!(wait_exact(&mut transcript, 60), before);
-            assert_eq!(transcript.offset, offset);
-            transcript.scroll_down(usize::MAX);
-            assert!(transcript.following());
-            assert!(screen(&render(&mut transcript, 60, 8)).contains("new-tail"));
+            assert_eq!(wait_exact(&mut anchored, 60), before);
+            assert_eq!(anchored.offset, offset);
+            anchored.scroll_down(usize::MAX);
+            assert!(anchored.following());
+            assert!(screen(&render(&mut anchored, 60, 8)).contains("new-tail"));
         }
     }
-}
 
-#[test]
-fn streaming_scroll_anchors_entry_when_preceding_height_changes() {
-    let mut transcript = Transcript::new();
-    transcript.append("Note", "old\n".repeat(20).as_str());
-    transcript.append(
+    let mut height_shifted = Transcript::new();
+    height_shifted.append("Note", "old\n".repeat(20).as_str());
+    height_shifted.append(
         "Assistant",
         &(0..60)
             .map(|i| format!("line-{i:03}\n\n"))
             .collect::<String>(),
     );
-    render(&mut transcript, 60, 8);
-    transcript.scroll_up(12);
-    let before = render(&mut transcript, 60, 8);
-    let offset = transcript.offset;
-    transcript.entries[0].text.push_str(&"extra\n".repeat(30));
-    transcript.entries[0].layout = None;
-    assert_eq!(render(&mut transcript, 60, 8), before);
-    assert_eq!(transcript.offset, offset + 30);
-    transcript.scroll_up(3);
-    assert_ne!(render(&mut transcript, 60, 8), before);
-}
+    render(&mut height_shifted, 60, 8);
+    height_shifted.scroll_up(12);
+    let before = render(&mut height_shifted, 60, 8);
+    let offset = height_shifted.offset;
+    height_shifted.entries[0]
+        .text
+        .push_str(&"extra\n".repeat(30));
+    height_shifted.entries[0].layout = None;
+    assert_eq!(render(&mut height_shifted, 60, 8), before);
+    assert_eq!(height_shifted.offset, offset + 30);
+    height_shifted.scroll_up(3);
+    assert_ne!(render(&mut height_shifted, 60, 8), before);
 
-#[test]
-fn streaming_scroll_restores_requested_row_after_temporary_resize_preview() {
-    let worker = Worker::start().unwrap();
-    let mut transcript = Transcript::new();
-    transcript.progress(AgentEvent::AssistantStarted);
+    let mut resized = Transcript::new();
+    resized.progress(AgentEvent::AssistantStarted);
     delta(
-        &mut transcript,
+        &mut resized,
         &format!(
             "```text\n{}",
             (0..1200)
@@ -229,24 +202,24 @@ fn streaming_scroll_restores_requested_row_after_temporary_resize_preview() {
         ),
         false,
     );
-    wait_exact(&mut transcript, 60);
-    transcript.scroll_up(12);
-    let before = render(&mut transcript, 60, 8);
+    wait_exact(&mut resized, 60);
+    resized.scroll_up(12);
+    let before = render(&mut resized, 60, 8);
     let marker = screen(&before).lines().next().unwrap().trim().to_owned();
-    let offset = transcript.offset;
+    let offset = resized.offset;
     let pause = worker.pause();
-    transcript.resize_preserving_anchor(40);
-    render(&mut transcript, 40, 8);
+    resized.resize_preserving_anchor(40);
+    render(&mut resized, 40, 8);
     pause.wait();
     drop(pause);
-    let after = wait_exact(&mut transcript, 40);
+    let after = wait_exact(&mut resized, 40);
     assert_eq!(screen(&after).lines().next().unwrap().trim(), marker);
-    assert_eq!(transcript.offset, offset);
-    assert!(!transcript.following());
+    assert_eq!(resized.offset, offset);
+    assert!(!resized.following());
 }
 
 #[test]
-fn streaming_scroll_completed_old_snapshot_waits_for_latest_before_exit_commit() {
+fn streaming_scroll_commit_cancel_and_clamping() {
     let worker = Worker::start().unwrap();
     let mut transcript = Transcript::new();
     transcript.progress(AgentEvent::AssistantStarted);
@@ -267,63 +240,55 @@ fn streaming_scroll_completed_old_snapshot_waits_for_latest_before_exit_commit()
     rows.push_str(&native_rows(transcript.native.retained.make_contiguous()));
     assert!(rows.contains("new-tail"));
     assert!(!rows.contains("**"));
-}
 
-#[test]
-fn streaming_scroll_static_history_survives_live_output_cancel_and_reset() {
-    let worker = Worker::start().unwrap();
-    let mut transcript = Transcript::new();
-    transcript.append(
+    let mut cancelled = Transcript::new();
+    cancelled.append(
         "Note",
         &(0..100)
             .map(|i| format!("static-{i:03}\n"))
             .collect::<String>(),
     );
-    transcript.progress(AgentEvent::AssistantStarted);
-    delta(&mut transcript, &"- **live** `value`\n".repeat(1000), false);
-    wait_exact(&mut transcript, 60);
-    transcript.scroll_up(usize::MAX);
-    let before = render(&mut transcript, 60, 8);
+    cancelled.progress(AgentEvent::AssistantStarted);
+    delta(&mut cancelled, &"- **live** `value`\n".repeat(1000), false);
+    wait_exact(&mut cancelled, 60);
+    cancelled.scroll_up(usize::MAX);
+    let before = render(&mut cancelled, 60, 8);
     let pause = worker.pause();
-    delta(&mut transcript, "new-tail", false);
-    assert_eq!(render(&mut transcript, 60, 8), before);
+    delta(&mut cancelled, "new-tail", false);
+    assert_eq!(render(&mut cancelled, 60, 8), before);
     pause.wait();
-    transcript.cancel();
-    assert_eq!(render(&mut transcript, 60, 8), before);
+    cancelled.cancel();
+    assert_eq!(render(&mut cancelled, 60, 8), before);
     drop(pause);
-    assert_eq!(wait_exact(&mut transcript, 60), before);
-    transcript = transcript.fresh();
-    assert!(transcript.browse_anchor.is_none());
-    assert!(transcript.geometry.is_empty());
-    assert!(transcript.following());
-    assert!(!screen(&render(&mut transcript, 60, 8)).contains("static-"));
-}
+    assert_eq!(wait_exact(&mut cancelled, 60), before);
+    cancelled = cancelled.fresh();
+    assert!(cancelled.browse_anchor.is_none());
+    assert!(cancelled.geometry.is_empty());
+    assert!(cancelled.following());
+    assert!(!screen(&render(&mut cancelled, 60, 8)).contains("static-"));
 
-#[test]
-fn streaming_scroll_clamps_replaced_body_only_after_exact_layout() {
-    let worker = Worker::start().unwrap();
-    let mut transcript = Transcript::new();
-    transcript.progress(AgentEvent::AssistantStarted);
-    delta(&mut transcript, &"- **old**\n".repeat(100), false);
-    wait_exact(&mut transcript, 60);
-    transcript.scroll_up(12);
-    render(&mut transcript, 60, 8);
-    let requested = transcript.browse_anchor.unwrap().row;
+    let mut clamped = Transcript::new();
+    clamped.progress(AgentEvent::AssistantStarted);
+    delta(&mut clamped, &"- **old**\n".repeat(100), false);
+    wait_exact(&mut clamped, 60);
+    clamped.scroll_up(12);
+    render(&mut clamped, 60, 8);
+    let requested = clamped.browse_anchor.unwrap().row;
     let pause = worker.pause();
-    transcript.progress(AgentEvent::AssistantFinished {
+    clamped.progress(AgentEvent::AssistantFinished {
         text: "**replacement**".into(),
     });
-    let preview = render(&mut transcript, 60, 8);
+    let preview = render(&mut clamped, 60, 8);
     pause.wait();
     assert!(!screen(&preview).contains("old"));
-    assert_eq!(transcript.browse_anchor.unwrap().row, requested);
+    assert_eq!(clamped.browse_anchor.unwrap().row, requested);
     drop(pause);
-    wait_exact(&mut transcript, 60);
-    assert_eq!(transcript.browse_anchor.unwrap().row, 1);
-    transcript.append("Note", "more history\n".repeat(100).as_str());
-    render(&mut transcript, 60, 8);
-    assert_eq!(transcript.offset, 1);
-    assert!(!transcript.following());
+    wait_exact(&mut clamped, 60);
+    assert_eq!(clamped.browse_anchor.unwrap().row, 1);
+    clamped.append("Note", "more history\n".repeat(100).as_str());
+    render(&mut clamped, 60, 8);
+    assert_eq!(clamped.offset, 1);
+    assert!(!clamped.following());
 }
 
 fn render_native(transcript: &mut Transcript, width: u16, height: u16) -> Buffer {

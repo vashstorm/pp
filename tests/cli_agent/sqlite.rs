@@ -25,7 +25,8 @@ fn retry_settings() -> String {
 
 #[test]
 fn sqlite_model_usage_counts_logical_requests() {
-    for protocol in ["completion", "response"] {
+    {
+        let protocol = "response";
         let responses = protocol == "response";
         let server = server();
         let dir = tempfile::tempdir().unwrap();

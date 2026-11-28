@@ -260,404 +260,392 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_invalid_json_without_echo() {
-        for input in ["", "not json", "{}", "[]", r#"{"questions":{}}"#] {
-            let message = AskArgs::parse(input).expect_err("must fail").to_string();
-            assert_eq!(message, "invalid ask arguments", "input: {input}");
-        }
-        let schema = definition().parameters.unwrap();
-        assert!(
-            schema
-                .pointer("/properties/questions/items/properties/recommended")
-                .is_some()
-        );
-        assert!(
+    fn ask_parse_validation_and_recommendation_normalization() {
+        {
+            for input in ["", "not json", "{}", "[]", r#"{"questions":{}}"#] {
+                let message = AskArgs::parse(input).expect_err("must fail").to_string();
+                assert_eq!(message, "invalid ask arguments", "input: {input}");
+            }
+            let schema = definition().parameters.unwrap();
+            assert!(
+                schema
+                    .pointer("/properties/questions/items/properties/recommended")
+                    .is_some()
+            );
+            assert!(
             schema
                 .pointer(
                     "/properties/questions/items/properties/options/items/properties/recommended"
                 )
                 .is_none()
         );
-    }
-
-    #[test]
-    fn parse_rejects_unknown_fields() {
-        let message = AskArgs::parse(r#"{"questions":[],"extra":1}"#)
-            .expect_err("must fail")
-            .to_string();
-        assert_eq!(message, "invalid ask arguments");
-    }
-
-    #[test]
-    fn parse_normalizes_provider_recommendations_and_preserves_content() {
-        let cases = [
-            (
-                json!([{"label":" A "},{"label":"B"},{"label":"C"}]),
-                Some(json!(1)),
-                Some(1),
-            ),
-            (
-                json!([{"label":" A ","recommended":false},{"label":"B","recommended":true},{"label":"C"}]),
-                None,
-                Some(1),
-            ),
-            (
-                json!([{"label":" A ","recommended":2},{"label":"B"},{"label":"C"}]),
-                None,
-                Some(2),
-            ),
-            (
-                json!([{"label":" A ","recommended":"2"},{"label":"B"},{"label":"C"}]),
-                None,
-                Some(2),
-            ),
-            (json!([" A ", "B", "C"]), Some(json!("1")), Some(1)),
-            (
-                json!([{"label":" A ","recommended":false},{"label":"B","recommended":null},{"label":"C"}]),
-                Some(json!(null)),
-                None,
-            ),
-            (
-                json!([{"label":" A "},{"label":"B","recommended":true},{"label":"C"}]),
-                Some(json!(1)),
-                Some(1),
-            ),
-        ];
-        for (options, hint, expected) in cases {
-            let mut question =
-                json!({"id":"choice","question":"完整问题？","multi":null,"options":options});
-            if let Some(hint) = hint {
-                question["recommended"] = hint;
+        }
+        {
+            let message = AskArgs::parse(r#"{"questions":[],"extra":1}"#)
+                .expect_err("must fail")
+                .to_string();
+            assert_eq!(message, "invalid ask arguments");
+        }
+        {
+            let cases = [
+                (
+                    json!([{"label":" A "},{"label":"B"},{"label":"C"}]),
+                    Some(json!(1)),
+                    Some(1),
+                ),
+                (
+                    json!([{"label":" A ","recommended":false},{"label":"B","recommended":true},{"label":"C"}]),
+                    None,
+                    Some(1),
+                ),
+                (
+                    json!([{"label":" A ","recommended":2},{"label":"B"},{"label":"C"}]),
+                    None,
+                    Some(2),
+                ),
+                (
+                    json!([{"label":" A ","recommended":"2"},{"label":"B"},{"label":"C"}]),
+                    None,
+                    Some(2),
+                ),
+                (json!([" A ", "B", "C"]), Some(json!("1")), Some(1)),
+                (
+                    json!([{"label":" A ","recommended":false},{"label":"B","recommended":null},{"label":"C"}]),
+                    Some(json!(null)),
+                    None,
+                ),
+                (
+                    json!([{"label":" A "},{"label":"B","recommended":true},{"label":"C"}]),
+                    Some(json!(1)),
+                    Some(1),
+                ),
+            ];
+            for (options, hint, expected) in cases {
+                let mut question =
+                    json!({"id":"choice","question":"完整问题？","multi":null,"options":options});
+                if let Some(hint) = hint {
+                    question["recommended"] = hint;
+                }
+                let input = json!({"questions":[question]}).to_string();
+                // 同时覆盖普通参数与 provider 再次编码成 JSON 字符串的参数。
+                for input in [input.clone(), serde_json::to_string(&input).unwrap()] {
+                    let args = AskArgs::parse(&input).unwrap();
+                    let question = &args.questions[0];
+                    assert_eq!(question.recommended, expected);
+                    assert_eq!(question.question, "完整问题？");
+                    assert!(!question.multi);
+                    assert_eq!(
+                        question
+                            .options
+                            .iter()
+                            .map(|option| option.label.as_str())
+                            .collect::<Vec<_>>(),
+                        [" A ", "B", "C"]
+                    );
+                    let canonical = serde_json::to_string(&args).unwrap();
+                    assert_eq!(
+                        serde_json::to_string(&AskArgs::parse(&canonical).unwrap()).unwrap(),
+                        canonical
+                    );
+                }
             }
-            let input = json!({"questions":[question]}).to_string();
-            // 同时覆盖普通参数与 provider 再次编码成 JSON 字符串的参数。
-            for input in [input.clone(), serde_json::to_string(&input).unwrap()] {
-                let args = AskArgs::parse(&input).unwrap();
-                let question = &args.questions[0];
-                assert_eq!(question.recommended, expected);
-                assert_eq!(question.question, "完整问题？");
-                assert!(!question.multi);
+        }
+        {
+            for input in [
+                r#"{"questions":[{"id":"a","question":"t","options":[],"options":[]}]}"#,
+                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x","label":"y"}]}]}"#,
+                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x","recommended":true,"recommended":false}]}]}"#,
+                r#"{"questions":[],"questions":[]}"#,
+            ] {
                 assert_eq!(
-                    question
-                        .options
-                        .iter()
-                        .map(|option| option.label.as_str())
-                        .collect::<Vec<_>>(),
-                    [" A ", "B", "C"]
-                );
-                let canonical = serde_json::to_string(&args).unwrap();
-                assert_eq!(
-                    serde_json::to_string(&AskArgs::parse(&canonical).unwrap()).unwrap(),
-                    canonical
+                    AskArgs::parse(input).unwrap_err().to_string(),
+                    "invalid ask arguments"
                 );
             }
         }
-    }
-
-    #[test]
-    fn parse_keeps_rejecting_duplicate_fields() {
-        for input in [
-            r#"{"questions":[{"id":"a","question":"t","options":[],"options":[]}]}"#,
-            r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x","label":"y"}]}]}"#,
-            r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x","recommended":true,"recommended":false}]}]}"#,
-            r#"{"questions":[],"questions":[]}"#,
-        ] {
+        {
+            let cases = [
+                (
+                    json!({"options":[{"label":"A","recommended":true},{"label":"B","recommended":true}]}),
+                    "conflicting ask recommended hints",
+                ),
+                (
+                    json!({"recommended":0,"options":[{"label":"A"},{"label":"B","recommended":true}]}),
+                    "conflicting ask recommended hints",
+                ),
+                (
+                    json!({"options":[{"label":"A","recommended":9}]}),
+                    "ask recommended index is out of range",
+                ),
+                (
+                    json!({"options":[{"label":"A","recommended":"private-value"}]}),
+                    "invalid ask recommended index",
+                ),
+                (
+                    json!({"recommended":"-1","options":["A"]}),
+                    "invalid ask recommended index",
+                ),
+                (
+                    json!({"recommended":"9999999999999999999999999999999","options":["A"]}),
+                    "invalid ask recommended index",
+                ),
+                (
+                    json!({"recommended":true,"options":["A"]}),
+                    "invalid ask arguments",
+                ),
+                (
+                    json!({"options":[{"label":"A","private-field":true}]}),
+                    "invalid ask arguments",
+                ),
+            ];
+            for (mut question, expected) in cases {
+                question["id"] = json!("private-id");
+                question["question"] = json!("private-question");
+                let input = json!({"questions":[question]}).to_string();
+                assert_eq!(AskArgs::parse(&input).unwrap_err().to_string(), expected);
+            }
+            let valid = r#"{"questions":[{"id":"a","question":"t","options":[]}]}"#;
+            let twice = serde_json::to_string(valid).unwrap();
+            let triple = serde_json::to_string(&twice).unwrap();
             assert_eq!(
-                AskArgs::parse(input).unwrap_err().to_string(),
+                AskArgs::parse(&triple).unwrap_err().to_string(),
                 "invalid ask arguments"
             );
         }
-    }
-
-    #[test]
-    fn parse_rejects_conflicting_recommendations_and_invalid_shapes_without_echo() {
-        let cases = [
-            (
-                json!({"options":[{"label":"A","recommended":true},{"label":"B","recommended":true}]}),
-                "conflicting ask recommended hints",
-            ),
-            (
-                json!({"recommended":0,"options":[{"label":"A"},{"label":"B","recommended":true}]}),
-                "conflicting ask recommended hints",
-            ),
-            (
-                json!({"options":[{"label":"A","recommended":9}]}),
-                "ask recommended index is out of range",
-            ),
-            (
-                json!({"options":[{"label":"A","recommended":"private-value"}]}),
-                "invalid ask recommended index",
-            ),
-            (
-                json!({"recommended":"-1","options":["A"]}),
-                "invalid ask recommended index",
-            ),
-            (
-                json!({"recommended":"9999999999999999999999999999999","options":["A"]}),
-                "invalid ask recommended index",
-            ),
-            (
-                json!({"recommended":true,"options":["A"]}),
-                "invalid ask arguments",
-            ),
-            (
-                json!({"options":[{"label":"A","private-field":true}]}),
-                "invalid ask arguments",
-            ),
-        ];
-        for (mut question, expected) in cases {
-            question["id"] = json!("private-id");
-            question["question"] = json!("private-question");
-            let input = json!({"questions":[question]}).to_string();
-            assert_eq!(AskArgs::parse(&input).unwrap_err().to_string(), expected);
-        }
-        let valid = r#"{"questions":[{"id":"a","question":"t","options":[]}]}"#;
-        let twice = serde_json::to_string(valid).unwrap();
-        let triple = serde_json::to_string(&twice).unwrap();
-        assert_eq!(
-            AskArgs::parse(&triple).unwrap_err().to_string(),
-            "invalid ask arguments"
-        );
-    }
-
-    #[test]
-    fn parse_accepts_valid_shapes() {
-        let cases = [
-            (
-                r#"{"questions":[{"id":"free","question":"Anything to add?","options":[]}]}"#,
-                vec![Vec::new()],
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"}]},
-                                  {"id":"b","question":"u","options":[{"label":"x"}]}]}"#,
-                vec![vec!["x"], vec!["x"]],
-            ),
-        ];
-        for (input, expected) in cases {
-            let args = AskArgs::parse(input).expect("valid ask arguments");
-            let labels = args
-                .questions
-                .iter()
-                .map(|question| {
-                    question
-                        .options
-                        .iter()
-                        .map(|option| option.label.as_str())
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(labels, expected, "input: {input}");
-        }
-    }
-
-    #[test]
-    fn parse_rejects_semantic_violations() {
-        let cases: [(&str, &str); 9] = [
-            (r#"{"questions":[]}"#, "ask requires at least one question"),
-            (
-                r#"{"questions":[{"id":" ","question":"t","options":[]}]}"#,
-                "ask question id must not be blank",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"  ","options":[]}]}"#,
-                "ask question text must not be blank",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"  "}]}]}"#,
-                "ask option label must not be blank",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[]},{"id":"a","question":"u","options":[]}]}"#,
-                "duplicate ask question id",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"},{"label":"x"}]}]}"#,
-                "duplicate ask option label",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"Other (type your own)"}]}]}"#,
-                "ask option label is reserved",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"}],"recommended":1}]}"#,
-                "ask recommended index is out of range",
-            ),
-            (
-                r#"{"questions":[{"id":"a","question":"t","options":[],"recommended":0}]}"#,
-                "ask recommended index is out of range",
-            ),
-        ];
-        for (input, expected) in cases {
-            let message = AskArgs::parse(input).expect_err("must fail").to_string();
-            assert_eq!(message, expected, "input: {input}");
-        }
-    }
-
-    #[test]
-    fn validate_answers_accepts_valid_shapes() {
-        let mut empty_multi = AskArgs {
-            questions: vec![question("checks", "Run what?", vec![option("unit")])],
-        };
-        empty_multi.questions[0].multi = true;
-        let custom_only = AskArgs {
-            questions: vec![question("free", "Notes?", vec![option("x")])],
-        };
-        let mut out_of_order = AskArgs {
-            questions: vec![
-                question(
-                    "storage",
-                    "Which storage?",
-                    vec![option("SQLite"), option("Postgres")],
+        {
+            let cases = [
+                (
+                    r#"{"questions":[{"id":"free","question":"Anything to add?","options":[]}]}"#,
+                    vec![Vec::new()],
                 ),
-                question("checks", "Run what?", vec![option("unit"), option("lint")]),
-                question("free", "Notes?", vec![]),
-            ],
-        };
-        out_of_order.questions[1].multi = true;
-        let cases: [(AskArgs, Vec<AskAnswer>, &str); 3] = [
-            (
-                empty_multi,
-                vec![answer("checks", &[], None)],
-                "empty multi",
-            ),
-            (
-                custom_only,
-                vec![answer("free", &[], Some("my own"))],
-                "custom-only single",
-            ),
-            (
-                out_of_order,
-                vec![
-                    answer("checks", &["lint", "unit"], Some("再检查中文")),
-                    answer("storage", &["Postgres"], None),
-                    answer("free", &[], Some("user text")),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"}]},
+                                  {"id":"b","question":"u","options":[{"label":"x"}]}]}"#,
+                    vec![vec!["x"], vec!["x"]],
+                ),
+            ];
+            for (input, expected) in cases {
+                let args = AskArgs::parse(input).expect("valid ask arguments");
+                let labels = args
+                    .questions
+                    .iter()
+                    .map(|question| {
+                        question
+                            .options
+                            .iter()
+                            .map(|option| option.label.as_str())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(labels, expected, "input: {input}");
+            }
+        }
+        {
+            let cases: [(&str, &str); 9] = [
+                (r#"{"questions":[]}"#, "ask requires at least one question"),
+                (
+                    r#"{"questions":[{"id":" ","question":"t","options":[]}]}"#,
+                    "ask question id must not be blank",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"  ","options":[]}]}"#,
+                    "ask question text must not be blank",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[{"label":"  "}]}]}"#,
+                    "ask option label must not be blank",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[]},{"id":"a","question":"u","options":[]}]}"#,
+                    "duplicate ask question id",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"},{"label":"x"}]}]}"#,
+                    "duplicate ask option label",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[{"label":"Other (type your own)"}]}]}"#,
+                    "ask option label is reserved",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"}],"recommended":1}]}"#,
+                    "ask recommended index is out of range",
+                ),
+                (
+                    r#"{"questions":[{"id":"a","question":"t","options":[],"recommended":0}]}"#,
+                    "ask recommended index is out of range",
+                ),
+            ];
+            for (input, expected) in cases {
+                let message = AskArgs::parse(input).expect_err("must fail").to_string();
+                assert_eq!(message, expected, "input: {input}");
+            }
+        }
+    }
+
+    #[test]
+    fn ask_answers_validation_and_canonical_ordering() {
+        {
+            let mut empty_multi = AskArgs {
+                questions: vec![question("checks", "Run what?", vec![option("unit")])],
+            };
+            empty_multi.questions[0].multi = true;
+            let custom_only = AskArgs {
+                questions: vec![question("free", "Notes?", vec![option("x")])],
+            };
+            let mut out_of_order = AskArgs {
+                questions: vec![
+                    question(
+                        "storage",
+                        "Which storage?",
+                        vec![option("SQLite"), option("Postgres")],
+                    ),
+                    question("checks", "Run what?", vec![option("unit"), option("lint")]),
+                    question("free", "Notes?", vec![]),
                 ],
-                "out-of-order content",
-            ),
-        ];
-        for (args, answers, shape) in cases {
-            args.validate_answers(&answers).expect(shape);
+            };
+            out_of_order.questions[1].multi = true;
+            let cases: [(AskArgs, Vec<AskAnswer>, &str); 3] = [
+                (
+                    empty_multi,
+                    vec![answer("checks", &[], None)],
+                    "empty multi",
+                ),
+                (
+                    custom_only,
+                    vec![answer("free", &[], Some("my own"))],
+                    "custom-only single",
+                ),
+                (
+                    out_of_order,
+                    vec![
+                        answer("checks", &["lint", "unit"], Some("再检查中文")),
+                        answer("storage", &["Postgres"], None),
+                        answer("free", &[], Some("user text")),
+                    ],
+                    "out-of-order content",
+                ),
+            ];
+            for (args, answers, shape) in cases {
+                args.validate_answers(&answers).expect(shape);
+            }
         }
-    }
-
-    #[test]
-    fn validate_answers_rejects_violations() {
-        let base = |questions: Vec<AskQuestion>| AskArgs { questions };
-        let single = || {
-            let mut q = question(
-                "storage",
-                "Which?",
-                vec![option("SQLite"), option("Postgres")],
-            );
-            q.recommended = Some(0);
-            vec![q]
-        };
-        let multi = || {
-            let mut q = question("checks", "Run?", vec![option("unit"), option("lint")]);
-            q.multi = true;
-            vec![q]
-        };
-        let cases: [(AskArgs, Vec<AskAnswer>, &str); 10] = [
-            (base(single()), vec![], "invalid ask response"),
-            (
-                base(single()),
-                vec![answer("bogus", &["SQLite"], None)],
-                "invalid ask response",
-            ),
-            (
-                base(vec![question("a", "t", vec![])]),
-                vec![answer("a", &[], Some("x")), answer("a", &[], Some("y"))],
-                "invalid ask response",
-            ),
-            (
-                base(vec![question("a", "t", vec![]), question("b", "u", vec![])]),
-                vec![answer("a", &[], Some("x")), answer("a", &[], Some("y"))],
-                "invalid ask response",
-            ),
-            (
-                base(single()),
-                vec![answer("storage", &["Nope"], None)],
-                "invalid ask response",
-            ),
-            (
-                base(single()),
-                vec![answer("storage", &["SQLite", "Postgres"], None)],
-                "invalid ask response",
-            ),
-            (
-                base(single()),
-                vec![answer("storage", &["SQLite"], Some("also this"))],
-                "invalid ask response",
-            ),
-            (
-                base(single()),
-                vec![answer("storage", &[], None)],
-                "invalid ask response",
-            ),
-            (
-                base(multi()),
-                vec![answer("checks", &["unit", "unit"], None)],
-                "invalid ask response",
-            ),
-            (
-                base(multi()),
-                vec![answer("checks", &["unit"], Some("   "))],
-                "invalid ask response",
-            ),
-        ];
-        for (args, answers, expected) in cases {
-            let message = err(args.validate_answers(&answers));
-            assert_eq!(message, expected);
-        }
-    }
-
-    #[test]
-    fn canonicalize_answers_restores_prescribed_order() {
-        let mut args = AskArgs {
-            questions: vec![
-                question(
+        {
+            let base = |questions: Vec<AskQuestion>| AskArgs { questions };
+            let single = || {
+                let mut q = question(
                     "storage",
                     "Which?",
                     vec![option("SQLite"), option("Postgres")],
+                );
+                q.recommended = Some(0);
+                vec![q]
+            };
+            let multi = || {
+                let mut q = question("checks", "Run?", vec![option("unit"), option("lint")]);
+                q.multi = true;
+                vec![q]
+            };
+            let cases: [(AskArgs, Vec<AskAnswer>, &str); 10] = [
+                (base(single()), vec![], "invalid ask response"),
+                (
+                    base(single()),
+                    vec![answer("bogus", &["SQLite"], None)],
+                    "invalid ask response",
                 ),
-                question("free", "Notes?", vec![]),
-                question(
-                    "checks",
-                    "Run?",
-                    vec![option("lint"), option("unit"), option("docs")],
+                (
+                    base(vec![question("a", "t", vec![])]),
+                    vec![answer("a", &[], Some("x")), answer("a", &[], Some("y"))],
+                    "invalid ask response",
                 ),
-                question(
-                    "labels",
-                    "Which label?",
-                    vec![option("  spaced  "), option("中文 label")],
+                (
+                    base(vec![question("a", "t", vec![]), question("b", "u", vec![])]),
+                    vec![answer("a", &[], Some("x")), answer("a", &[], Some("y"))],
+                    "invalid ask response",
                 ),
-            ],
-        };
-        args.questions[2].multi = true;
-        args.questions[3].multi = true;
-        let answers = vec![
-            answer("labels", &["中文 label", "  spaced  "], None),
-            answer("checks", &["docs", "unit", "lint"], None),
-            answer("storage", &["Postgres"], None),
-            answer("free", &[], Some("再检查中文")),
-        ];
-        args.validate_answers(&answers).expect("valid content");
-        let ordered = args.canonicalize_answers(answers);
-        assert_eq!(ordered[0].id, "storage");
-        assert_eq!(ordered[0].selected_options, vec!["Postgres".to_string()]);
-        assert_eq!(ordered[1].id, "free");
-        assert_eq!(ordered[1].custom_input.as_deref(), Some("再检查中文"));
-        assert_eq!(ordered[2].id, "checks");
-        assert_eq!(
-            ordered[2].selected_options,
-            vec!["lint".to_string(), "unit".to_string(), "docs".to_string()]
-        );
-        // 前后空格与中文 label 原样保留，只按选项声明顺序重排。
-        assert_eq!(ordered[3].id, "labels");
-        assert_eq!(
-            ordered[3].selected_options,
-            vec!["  spaced  ".to_string(), "中文 label".to_string()]
-        );
+                (
+                    base(single()),
+                    vec![answer("storage", &["Nope"], None)],
+                    "invalid ask response",
+                ),
+                (
+                    base(single()),
+                    vec![answer("storage", &["SQLite", "Postgres"], None)],
+                    "invalid ask response",
+                ),
+                (
+                    base(single()),
+                    vec![answer("storage", &["SQLite"], Some("also this"))],
+                    "invalid ask response",
+                ),
+                (
+                    base(single()),
+                    vec![answer("storage", &[], None)],
+                    "invalid ask response",
+                ),
+                (
+                    base(multi()),
+                    vec![answer("checks", &["unit", "unit"], None)],
+                    "invalid ask response",
+                ),
+                (
+                    base(multi()),
+                    vec![answer("checks", &["unit"], Some("   "))],
+                    "invalid ask response",
+                ),
+            ];
+            for (args, answers, expected) in cases {
+                let message = err(args.validate_answers(&answers));
+                assert_eq!(message, expected);
+            }
+        }
+        {
+            let mut args = AskArgs {
+                questions: vec![
+                    question(
+                        "storage",
+                        "Which?",
+                        vec![option("SQLite"), option("Postgres")],
+                    ),
+                    question("free", "Notes?", vec![]),
+                    question(
+                        "checks",
+                        "Run?",
+                        vec![option("lint"), option("unit"), option("docs")],
+                    ),
+                    question(
+                        "labels",
+                        "Which label?",
+                        vec![option("  spaced  "), option("中文 label")],
+                    ),
+                ],
+            };
+            args.questions[2].multi = true;
+            args.questions[3].multi = true;
+            let answers = vec![
+                answer("labels", &["中文 label", "  spaced  "], None),
+                answer("checks", &["docs", "unit", "lint"], None),
+                answer("storage", &["Postgres"], None),
+                answer("free", &[], Some("再检查中文")),
+            ];
+            args.validate_answers(&answers).expect("valid content");
+            let ordered = args.canonicalize_answers(answers);
+            assert_eq!(ordered[0].id, "storage");
+            assert_eq!(ordered[0].selected_options, vec!["Postgres".to_string()]);
+            assert_eq!(ordered[1].id, "free");
+            assert_eq!(ordered[1].custom_input.as_deref(), Some("再检查中文"));
+            assert_eq!(ordered[2].id, "checks");
+            assert_eq!(
+                ordered[2].selected_options,
+                vec!["lint".to_string(), "unit".to_string(), "docs".to_string()]
+            );
+            // 前后空格与中文 label 原样保留，只按选项声明顺序重排。
+            assert_eq!(ordered[3].id, "labels");
+            assert_eq!(
+                ordered[3].selected_options,
+                vec!["  spaced  ".to_string(), "中文 label".to_string()]
+            );
+        }
     }
 }
 

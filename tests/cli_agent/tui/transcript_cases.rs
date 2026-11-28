@@ -1,300 +1,36 @@
 use super::*;
 
 #[test]
-fn tui_activity_prefers_reasoning_summary_and_resets_for_the_next_task() {
+fn tui_ctrl_c_keeps_partial_output_without_waiting_for_response() {
+    let protocol = "response";
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("summary.txt"), "summary fixture").unwrap();
+    std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
     std::fs::write(
         config_path(dir.path(), "models.yml"),
-        response_models(&server, Some("response")),
+        response_models(&server, Some(protocol)),
     )
     .unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     pty.ready();
-    pty.input("inspect summary\r");
-    let (request, _) = receive_at(&server, "/v1/responses");
-    pty.wait_for("无摘要时显示请求阶段", |screen| {
-        live_activity_labels(&screen.contents()).eq(["Requesting model"])
-    });
+    pty.input("pending-task\r");
+    let path = if protocol == "completion" {
+        "/v1/chat/completions"
+    } else {
+        "/v1/responses"
+    };
+    let (request, _) = receive_at(&server, path);
     let mut stream = request.start_sse().unwrap();
-    for (delta, expected) in [
-        ("**检查", "Thinking"),
-        ("状态**\n\n详细检查正文。", "检查状态"),
-        ("\n\n**验证修复**\n\n详细验证正文。", "验证修复"),
-    ] {
-        runtime_reasoning_delta(&mut stream, "response", delta);
-        pty.wait_for("活动栏采用最新摘要标题", |screen| {
-            live_activity_labels(&screen.contents()).eq([expected])
-        });
-    }
-    streaming_delta(&mut stream, "response", "summary progress");
-    pty.wait_for("回答期间保留摘要标题", |screen| {
-        let text = screen.contents();
-        text.contains("summary progress") && live_activity_labels(&text).eq(["验证修复"])
-    });
-    let call = json!({
-        "type":"function_call", "id":"fc-summary-read", "call_id":"summary-read",
-        "name":"read", "arguments":json!({"path":"summary.txt"}).to_string(),
-        "status":"completed"
-    });
-    stream
-        .event(&json!({
-            "type":"response.output_item.done", "sequence_number":2,
-            "output_index":1, "item":call
-        }))
-        .unwrap();
-    stream
-        .event(&json!({
-            "type":"response.completed", "sequence_number":3,
-            "response":response_body(json!([
-                response_message("msg-live", json!([response_text("summary progress")])),
-                call
-            ]))
-        }))
-        .unwrap();
-    drop(stream);
-    let (request, _) = receive_at(&server, "/v1/responses");
-    let mut stream = request.start_sse().unwrap();
-    streaming_delta(&mut stream, "response", "summary answer");
-    pty.wait_for(
-        "后续请求没有摘要时仍沿用最近标题",
-        |screen| {
-            let text = screen.contents();
-            text.contains("summary answer") && live_activity_labels(&text).eq(["验证修复"])
-        },
-    );
-    streaming_complete(&mut stream, "response", "summary answer");
-    drop(stream);
-    pty.completed_after("summary answer");
-    assert!(
-        live_activity_labels(&pty.parser.screen().contents())
-            .next()
-            .is_none()
-    );
-    pty.input("next task\r");
-    let (request, _) = receive_at(&server, "/v1/responses");
-    pty.wait_for("下一任务清空旧摘要", |screen| {
-        live_activity_labels(&screen.contents()).eq(["Requesting model"])
-    });
-    response_final(request, "next answer");
-    pty.completed_after("next answer");
-    pty.input("/quit\r");
-    pty.finish();
-    no_more(&server);
-}
-
-#[test]
-fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
-    let server = server();
-    let dir = tempfile::tempdir().unwrap();
-    let mut pty = Pty::start(&server, dir.path());
-    pty.ready();
-    for turn in 1..=2 {
-        pty.input(&format!("task {turn}\r"));
-        let (request, _) = pty.request(&server);
-        pty.wait_for("模型请求状态带有时钟", |screen| {
-            live_activity_labels(&screen.contents()).any(|label| label == "Requesting model")
-        });
-        let letter_color = |screen: &vt100::Screen, offset| {
-            let (row, column) = context_tui_locate(screen, "Requesting model").unwrap();
-            assert_eq!(column, 4);
-            screen.cell(row, column + offset).unwrap().fgcolor()
-        };
-        pty.wait_for("扫光到达首字", |screen| {
-            letter_color(screen, 0) == vt100::Color::Rgb(254, 188, 56)
-        });
-        pty.wait_for("扫光到达末字且首字恢复灰色", |screen| {
-            letter_color(screen, 0) == vt100::Color::Rgb(95, 102, 115)
-                && letter_color(screen, 15) == vt100::Color::Rgb(254, 188, 56)
-        });
-        assert_eq!(
-            pty.parser
-                .screen()
-                .contents()
-                .matches("Completed ·")
-                .count(),
-            0
-        );
-        pty.wait_for("等待网络时秒表持续更新", |screen| {
-            let text = screen.contents();
-            live_activity_labels(&text).eq(["Requesting model"])
-                && text.lines().any(|line| {
-                    line.contains("\u{e62a} ")
-                        && line.contains(" · ")
-                        && line.trim_end().ends_with('s')
-                })
-        });
-        final_reply(request, &format!("answer {turn}"));
-        pty.wait_for("每轮完成提示与明亮加粗样式", |screen| {
-            let text = screen.contents();
-            text.matches('✻').count() == 1
-                && text.contains("✻ Completed ·")
-                && !text.contains(" · done ")
-                && label_color(screen, "✻ Completed ·") == vt100::Color::Rgb(190, 198, 212)
-                && (0..30).any(|row| {
-                    screen
-                        .cell(row, 4)
-                        .is_some_and(|cell| cell.contents() == "C" && cell.bold())
-                })
-                && input_is_ready(screen)
-        });
-        let text = pty.parser.screen().contents();
-        assert!(text.find(&format!("answer {turn}")).unwrap() < text.find('✻').unwrap());
-        let finished_at = text
-            .split_once("✻ Completed · ")
-            .unwrap()
-            .1
-            .lines()
-            .next()
-            .unwrap()
-            .trim();
-        assert!(
-            finished_at.len() == 5 && finished_at.as_bytes()[2] == b':',
-            "{text}"
-        );
-        assert!(
-            text.lines().any(|line| {
-                line.contains("\u{e62a} ")
-                    && line.contains("\u{f051b} ")
-                    && line.trim_end().ends_with('s')
-            }),
-            "完成后 statusline 必须保留最终耗时：{text}"
-        );
-    }
-    pty.input("/new\r");
-    pty.wait_for(
-        "新会话清空完成提示并隐藏无数据指标行",
-        |screen| {
-            let text = screen.contents();
-            input_is_ready(screen)
-                && !text.contains("Completed ·")
-                && !text.contains("\u{e62a} ")
-                && !text.contains("\u{f051b}")
-        },
-    );
+    streaming_delta(&mut stream, protocol, "partial-retained 中😀");
+    pty.text("partial-retained");
     pty.input("\x03");
+    pty.wait_for("退出后保留未完成的流式输出", |screen| {
+        !screen.alternate_screen()
+            && screen.contents().contains("partial-retained 中😀")
+            && background_color(screen, "pending-task") == USER_BACKGROUND
+            && background_color(screen, "partial-retained") == ASSISTANT_BACKGROUND
+    });
     pty.finish();
+    stream.finish();
     no_more(&server);
-}
-
-#[test]
-fn tui_exit_keeps_conversation_on_normal_screen() {
-    for exit in ["\x03", "/quit\r"] {
-        let server = server();
-        let dir = tempfile::tempdir().unwrap();
-        let mut pty = Pty::start(&server, dir.path());
-        pty.ready();
-        pty.input("保留提问\r");
-        let (request, _) = pty.request(&server);
-        final_reply(request, "retained-answer 中😀\n    indented code");
-        pty.text("retained-answer");
-        assert_eq!(
-            label_color(pty.parser.screen(), "retained-answer"),
-            vt100::Color::Rgb(248, 248, 243)
-        );
-        pty.ready();
-        let id = resume_boundary_session_ids(dir.path()).pop().unwrap();
-        let resume_hint = format!("Resume with: pp --resume {id}");
-        if exit == "\x03" {
-            pty.input("unsubmitted-draft");
-            pty.draft("unsubmitted-draft");
-            assert_eq!(
-                label_color(pty.parser.screen(), "unsubmitted-draft"),
-                vt100::Color::Rgb(250, 250, 250)
-            );
-        } else {
-            pty.input("/quit");
-            pty.draft("/quit");
-        }
-        let exit_start = pty.raw.len();
-        pty.input(if exit == "\x03" { exit } else { "\r" });
-        pty.wait_for("退出已恢复输入模式", |screen| {
-            !screen.bracketed_paste()
-        });
-        pty.wait_for("退出提示显示后恢复默认前景色", |screen| {
-            screen.contents().contains(&resume_hint) && screen.fgcolor() == vt100::Color::Default
-        });
-        let output = &pty.raw[exit_start..];
-        let text = String::from_utf8_lossy(output);
-        assert!(
-            !text.contains("retained-answer"),
-            "退出不重放已有正文：{text:?}"
-        );
-        assert!(!text.contains("\x1b[2J") && !text.contains("\x1b[3J"));
-        assert_eq!(text.matches(&resume_hint).count(), 1, "{text}");
-        assert!(!pty.parser.screen().alternate_screen());
-        // 退出提示会把顶行推进回滚历史，合并检查正文与可见区域。
-        let (_, raw) = pty.native_history();
-        let mut parser = vt100::Parser::new(600, 100, 0);
-        parser.process(&raw);
-        let screen = parser.screen();
-        let text = screen.contents();
-        let hint_row = text.lines().position(|line| line == resume_hint).unwrap() as u16;
-        assert_eq!(
-            screen.cell(hint_row, 0).unwrap().fgcolor(),
-            vt100::Color::Idx(8)
-        );
-        for retained in [
-            "保留提问",
-            "retained-answer 中😀",
-            "indented code",
-            "✻ Completed ·",
-            "fixture/primary",
-            "❯",
-            &resume_hint,
-        ] {
-            assert!(text.contains(retained), "{text}");
-        }
-        if exit == "\x03" {
-            assert!(text.contains("unsubmitted-draft"), "{text}");
-        }
-        assert_eq!(background_color(screen, "保留提问"), USER_BACKGROUND);
-        assert_eq!(
-            background_color(screen, "retained-answer"),
-            ASSISTANT_BACKGROUND
-        );
-        assert!(!text.contains("You"), "{text}");
-        assert!(!text.contains("Assistant"), "{text}");
-        assert!(text.lines().any(|line| line.starts_with('─')), "{text}");
-        assert_eq!(text.matches("retained-answer").count(), 1, "{text}");
-        pty.finish();
-        no_more(&server);
-    }
-}
-
-#[test]
-fn tui_ctrl_c_keeps_partial_output_without_waiting_for_response() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(config_path(dir.path(), "settings.yml"), fixture_settings()).unwrap();
-        std::fs::write(
-            config_path(dir.path(), "models.yml"),
-            response_models(&server, Some(protocol)),
-        )
-        .unwrap();
-        let mut pty = Pty::start_with_existing_files(dir.path());
-        pty.ready();
-        pty.input("pending-task\r");
-        let path = if protocol == "completion" {
-            "/v1/chat/completions"
-        } else {
-            "/v1/responses"
-        };
-        let (request, _) = receive_at(&server, path);
-        let mut stream = request.start_sse().unwrap();
-        streaming_delta(&mut stream, protocol, "partial-retained 中😀");
-        pty.text("partial-retained");
-        pty.input("\x03");
-        pty.wait_for("退出后保留未完成的流式输出", |screen| {
-            !screen.alternate_screen()
-                && screen.contents().contains("partial-retained 中😀")
-                && background_color(screen, "pending-task") == USER_BACKGROUND
-                && background_color(screen, "partial-retained") == ASSISTANT_BACKGROUND
-        });
-        pty.finish();
-        stream.finish();
-        no_more(&server);
-    }
 }

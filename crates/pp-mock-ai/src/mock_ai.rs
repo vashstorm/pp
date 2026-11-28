@@ -180,7 +180,7 @@ fn bind_listener() -> Result<TcpListener> {
 }
 
 #[cfg(test)]
-mod lifecycle_tests {
+mod integration {
     use super::*;
     use std::{
         io::{Read, Write},

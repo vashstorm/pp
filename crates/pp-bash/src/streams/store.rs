@@ -373,137 +373,135 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn pipeline_closed_streams_keep_only_four_per_run() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        for index in 1..=6u64 {
-            let pipeline = run.observer().begin(None, 2, false, false).unwrap();
-            let (consumer, producer) = edge(&run, pipeline, 1);
-            let mut writer = producer_writer(producer);
-            writer.write_all(b"stage body\n").expect("write edge");
-            drop(writer);
-            assert!(
-                wait_for(|| store
-                    .read(run.id(), index, None)
-                    .is_ok_and(|read| !read.open && !read.data.is_empty())),
-                "stream {index} must close with mirrored bytes"
+    fn pipeline_store_eviction_empty_runs_and_read_ranges() {
+        {
+            let store = PipeStore::new();
+            let run = unique_run(&store);
+            for index in 1..=6u64 {
+                let pipeline = run.observer().begin(None, 2, false, false).unwrap();
+                let (consumer, producer) = edge(&run, pipeline, 1);
+                let mut writer = producer_writer(producer);
+                writer.write_all(b"stage body\n").expect("write edge");
+                drop(writer);
+                assert!(
+                    wait_for(|| store
+                        .read(run.id(), index, None)
+                        .is_ok_and(|read| !read.open && !read.data.is_empty())),
+                    "stream {index} must close with mirrored bytes"
+                );
+                drop(consumer);
+            }
+            let info = run.snapshot();
+            assert_eq!(info.streams.len(), MAX_CLOSED_STREAMS_PER_RUN);
+            assert_eq!(info.evicted_streams, 2);
+            assert_eq!(
+                info.streams
+                    .iter()
+                    .map(|stream| stream.id)
+                    .collect::<Vec<_>>(),
+                vec![3, 4, 5, 6]
             );
-            drop(consumer);
+            // 淘汰后的旧 URI 永远不会读到别的流。
+            assert_eq!(
+                store.read(run.id(), 1, None).unwrap_err(),
+                PipeStoreError::Unavailable
+            );
+            run.finish(RunEnd::exited(Some(0)));
         }
-        let info = run.snapshot();
-        assert_eq!(info.streams.len(), MAX_CLOSED_STREAMS_PER_RUN);
-        assert_eq!(info.evicted_streams, 2);
-        assert_eq!(
-            info.streams
-                .iter()
-                .map(|stream| stream.id)
-                .collect::<Vec<_>>(),
-            vec![3, 4, 5, 6]
-        );
-        // 淘汰后的旧 URI 永远不会读到别的流。
-        assert_eq!(
-            store.read(run.id(), 1, None).unwrap_err(),
-            PipeStoreError::Unavailable
-        );
-        run.finish(RunEnd::exited(Some(0)));
-    }
-
-    #[test]
-    fn pipeline_completed_runs_keep_only_eight() {
-        let store = PipeStore::new();
-        let mut runs = Vec::new();
-        for _ in 0..(MAX_COMPLETED_RUNS + 2) {
+        {
+            let store = PipeStore::new();
+            let mut runs = Vec::new();
+            for _ in 0..(MAX_COMPLETED_RUNS + 2) {
+                let run = unique_run(&store);
+                let pipeline = run.observer().begin(None, 2, false, false).unwrap();
+                let (consumer, producer) = edge(&run, pipeline, 1);
+                drop((consumer, producer));
+                run.finish(RunEnd::exited(Some(0)));
+                runs.push(run);
+            }
+            assert_eq!(store.list().len(), MAX_COMPLETED_RUNS);
+            assert_eq!(
+                store.read(runs[0].id(), 1, None).unwrap_err(),
+                PipeStoreError::Unavailable
+            );
+            assert!(
+                store
+                    .read(runs[MAX_COMPLETED_RUNS + 1].id(), 1, None)
+                    .is_ok()
+            );
+            // 无管道的 run 单独限界保留终态，不挤占 8 个有管道的完成 run。
+            let mut empties = Vec::new();
+            for _ in 0..(MAX_EMPTY_RUNS + 4) {
+                let run = unique_run(&store);
+                run.finish(RunEnd::interrupted("setup_failed"));
+                empties.push(run);
+            }
+            assert_eq!(
+                store.list().len(),
+                MAX_COMPLETED_RUNS + MAX_EMPTY_RUNS,
+                "empty runs must be bounded separately from pipe history"
+            );
+            assert!(
+                store.snapshot(empties[0].id()).is_err(),
+                "oldest empty run must be evicted"
+            );
+            assert!(
+                store
+                    .snapshot(empties[MAX_EMPTY_RUNS + 3].id())
+                    .is_ok_and(|info| info.state == RunStateKind::Interrupted && !info.incomplete)
+            );
+            // 有管道 run 的 8 条历史不受空 run 影响。
+            assert!(store.read(runs[0].id(), 1, None).is_err());
+            assert!(
+                store
+                    .read(runs[MAX_COMPLETED_RUNS + 1].id(), 1, None)
+                    .is_ok()
+            );
+        }
+        {
+            let store = PipeStore::new();
             let run = unique_run(&store);
             let pipeline = run.observer().begin(None, 2, false, false).unwrap();
             let (consumer, producer) = edge(&run, pipeline, 1);
-            drop((consumer, producer));
+
+            // 有效空流：open 且正文为空，和淘汰状态可区分。
+            let empty = store.read(run.id(), 1, None).unwrap();
+            assert!(empty.data.is_empty());
+            assert!(empty.open);
+            assert_eq!(empty.total_bytes, 0);
+            assert_eq!(empty.start, 0);
+
+            // 直接向已登记流追加超过 1 MiB，验证 read 的保留区间与总量。
+            let state = run.state.stream(1).expect("registered stream");
+            let payload: Vec<u8> = (0..STREAM_RING_CAP + 1024)
+                .map(|index| (index % 97) as u8)
+                .collect();
+            state.observe(&payload);
+            let read = store.read(run.id(), 1, Some(0)).unwrap();
+            assert!(read.prefix_evicted);
+            assert_eq!(read.start, 1024);
+            assert_eq!(read.end, payload.len() as u64);
+            assert_eq!(read.total_bytes, payload.len() as u64);
+            assert_eq!(read.data, payload[1024..]);
+            assert_eq!(read.data.len(), STREAM_RING_CAP);
+            // 超出末端的起点夹到末端，返回空正文但保留总量。
+            let beyond = store.read(run.id(), 1, Some(u64::MAX / 2)).unwrap();
+            assert!(beyond.data.is_empty());
+            assert!(!beyond.prefix_evicted);
+            assert_eq!(beyond.start, payload.len() as u64);
+
+            // 未知流 / 未知 run 都是不可用，而不是空正文。
+            assert_eq!(
+                store.read(run.id(), 99, None).unwrap_err(),
+                PipeStoreError::Unavailable
+            );
+            assert_eq!(
+                store.read("no-such-run", 1, None).unwrap_err(),
+                PipeStoreError::Unavailable
+            );
+            drop(producer);
+            drop(consumer);
             run.finish(RunEnd::exited(Some(0)));
-            runs.push(run);
         }
-        assert_eq!(store.list().len(), MAX_COMPLETED_RUNS);
-        assert_eq!(
-            store.read(runs[0].id(), 1, None).unwrap_err(),
-            PipeStoreError::Unavailable
-        );
-        assert!(
-            store
-                .read(runs[MAX_COMPLETED_RUNS + 1].id(), 1, None)
-                .is_ok()
-        );
-        // 无管道的 run 单独限界保留终态，不挤占 8 个有管道的完成 run。
-        let mut empties = Vec::new();
-        for _ in 0..(MAX_EMPTY_RUNS + 4) {
-            let run = unique_run(&store);
-            run.finish(RunEnd::interrupted("setup_failed"));
-            empties.push(run);
-        }
-        assert_eq!(
-            store.list().len(),
-            MAX_COMPLETED_RUNS + MAX_EMPTY_RUNS,
-            "empty runs must be bounded separately from pipe history"
-        );
-        assert!(
-            store.snapshot(empties[0].id()).is_err(),
-            "oldest empty run must be evicted"
-        );
-        assert!(
-            store
-                .snapshot(empties[MAX_EMPTY_RUNS + 3].id())
-                .is_ok_and(|info| info.state == RunStateKind::Interrupted && !info.incomplete)
-        );
-        // 有管道 run 的 8 条历史不受空 run 影响。
-        assert!(store.read(runs[0].id(), 1, None).is_err());
-        assert!(
-            store
-                .read(runs[MAX_COMPLETED_RUNS + 1].id(), 1, None)
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn pipeline_read_reports_empty_open_and_prefix_eviction() {
-        let store = PipeStore::new();
-        let run = unique_run(&store);
-        let pipeline = run.observer().begin(None, 2, false, false).unwrap();
-        let (consumer, producer) = edge(&run, pipeline, 1);
-
-        // 有效空流：open 且正文为空，和淘汰状态可区分。
-        let empty = store.read(run.id(), 1, None).unwrap();
-        assert!(empty.data.is_empty());
-        assert!(empty.open);
-        assert_eq!(empty.total_bytes, 0);
-        assert_eq!(empty.start, 0);
-
-        // 直接向已登记流追加超过 1 MiB，验证 read 的保留区间与总量。
-        let state = run.state.stream(1).expect("registered stream");
-        let payload: Vec<u8> = (0..STREAM_RING_CAP + 1024)
-            .map(|index| (index % 97) as u8)
-            .collect();
-        state.observe(&payload);
-        let read = store.read(run.id(), 1, Some(0)).unwrap();
-        assert!(read.prefix_evicted);
-        assert_eq!(read.start, 1024);
-        assert_eq!(read.end, payload.len() as u64);
-        assert_eq!(read.total_bytes, payload.len() as u64);
-        assert_eq!(read.data, payload[1024..]);
-        assert_eq!(read.data.len(), STREAM_RING_CAP);
-        // 超出末端的起点夹到末端，返回空正文但保留总量。
-        let beyond = store.read(run.id(), 1, Some(u64::MAX / 2)).unwrap();
-        assert!(beyond.data.is_empty());
-        assert!(!beyond.prefix_evicted);
-        assert_eq!(beyond.start, payload.len() as u64);
-
-        // 未知流 / 未知 run 都是不可用，而不是空正文。
-        assert_eq!(
-            store.read(run.id(), 99, None).unwrap_err(),
-            PipeStoreError::Unavailable
-        );
-        assert_eq!(
-            store.read("no-such-run", 1, None).unwrap_err(),
-            PipeStoreError::Unavailable
-        );
-        drop(producer);
-        drop(consumer);
-        run.finish(RunEnd::exited(Some(0)));
     }
 }

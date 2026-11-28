@@ -60,102 +60,100 @@ fn lsp_write(action: &str) -> String {
 }
 
 #[test]
-fn lsp_read_actions_stay_read_tier_and_skip_read_only_prompt() {
-    let gate = gate(PermissionMode::ReadOnly, &[]);
-    for action in [
-        "definition",
-        "type_definition",
-        "implementation",
-        "references",
-        "hover",
-        "symbols",
-        "status",
-        "capabilities",
-    ] {
-        enforce(&gate, "lsp", &lsp_read(action)).unwrap();
+fn lsp_action_tier_classification_and_policy_overrides() {
+    {
+        let gate = gate(PermissionMode::ReadOnly, &[]);
+        for action in [
+            "definition",
+            "type_definition",
+            "implementation",
+            "references",
+            "hover",
+            "symbols",
+            "status",
+            "capabilities",
+        ] {
+            enforce(&gate, "lsp", &lsp_read(action)).unwrap();
+        }
+        enforce(
+            &gate,
+            "lsp",
+            &lsp(serde_json::json!({
+                "action":"diagnostics","file":"src/lib.rs","timeout":60
+            })),
+        )
+        .unwrap();
+        assert_eq!(
+            tier_of_arguments("lsp", &lsp_read("definition")),
+            Tier::Read
+        );
     }
-    enforce(
-        &gate,
-        "lsp",
-        &lsp(serde_json::json!({
-            "action":"diagnostics","file":"src/lib.rs","timeout":60
-        })),
-    )
-    .unwrap();
-    assert_eq!(
-        tier_of_arguments("lsp", &lsp_read("definition")),
-        Tier::Read
-    );
+
+    {
+        let workspace_write = gate(PermissionMode::WorkspaceWrite, &[]);
+        for action in ["reload", "request"] {
+            enforce(&workspace_write, "lsp", &lsp_write(action)).unwrap_err();
+        }
+        let read_only = gate(PermissionMode::ReadOnly, &[]);
+        for action in ["reload", "request"] {
+            enforce(&read_only, "lsp", &lsp_write(action)).unwrap_err();
+        }
+    }
+
+    {
+        let yolo = gate(PermissionMode::DangerFullAccess, &[]);
+        for arguments in [
+            "{broken",
+            "{}",
+            r#"{"action":"diagnostics"}"#,
+            r#"{"action":"bogus"}"#,
+            r#"{"action":42}"#,
+            r#"{"action":"rename","unexpected":true}"#,
+        ] {
+            enforce(&yolo, "lsp", arguments).unwrap();
+            assert_eq!(tier_of_arguments("lsp", arguments), Tier::Write);
+        }
+        let read_only = gate(PermissionMode::ReadOnly, &[]);
+        for arguments in ["{broken", "{}", r#"{"action":"bogus"}"#] {
+            enforce(&read_only, "lsp", arguments).unwrap_err();
+        }
+    }
+
+    {
+        let denied = gate(
+            PermissionMode::WorkspaceWrite,
+            &[("lsp", PermissionPolicy::Deny)],
+        );
+        enforce(&denied, "lsp", &lsp_read("definition")).unwrap_err();
+        let allowed = gate(
+            PermissionMode::ReadOnly,
+            &[("lsp", PermissionPolicy::Allow)],
+        );
+        enforce(&allowed, "lsp", &lsp_write("rename")).unwrap();
+        let prompted = gate(
+            PermissionMode::WorkspaceWrite,
+            &[("lsp", PermissionPolicy::Prompt)],
+        );
+        enforce(&prompted, "lsp", &lsp_read("hover")).unwrap_err();
+    }
 }
 
 #[test]
-fn lsp_write_actions_are_write_tier_even_for_preview() {
-    let workspace_write = gate(PermissionMode::WorkspaceWrite, &[]);
-    for action in ["reload", "request"] {
-        enforce(&workspace_write, "lsp", &lsp_write(action)).unwrap_err();
+fn lsp_write_action_prompts_and_tool_tier_mapping() {
+    {
+        let mut gate = gate(PermissionMode::ReadOnly, &[]);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&seen);
+        gate.set_handler(Box::new(move |request, _cancellation| {
+            recorded.lock().unwrap().push(request.session_grant);
+            Ok(PermissionDecision::Approve)
+        }));
+        enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
+        enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
+        enforce(&gate, "lsp", &lsp_read("hover")).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![true, true]);
     }
-    let read_only = gate(PermissionMode::ReadOnly, &[]);
-    for action in ["reload", "request"] {
-        enforce(&read_only, "lsp", &lsp_write(action)).unwrap_err();
-    }
-}
 
-#[test]
-fn lsp_invalid_arguments_are_conservatively_write() {
-    let yolo = gate(PermissionMode::DangerFullAccess, &[]);
-    for arguments in [
-        "{broken",
-        "{}",
-        r#"{"action":"diagnostics"}"#,
-        r#"{"action":"bogus"}"#,
-        r#"{"action":42}"#,
-        r#"{"action":"rename","unexpected":true}"#,
-    ] {
-        enforce(&yolo, "lsp", arguments).unwrap();
-        assert_eq!(tier_of_arguments("lsp", arguments), Tier::Write);
-    }
-    let read_only = gate(PermissionMode::ReadOnly, &[]);
-    for arguments in ["{broken", "{}", r#"{"action":"bogus"}"#] {
-        enforce(&read_only, "lsp", arguments).unwrap_err();
-    }
-}
-
-#[test]
-fn lsp_policy_overrides_action_tiers() {
-    let denied = gate(
-        PermissionMode::WorkspaceWrite,
-        &[("lsp", PermissionPolicy::Deny)],
-    );
-    enforce(&denied, "lsp", &lsp_read("definition")).unwrap_err();
-    let allowed = gate(
-        PermissionMode::ReadOnly,
-        &[("lsp", PermissionPolicy::Allow)],
-    );
-    enforce(&allowed, "lsp", &lsp_write("rename")).unwrap();
-    let prompted = gate(
-        PermissionMode::WorkspaceWrite,
-        &[("lsp", PermissionPolicy::Prompt)],
-    );
-    enforce(&prompted, "lsp", &lsp_read("hover")).unwrap_err();
-}
-
-#[test]
-fn lsp_write_action_permission_reaches_handler_for_every_call() {
-    let mut gate = gate(PermissionMode::ReadOnly, &[]);
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let recorded = Arc::clone(&seen);
-    gate.set_handler(Box::new(move |request, _cancellation| {
-        recorded.lock().unwrap().push(request.session_grant);
-        Ok(PermissionDecision::Approve)
-    }));
-    enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
-    enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
-    enforce(&gate, "lsp", &lsp_read("hover")).unwrap();
-    assert_eq!(*seen.lock().unwrap(), vec![true, true]);
-}
-
-#[test]
-fn tier_mapping_covers_builtin_mcp_and_unknown() {
     assert_eq!(tier_of("read"), Tier::Read);
     assert_eq!(tier_of("rg"), Tier::Read);
     assert_eq!(tier_of("glob"), Tier::Read);

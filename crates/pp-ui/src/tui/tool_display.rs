@@ -694,47 +694,44 @@ mod tests {
     }
 
     #[test]
-    fn search_caps_and_long_rows_match_ansi_fallback() {
+    fn search_and_bash_window_caps_and_visual_tails() {
         let content = (0..10)
             .map(|i| format!("item-{i:02}-{}", "中e\u{301}😀".repeat(20)))
             .collect::<Vec<_>>()
             .join("\n");
         let rg = output("rg", &content, false, false, 70);
         assert_eq!(rg.lines().count(), 6);
-        assert!(rg.contains("item-04") && !rg.contains("item-05"));
-        assert!(rg.contains("5 more items"));
+        assert!(rg.contains("item-04") && !rg.contains("item-05") && rg.contains("5 more items"));
         let find = output("find", &content, false, false, 70);
         assert_eq!(find.lines().count(), 9);
         assert!(find.contains("item-07") && !find.contains("item-08"));
         for name in ["rg", "find"] {
             let expanded = output(name, &content, true, false, 70);
             assert_eq!(expanded.lines().count(), 10);
-            assert!(expanded.contains("item-09"));
-            assert!(expanded.lines().all(|line| Line::raw(line).width() <= 70));
+            assert!(
+                expanded.contains("item-09")
+                    && expanded.lines().all(|l| Line::raw(l).width() <= 70)
+            );
             let full = output(name, &content, true, true, 70);
-            assert!(full.lines().count() > 10);
-            assert!(full.contains("e\u{301}"));
+            assert!(full.lines().count() > 10 && full.contains("e\u{301}"));
             let tabs = output(name, "\t\t\t\t\t中😀 e\u{301}", true, false, 8);
             assert_eq!(tabs.lines().count(), 1);
             assert!(Line::raw(tabs).width() <= 8);
         }
-    }
 
-    #[test]
-    fn bash_running_window_grows_then_scrolls_and_expansion_keeps_all_output() {
         for (name, terminal_rows, limit) in [
             ("bash", 24, 6),
             ("bash", 30, 10),
             ("bash", 80, 10),
             ("bash_task", 30, 10),
         ] {
-            let content = (0..24)
+            let lines = (0..24)
                 .map(|i| format!("output-{i:02}\n"))
                 .collect::<Vec<_>>();
             let mut accumulated = String::new();
-            for count in 0..=content.len() {
+            for count in 0..=lines.len() {
                 if count > 0 {
-                    accumulated.push_str(&content[count - 1]);
+                    accumulated.push_str(&lines[count - 1]);
                 }
                 let view = |running, expanded| View {
                     name,
@@ -771,26 +768,26 @@ mod tests {
                 );
             }
         }
-    }
 
-    #[test]
-    fn bash_tail_is_visual_and_changes_with_terminal_height() {
-        let content = format!("{}last", "中😀".repeat(80));
+        let wide = format!("{}last", "中😀".repeat(80));
         let context = Context {
             terminal_rows: 24,
             ..Context::default()
         };
-        let view = View {
-            name: "bash",
-            text: &content,
-            arguments: &Value::Null,
-            result: None,
-            running: true,
-            failed: false,
-            expanded: false,
-            context,
-        };
-        let rows = body(view, 40, Style::default());
+        let rows = body(
+            View {
+                name: "bash",
+                text: &wide,
+                arguments: &Value::Null,
+                result: None,
+                running: true,
+                failed: false,
+                expanded: false,
+                context,
+            },
+            40,
+            Style::default(),
+        );
         assert_eq!(rows.len(), 7);
         let shown = text(rows);
         assert!(shown.contains("showing 6") && shown.contains("last"));
@@ -806,15 +803,14 @@ mod tests {
             .map(|i| format!("command-{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let preview = command.clone();
-        let shown = super::command(&command, false, context);
-        assert_eq!(shown.len(), 6);
-        assert!(shown.last().unwrap().contains("command-39"));
-        assert_eq!(super::command(&preview, true, context).len(), 40);
+        let cmd_rows = super::command(&command, false, context);
+        assert_eq!(cmd_rows.len(), 6);
+        assert!(cmd_rows.last().unwrap().contains("command-39"));
+        assert_eq!(super::command(&command, true, context).len(), 40);
     }
 
     #[test]
-    fn mcp_extracts_multiline_content_and_bounds_expansion() {
+    fn mcp_json_and_read_display_budgets() {
         let content = (0..20)
             .map(|i| format!("mcp-line-{i:02}"))
             .collect::<Vec<_>>()
@@ -840,17 +836,14 @@ mod tests {
             assert_eq!(rows.contains("Ctrl + O to expand"), !expanded);
         }
         assert!(output("mcp__test__tool", &content, true, true, 100).contains("mcp-line-19"));
-    }
 
-    #[test]
-    fn json_limits_keep_multiline_strings_and_generic_full_fallback() {
         let value = json!({"a":{"b":{"c":{"d":{"e":{"f":{"deep":"kept in full fallback"}}}}}},"message":"first\nsecond\nthird"});
-        let content = value.to_string();
-        let collapsed = output("custom", &content, false, false, 100);
-        assert!(!collapsed.contains("kept in full fallback"));
-        assert!(collapsed.contains('…'));
-        let full = output("custom", &content, true, false, 100);
-        assert!(full.contains("kept in full fallback"));
+        let collapsed = output("custom", &value.to_string(), false, false, 100);
+        assert!(!collapsed.contains("kept in full fallback") && collapsed.contains('…'));
+        assert!(
+            output("custom", &value.to_string(), true, false, 100)
+                .contains("kept in full fallback")
+        );
         let (tree, _) = json_tree(&json!({"message":"first\nsecond\nthird"}), false);
         assert!(text(wrap(tree, 100, Style::default())).contains("second"));
         let wide = json!({"long":"中".repeat(2000)}).to_string();
@@ -859,11 +852,8 @@ mod tests {
         let (tree, truncated) = json_tree(&many, true);
         assert!(truncated && tree.len() <= 200);
         assert!(output("custom", &many.to_string(), true, false, 100).contains("249"));
-    }
 
-    #[test]
-    fn reads_hide_content_in_all_display_modes() {
-        let content = "first\nsecond\nthird\nfourth";
+        let read_body = "first\nsecond\nthird\nfourth";
         for path in ["AGENTS.md", "skill://rust", "file.rs"] {
             let args = json!({"path": path});
             for (expanded, read_preview, full) in [
@@ -873,11 +863,11 @@ mod tests {
                 (true, true, true),
             ] {
                 for failed in [false, true] {
-                    let result = json!({"ok":!failed,"content":content,"error":if failed { Value::from("read failed") } else { Value::Null }});
+                    let result = json!({"ok":!failed,"content":read_body,"error":if failed { Value::from("read failed") } else { Value::Null }});
                     let rows = text(body(
                         View {
                             name: "read",
-                            text: content,
+                            text: read_body,
                             arguments: &args,
                             result: Some(&result),
                             running: false,

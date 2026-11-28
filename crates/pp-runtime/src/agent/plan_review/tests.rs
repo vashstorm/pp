@@ -238,28 +238,25 @@ fn history_entries(body: &Value, protocol: &str) -> Vec<Value> {
 // --- unit behavior ----------------------------------------------------
 
 #[test]
-fn final_report_rejects_blank_nul_and_oversize() {
-    assert_eq!(final_report("  report  ").unwrap(), "  report  ");
-    assert_eq!(
-        err_message(final_report("   ")),
-        "Plan review produced no report."
-    );
-    assert_eq!(
-        err_message(final_report("bad\0report")),
-        "Plan review report contains NUL."
-    );
-    let oversize = "x".repeat(PLAN_MAX_BYTES + 1);
-    assert_eq!(
-        err_message(final_report(&oversize)),
-        "Plan review report is too large."
-    );
-    assert_eq!(PLAN_MAX_BYTES, 262_144);
-}
+fn plan_review_validation_cancel_and_failure_preservation() {
+    {
+        assert_eq!(final_report("  report  ").unwrap(), "  report  ");
+        assert_eq!(
+            err_message(final_report("   ")),
+            "Plan review produced no report."
+        );
+        assert_eq!(
+            err_message(final_report("bad\0report")),
+            "Plan review report contains NUL."
+        );
+        let oversize = "x".repeat(PLAN_MAX_BYTES + 1);
+        assert_eq!(
+            err_message(final_report(&oversize)),
+            "Plan review report is too large."
+        );
+        assert_eq!(PLAN_MAX_BYTES, 262_144);
+    }
 
-// --- preconditions ----------------------------------------------------
-
-#[test]
-fn plan_review_rejects_invalid_states_without_requests() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let (mut agent, token) = ready_reviewer(dir.path(), protocol, "127.0.0.1:1");
@@ -339,10 +336,7 @@ fn plan_review_rejects_invalid_states_without_requests() {
             PlanStatus::Ready
         );
     }
-}
 
-#[test]
-fn plan_review_cancelled_before_request_retires_scratch_io() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let (mut agent, token) = ready_reviewer(dir.path(), protocol, "127.0.0.1:1");
@@ -363,6 +357,59 @@ fn plan_review_cancelled_before_request_retires_scratch_io() {
             serde_json::to_value(&agent.session).unwrap(),
             session_before
         );
+        assert_eq!(
+            agent.workflow.plan.as_ref().unwrap().status,
+            PlanStatus::Ready
+        );
+    }
+
+    for protocol in ["completion", "response"] {
+        // Provider refusal replaces nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let server = Arc::new(TestServer::start().unwrap());
+        let (mut agent, token) = ready_reviewer(dir.path(), protocol, &server.addr().to_string());
+        let previous = previous_report(&agent);
+        agent.workflow.review = Some(previous.clone());
+        let session_before = serde_json::to_value(&agent.session).unwrap();
+        let worker = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            let request = worker
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            refusal_for(protocol, request);
+        });
+        let error = err_message(agent.review_plan(
+            token,
+            &InputQueue::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        ));
+        handle.join().unwrap();
+        assert_eq!(error, "Plan review was refused by the model.");
+        assert_eq!(agent.workflow.review, Some(previous));
+        assert_eq!(
+            serde_json::to_value(&agent.session).unwrap(),
+            session_before
+        );
+        assert_eq!(
+            agent.workflow.plan.as_ref().unwrap().status,
+            PlanStatus::Ready
+        );
+
+        // An unreachable provider fails the review without state changes.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut agent, token) = ready_reviewer(dir.path(), protocol, "127.0.0.1:1");
+        let previous = previous_report(&agent);
+        agent.workflow.review = Some(previous.clone());
+        let error = err_message(agent.review_plan(
+            token,
+            &InputQueue::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        ));
+        assert!(!error.is_empty());
+        assert_eq!(agent.workflow.review, Some(previous));
         assert_eq!(
             agent.workflow.plan.as_ref().unwrap().status,
             PlanStatus::Ready
@@ -539,61 +586,5 @@ fn plan_review_rounds_gate_tools_and_persist_report() {
         // Exactly one journal record was added: the workflow commit.
         let lines_after = std::fs::read_to_string(&journal).unwrap().lines().count();
         assert_eq!(lines_after, lines_before + 1);
-    }
-}
-
-#[test]
-fn plan_review_failures_preserve_previous_report() {
-    for protocol in ["completion", "response"] {
-        // Provider refusal replaces nothing.
-        let dir = tempfile::tempdir().unwrap();
-        let server = Arc::new(TestServer::start().unwrap());
-        let (mut agent, token) = ready_reviewer(dir.path(), protocol, &server.addr().to_string());
-        let previous = previous_report(&agent);
-        agent.workflow.review = Some(previous.clone());
-        let session_before = serde_json::to_value(&agent.session).unwrap();
-        let worker = Arc::clone(&server);
-        let handle = std::thread::spawn(move || {
-            let request = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            refusal_for(protocol, request);
-        });
-        let error = err_message(agent.review_plan(
-            token,
-            &InputQueue::default(),
-            &CancellationToken::new(),
-            &mut |_| {},
-        ));
-        handle.join().unwrap();
-        assert_eq!(error, "Plan review was refused by the model.");
-        assert_eq!(agent.workflow.review, Some(previous));
-        assert_eq!(
-            serde_json::to_value(&agent.session).unwrap(),
-            session_before
-        );
-        assert_eq!(
-            agent.workflow.plan.as_ref().unwrap().status,
-            PlanStatus::Ready
-        );
-
-        // An unreachable provider fails the review without state changes.
-        let dir = tempfile::tempdir().unwrap();
-        let (mut agent, token) = ready_reviewer(dir.path(), protocol, "127.0.0.1:1");
-        let previous = previous_report(&agent);
-        agent.workflow.review = Some(previous.clone());
-        let error = err_message(agent.review_plan(
-            token,
-            &InputQueue::default(),
-            &CancellationToken::new(),
-            &mut |_| {},
-        ));
-        assert!(!error.is_empty());
-        assert_eq!(agent.workflow.review, Some(previous));
-        assert_eq!(
-            agent.workflow.plan.as_ref().unwrap().status,
-            PlanStatus::Ready
-        );
     }
 }

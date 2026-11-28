@@ -458,178 +458,182 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_discovery_priority_and_no_ancestor_or_foreign_lookup() {
-        let project = tempfile::tempdir().unwrap();
-        let global = tempfile::tempdir().unwrap();
-        let candidates = [
-            (project.path(), ".pp/SYSTEM.md", "project text"),
-            (
-                project.path(),
-                ".pp/SYSTEM_TEMPLATE.md",
-                "project {{model}}",
-            ),
-            (global.path(), "SYSTEM.md", "global text"),
-            (global.path(), "SYSTEM_TEMPLATE.md", "global {{model}}"),
-        ];
-        for (root, name, text) in candidates {
-            write(root, name, text);
+    fn system_prompt_discovery_explicit_and_text_resolution() {
+        {
+            let project = tempfile::tempdir().unwrap();
+            let global = tempfile::tempdir().unwrap();
+            let candidates = [
+                (project.path(), ".pp/SYSTEM.md", "project text"),
+                (
+                    project.path(),
+                    ".pp/SYSTEM_TEMPLATE.md",
+                    "project {{model}}",
+                ),
+                (global.path(), "SYSTEM.md", "global text"),
+                (global.path(), "SYSTEM_TEMPLATE.md", "global {{model}}"),
+            ];
+            for (root, name, text) in candidates {
+                write(root, name, text);
+            }
+            for (root, name, expected) in candidates {
+                let source =
+                    Snapshot::discover(project.path(), global.path(), None, None, None).unwrap();
+                assert_eq!(source.base.content, expected);
+                fs::remove_file(root.join(name)).unwrap();
+            }
+            write(project.path(), ".pp/SYSTEM.md", "ancestor");
+            write(project.path(), "child/.codex/SYSTEM.md", "foreign");
+            let child = project.path().join("child");
+            assert!(matches!(
+                Snapshot::discover(&child, global.path(), None, None, None)
+                    .unwrap()
+                    .base
+                    .kind,
+                SourceKind::Bundled
+            ));
         }
-        for (root, name, expected) in candidates {
-            let source =
-                Snapshot::discover(project.path(), global.path(), None, None, None).unwrap();
-            assert_eq!(source.base.content, expected);
-            fs::remove_file(root.join(name)).unwrap();
-        }
-        write(project.path(), ".pp/SYSTEM.md", "ancestor");
-        write(project.path(), "child/.codex/SYSTEM.md", "foreign");
-        let child = project.path().join("child");
-        assert!(matches!(
-            Snapshot::discover(&child, global.path(), None, None, None)
-                .unwrap()
-                .base
-                .kind,
-            SourceKind::Bundled
-        ));
-    }
 
-    #[test]
-    fn system_prompt_explicit_and_empty_sources_suppress_discovery() {
-        let cwd = tempfile::tempdir().unwrap();
-        let global = tempfile::tempdir().unwrap();
-        write(cwd.path(), ".pp/SYSTEM.md", "project");
-        write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", "{{#if broken}}");
-        write(cwd.path(), ".pp/APPEND_SYSTEM.md", "project append");
-        write(global.path(), "APPEND_SYSTEM.md", "global append");
-        let load = |text, append| {
-            Snapshot::discover(cwd.path(), global.path(), text, None, append).unwrap()
-        };
-        assert_eq!(load(None, None).append.unwrap().content, "project append");
-        assert_eq!(load(Some("cli"), Some("cli append")).base.content, "cli");
-        let source = load(Some(""), Some(""));
-        let rendered = render(&source, cwd.path()).unwrap();
-        assert!(rendered.starts_with("You are a coding assistant."));
-        assert!(!rendered.contains("project append"));
-        assert!(!rendered.contains("global append"));
-        write(cwd.path(), ".pp/SYSTEM.md", " \n");
-        assert!(matches!(load(None, None).base.kind, SourceKind::Bundled));
-    }
-
-    #[test]
-    fn system_prompt_text_resolution_is_nonrecursive_and_templates_are_unescaped() {
-        let cwd = tempfile::tempdir().unwrap();
-        let global = tempfile::tempdir().unwrap();
-        write(cwd.path(), "literal.md", "text {{model}} <&>");
-        write(
-            cwd.path(),
-            "template.md",
-            "model={{model}};{{#each tools}}[{{this}}]{{/each}};mode={{work_mode}};{{#if tools}}enabled{{/if}}",
-        );
-        let literal = Snapshot::discover(
-            cwd.path(),
-            global.path(),
-            Some("literal.md"),
-            None,
-            Some("append {{model}}"),
-        )
-        .unwrap();
-        let result = render(&literal, cwd.path()).unwrap();
-        assert!(result.starts_with("text {{model}} <&>"));
-        assert!(result.contains("project {{unknown}}"));
-        assert!(result.contains("append {{model}}"));
-        let template =
-            Snapshot::discover(cwd.path(), global.path(), None, Some("template.md"), None).unwrap();
-        let result = render(&template, cwd.path()).unwrap();
-        assert!(result.starts_with("model=model<&>;[read][edit][bash];mode=execute;enabled"));
-        assert!(!result.contains("&lt;"));
-        for input in [
-            "missing.md".to_owned(),
-            "a".repeat(10000),
-            "multiline\n{{model}}".into(),
-        ] {
-            let source =
-                Snapshot::discover(cwd.path(), global.path(), Some(&input), None, None).unwrap();
-            assert!(render(&source, cwd.path()).unwrap().starts_with(&input));
+        {
+            let cwd = tempfile::tempdir().unwrap();
+            let global = tempfile::tempdir().unwrap();
+            write(cwd.path(), ".pp/SYSTEM.md", "project");
+            write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", "{{#if broken}}");
+            write(cwd.path(), ".pp/APPEND_SYSTEM.md", "project append");
+            write(global.path(), "APPEND_SYSTEM.md", "global append");
+            let load = |text, append| {
+                Snapshot::discover(cwd.path(), global.path(), text, None, append).unwrap()
+            };
+            assert_eq!(load(None, None).append.unwrap().content, "project append");
+            assert_eq!(load(Some("cli"), Some("cli append")).base.content, "cli");
+            let source = load(Some(""), Some(""));
+            let rendered = render(&source, cwd.path()).unwrap();
+            assert!(rendered.starts_with("You are a coding assistant."));
+            assert!(!rendered.contains("project append"));
+            assert!(!rendered.contains("global append"));
+            write(cwd.path(), ".pp/SYSTEM.md", " \n");
+            assert!(matches!(load(None, None).base.kind, SourceKind::Bundled));
         }
-    }
 
-    #[test]
-    fn system_prompt_invalid_selected_sources_fail_without_fallback() {
-        let cwd = tempfile::tempdir().unwrap();
-        let global = tempfile::tempdir().unwrap();
-        write(global.path(), "SYSTEM.md", "must not fall back");
-        for text in ["", " \n", "secret-source-marker {{#if model}}"] {
-            write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", text);
-            let error =
-                Snapshot::discover(cwd.path(), global.path(), None, None, None).unwrap_err();
-            assert!(format!("{error:#}").contains("SYSTEM_TEMPLATE.md"));
-            assert!(!format!("{error:#}").contains("secret-source-marker"));
-        }
-        write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", "{{unknown}}");
-        let source = Snapshot::discover(cwd.path(), global.path(), None, None, None).unwrap();
-        let error = render(&source, cwd.path()).unwrap_err();
-        assert!(format!("{error:#}").contains("SYSTEM_TEMPLATE.md"));
-        assert!(
-            Snapshot::discover(cwd.path(), global.path(), None, Some("missing.md"), None).is_err()
-        );
-        assert!(
-            Snapshot::discover(
+        {
+            let cwd = tempfile::tempdir().unwrap();
+            let global = tempfile::tempdir().unwrap();
+            write(cwd.path(), "literal.md", "text {{model}} <&>");
+            write(
+                cwd.path(),
+                "template.md",
+                "model={{model}};{{#each tools}}[{{this}}]{{/each}};mode={{work_mode}};{{#if tools}}enabled{{/if}}",
+            );
+            let literal = Snapshot::discover(
                 cwd.path(),
                 global.path(),
-                Some("text"),
-                Some("template.md"),
-                None
+                Some("literal.md"),
+                None,
+                Some("append {{model}}"),
             )
-            .is_err()
-        );
-        let path = cwd.path().join(".pp/SYSTEM.md");
-        fs::write(&path, [0xff]).unwrap();
-        assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
-        fs::remove_file(&path).unwrap();
-        symlink(global.path().join("SYSTEM.md"), &path).unwrap();
-        assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
-        fs::remove_file(&path).unwrap();
-        fs::create_dir(&path).unwrap();
-        assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
-        fs::remove_dir(&path).unwrap();
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&path)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
+            .unwrap();
+            let result = render(&literal, cwd.path()).unwrap();
+            assert!(result.starts_with("text {{model}} <&>"));
+            assert!(result.contains("project {{unknown}}"));
+            assert!(result.contains("append {{model}}"));
+            let template =
+                Snapshot::discover(cwd.path(), global.path(), None, Some("template.md"), None)
+                    .unwrap();
+            let result = render(&template, cwd.path()).unwrap();
+            assert!(result.starts_with("model=model<&>;[read][edit][bash];mode=execute;enabled"));
+            assert!(!result.contains("&lt;"));
+            for input in [
+                "missing.md".to_owned(),
+                "a".repeat(10000),
+                "multiline\n{{model}}".into(),
+            ] {
+                let source =
+                    Snapshot::discover(cwd.path(), global.path(), Some(&input), None, None)
+                        .unwrap();
+                assert!(render(&source, cwd.path()).unwrap().starts_with(&input));
+            }
+        }
     }
 
     #[test]
-    fn system_prompt_snapshot_preserves_sources_and_validates_version() {
-        let cwd = tempfile::tempdir().unwrap();
-        let global = tempfile::tempdir().unwrap();
-        write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", "snapshot {{model}}");
-        write(cwd.path(), ".pp/APPEND_SYSTEM.md", "snapshot append");
-        let source = Snapshot::discover(cwd.path(), global.path(), None, None, None).unwrap();
-        let mut saved = serde_json::to_value(source).unwrap();
-        fs::remove_dir_all(cwd.path().join(".pp")).unwrap();
-        let restored: Snapshot = serde_json::from_value(saved.clone()).unwrap();
-        let result = render(&restored, cwd.path()).unwrap();
-        assert!(result.starts_with("snapshot model<&>"));
-        assert_eq!(result.matches("snapshot append").count(), 1);
-        assert!(result.find("skill marker").unwrap() < result.find("snapshot append").unwrap());
-        assert!(result.ends_with("workflow marker"));
-        saved["version"] = 99.into();
-        assert!(
-            serde_json::from_value::<Snapshot>(saved.clone())
-                .unwrap()
-                .validate()
+    fn system_prompt_invalid_sources_and_snapshot_roundtrip() {
+        {
+            let cwd = tempfile::tempdir().unwrap();
+            let global = tempfile::tempdir().unwrap();
+            write(global.path(), "SYSTEM.md", "must not fall back");
+            for text in ["", " \n", "secret-source-marker {{#if model}}"] {
+                write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", text);
+                let error =
+                    Snapshot::discover(cwd.path(), global.path(), None, None, None).unwrap_err();
+                assert!(format!("{error:#}").contains("SYSTEM_TEMPLATE.md"));
+                assert!(!format!("{error:#}").contains("secret-source-marker"));
+            }
+            write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", "{{unknown}}");
+            let source = Snapshot::discover(cwd.path(), global.path(), None, None, None).unwrap();
+            let error = render(&source, cwd.path()).unwrap_err();
+            assert!(format!("{error:#}").contains("SYSTEM_TEMPLATE.md"));
+            assert!(
+                Snapshot::discover(cwd.path(), global.path(), None, Some("missing.md"), None)
+                    .is_err()
+            );
+            assert!(
+                Snapshot::discover(
+                    cwd.path(),
+                    global.path(),
+                    Some("text"),
+                    Some("template.md"),
+                    None
+                )
                 .is_err()
-        );
-        saved["version"] = 1.into();
-        saved["unexpected"] = true.into();
-        assert!(serde_json::from_value::<Snapshot>(saved).is_err());
+            );
+            let path = cwd.path().join(".pp/SYSTEM.md");
+            fs::write(&path, [0xff]).unwrap();
+            assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
+            fs::remove_file(&path).unwrap();
+            symlink(global.path().join("SYSTEM.md"), &path).unwrap();
+            assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+            assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
+            fs::remove_dir(&path).unwrap();
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert!(Snapshot::discover(cwd.path(), global.path(), None, None, None).is_err());
+        }
+
+        {
+            let cwd = tempfile::tempdir().unwrap();
+            let global = tempfile::tempdir().unwrap();
+            write(cwd.path(), ".pp/SYSTEM_TEMPLATE.md", "snapshot {{model}}");
+            write(cwd.path(), ".pp/APPEND_SYSTEM.md", "snapshot append");
+            let source = Snapshot::discover(cwd.path(), global.path(), None, None, None).unwrap();
+            let mut saved = serde_json::to_value(source).unwrap();
+            fs::remove_dir_all(cwd.path().join(".pp")).unwrap();
+            let restored: Snapshot = serde_json::from_value(saved.clone()).unwrap();
+            let result = render(&restored, cwd.path()).unwrap();
+            assert!(result.starts_with("snapshot model<&>"));
+            assert_eq!(result.matches("snapshot append").count(), 1);
+            assert!(result.find("skill marker").unwrap() < result.find("snapshot append").unwrap());
+            assert!(result.ends_with("workflow marker"));
+            saved["version"] = 99.into();
+            assert!(
+                serde_json::from_value::<Snapshot>(saved.clone())
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+            saved["version"] = 1.into();
+            saved["unexpected"] = true.into();
+            assert!(serde_json::from_value::<Snapshot>(saved).is_err());
+        }
     }
 
     #[test]
-    fn system_prompt_lsp_guidance_follows_installed_tool() {
+    fn system_prompt_lsp_and_sandbox_guidance() {
         let cwd = tempfile::tempdir().unwrap();
         let compose = |tools: Vec<String>| {
             Snapshot::bundled()
@@ -655,11 +659,7 @@ mod tests {
             "{disabled}"
         );
         assert!(!disabled.contains("not a filesystem sandbox"), "{disabled}");
-    }
 
-    #[test]
-    fn system_prompt_bash_sandbox_section_follows_status() {
-        let cwd = tempfile::tempdir().unwrap();
         let off_ctx = RenderContext::new(
             cwd.path(),
             "model",

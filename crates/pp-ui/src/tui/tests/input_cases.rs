@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn input_history_copies_submissions_and_restores_multiline_draft() {
+fn input_history_multiline_and_rejection() {
     let mut app = app();
     let (sender, requests) = mpsc::channel();
     app.commands = Some(sender);
@@ -55,62 +55,46 @@ fn input_history_copies_submissions_and_restores_multiline_draft() {
     assert_eq!(app.input.lines(), &["second", "🙂末行!"]);
     app.handle(key(KeyCode::Down), &mut dirty);
     assert_eq!(app.input.lines(), &[""]);
-}
 
-#[test]
-fn input_shift_enter_always_inserts_a_newline_in_the_draft() {
-    let (mut app, requests) = file_commands_app(commands::FileCommands::default());
+    let (mut se, se_req) = file_commands_app(commands::FileCommands::default());
     let shift_enter = || Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-    let mut dirty = false;
+    se.state = State::Ready;
+    se.handle(Event::Paste("/eff".into()), &mut dirty);
+    assert!(se.menu.is_some());
+    se.handle(shift_enter(), &mut dirty);
+    assert_eq!(se.input.lines(), &["/eff", ""]);
+    assert!(se.menu.is_none() && se_req.try_recv().is_err() && se.input_history.is_empty());
 
-    // 补全菜单展开时只换行：不确认菜单项、不提交、不写历史。
-    app.state = State::Ready;
-    app.handle(Event::Paste("/eff".into()), &mut dirty);
-    assert!(app.menu.is_some());
-    app.handle(shift_enter(), &mut dirty);
-    assert_eq!(app.input.lines(), &["/eff", ""]);
-    assert!(app.menu.is_none());
-    assert!(requests.try_recv().is_err());
-    assert!(app.input_history.is_empty());
-
-    // 待处理队列菜单保持打开，草稿里换行而不是召回条目。
-    app.input = editor();
-    app.state = State::Running;
-    app.input_queue
+    se.input = editor();
+    se.state = State::Running;
+    se.input_queue
         .enqueue(PendingKind::FollowUp, "queued".into(), None, false)
         .unwrap();
-    app.handle(function_key('q'), &mut dirty);
-    assert!(app.queue_menu);
-    app.input.insert_str("draft");
-    app.handle(shift_enter(), &mut dirty);
-    assert!(app.queue_menu);
-    assert_eq!(app.input.lines(), &["draft", ""]);
-    assert!(app.has_pending());
+    se.handle(function_key('q'), &mut dirty);
+    assert!(se.queue_menu);
+    se.input.insert_str("draft");
+    se.handle(shift_enter(), &mut dirty);
+    assert!(se.queue_menu && se.has_pending());
+    assert_eq!(se.input.lines(), &["draft", ""]);
 
-    // 空闲时也只换行：Shift 优先于 Enter 提交，Alt 组合同样让位。
-    app.state = State::Ready;
-    app.queue_menu = false;
-    app.input = editor();
-    app.input.insert_str("line");
+    se.state = State::Ready;
+    se.queue_menu = false;
+    se.input = editor();
+    se.input.insert_str("line");
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
-        app.handle(
+        se.handle(
             Event::Key(KeyEvent::new(KeyCode::Enter, modifiers)),
             &mut dirty,
         );
     }
-    assert_eq!(app.input.lines(), &["line", "", ""]);
-    assert!(app.input_history.is_empty());
-    assert!(requests.try_recv().is_err());
-}
+    assert_eq!(se.input.lines(), &["line", "", ""]);
+    assert!(se.input_history.is_empty() && se_req.try_recv().is_err());
 
-#[test]
-fn input_history_ignores_rejected_submissions_and_survives_reset() {
-    let mut app = app();
+    let mut rej = super::app();
     let (sender, _requests) = mpsc::channel();
-    app.commands = Some(sender);
-    let mut dirty = false;
-    app.handle(key(KeyCode::Up), &mut dirty);
-    assert_eq!(app.input.lines(), &[""]);
+    rej.commands = Some(sender);
+    rej.handle(key(KeyCode::Up), &mut dirty);
+    assert_eq!(rej.input.lines(), &[""]);
     for (state, text) in [
         (State::Ready, "  "),
         (State::Ready, "/unknown"),
@@ -118,44 +102,44 @@ fn input_history_ignores_rejected_submissions_and_survives_reset() {
         (State::Cancelling, "cancelling draft"),
         (State::Unavailable, "unavailable draft"),
     ] {
-        app.state = state;
-        app.clear_input();
-        app.handle(Event::Paste(text.into()), &mut dirty);
-        app.handle(key(KeyCode::Enter), &mut dirty);
-        assert!(app.input_history.is_empty());
-        assert_eq!(app.input.lines(), &[text]);
+        rej.state = state;
+        rej.clear_input();
+        rej.handle(Event::Paste(text.into()), &mut dirty);
+        rej.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(rej.input_history.is_empty());
+        assert_eq!(rej.input.lines(), &[text]);
     }
-    app.state = State::Ready;
-    app.clear_input();
-    app.handle(Event::Paste("/help".into()), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
-    app.handle(Event::Paste("/new".into()), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
+    rej.state = State::Ready;
+    rej.clear_input();
+    rej.handle(Event::Paste("/help".into()), &mut dirty);
+    rej.handle(key(KeyCode::Enter), &mut dirty);
+    rej.handle(Event::Paste("/new".into()), &mut dirty);
+    rej.handle(key(KeyCode::Enter), &mut dirty);
     let (events, receiver) = mpsc::channel();
-    app.events = Some(receiver);
-    app.notify(Level::Error, "stale session feedback".into());
+    rej.events = Some(receiver);
+    rej.notify(Level::Error, "stale session feedback".into());
     events.send(WorkerEvent::Reset).unwrap();
-    app.receive();
-    assert!(app.show_welcome);
-    assert!(matches!(app.state, State::Ready));
-    assert_eq!(app.input.lines(), &[""]);
-    let screen = draw(&mut app, 100, 30);
+    rej.receive();
+    assert!(rej.show_welcome && matches!(rej.state, State::Ready) && rej.input.lines() == [""]);
+    let screen = draw(&mut rej, 100, 30);
     assert!(screen.contains("▄▄▄██▀▀██"));
-    assert!(!screen.contains("Session reset."));
-    assert!(!screen.contains("stale session feedback"));
-    assert!(!screen.contains("╭"));
-    app.handle(key(KeyCode::Up), &mut dirty);
-    assert_eq!(app.input.lines(), &["/new"]);
-    assert!(app.menu.is_none());
-    app.handle(key(KeyCode::Up), &mut dirty);
-    assert_eq!(app.input.lines(), &["/help"]);
-    app.handle(key(KeyCode::Down), &mut dirty);
-    app.handle(key(KeyCode::Down), &mut dirty);
-    assert_eq!(app.input.lines(), &[""]);
+    assert!(
+        !screen.contains("Session reset.")
+            && !screen.contains("stale session feedback")
+            && !screen.contains("╭")
+    );
+    rej.handle(key(KeyCode::Up), &mut dirty);
+    assert_eq!(rej.input.lines(), &["/new"]);
+    assert!(rej.menu.is_none());
+    rej.handle(key(KeyCode::Up), &mut dirty);
+    assert_eq!(rej.input.lines(), &["/help"]);
+    rej.handle(key(KeyCode::Down), &mut dirty);
+    rej.handle(key(KeyCode::Down), &mut dirty);
+    assert_eq!(rej.input.lines(), &[""]);
 }
 
 #[test]
-fn runtime_input_pending_recall_protects_draft_and_never_reuses_claimed_text() {
+fn runtime_input_pending_queue_menu_and_resume() {
     let (mut app, _requests) = file_commands_app(commands::FileCommands::default());
     app.state = State::Running;
     app.input_queue.begin_run().unwrap();
@@ -182,9 +166,7 @@ fn runtime_input_pending_recall_protects_draft_and_never_reuses_claimed_text() {
     app.input = editor();
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert_eq!(app.input.lines(), &["/review 原文", ""]);
-    assert!(!app.queue_menu);
-    assert!(!app.has_pending());
-    assert!(app.input_history.is_empty());
+    assert!(!app.queue_menu && !app.has_pending() && app.input_history.is_empty());
     assert!(app.input_queue.recall(id).unwrap().is_none());
     app.input = editor();
     let id = app
@@ -194,85 +176,71 @@ fn runtime_input_pending_recall_protects_draft_and_never_reuses_claimed_text() {
     app.toggle_pending_menu();
     let claimed = app.input_queue.claim_steering(false).unwrap();
     app.recall_pending(id);
-    assert!(app.input.is_empty());
-    assert!(!app.queue_menu);
+    assert!(app.input.is_empty() && !app.queue_menu);
     assert_eq!(claimed.front().unwrap().source, "claimed");
-}
 
-#[test]
-fn runtime_input_pending_menu_preserves_selection_and_escape_does_not_cancel() {
-    let (mut app, _requests) = file_commands_app(commands::FileCommands::default());
-    app.state = State::Running;
+    let (mut menu_app, _) = file_commands_app(commands::FileCommands::default());
+    menu_app.state = State::Running;
     let token = CancellationToken::new();
-    app.active_cancellation = Some(token.clone());
+    menu_app.active_cancellation = Some(token.clone());
     for text in ["first", "界\u{1b}[31m\tpreview", "last"] {
-        app.input_queue
+        menu_app
+            .input_queue
             .enqueue(PendingKind::FollowUp, text.into(), None, false)
             .unwrap();
     }
-    let mut dirty = false;
-    app.handle(opposite_function_key('q'), &mut dirty);
-    assert!(!app.queue_menu);
-    app.handle(function_key('q'), &mut dirty);
-    app.handle(key(KeyCode::Down), &mut dirty);
-    let selected = app.menu.as_ref().unwrap().items()[1].value;
-    app.input_queue
+    menu_app.handle(opposite_function_key('q'), &mut dirty);
+    assert!(!menu_app.queue_menu);
+    menu_app.handle(function_key('q'), &mut dirty);
+    menu_app.handle(key(KeyCode::Down), &mut dirty);
+    let selected = menu_app.menu.as_ref().unwrap().items()[1].value;
+    menu_app
+        .input_queue
         .enqueue(PendingKind::Steering, "priority".into(), None, false)
         .unwrap();
-    app.receive();
-    let menu = app.menu.as_ref().unwrap();
+    menu_app.receive();
+    let menu = menu_app.menu.as_ref().unwrap();
     assert_eq!(menu.items()[menu.selected_index().unwrap()].value, selected);
     for (width, height) in [(100, 30), (40, 10)] {
-        let screen = draw(&mut app, width, height);
-        assert!(screen.contains("Steer #"));
-        assert!(!screen.contains('\u{1b}'));
+        let screen = draw(&mut menu_app, width, height);
+        assert!(screen.contains("Steer #") && !screen.contains('\u{1b}'));
     }
-    app.handle(key(KeyCode::Esc), &mut dirty);
-    assert!(!app.queue_menu);
+    menu_app.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(!menu_app.queue_menu && !token.is_cancelled() && !menu_app.queue_paused);
+    menu_app.handle(function_key('q'), &mut dirty);
+    menu_app.handle(Event::Paste("新草稿".into()), &mut dirty);
+    assert!(!menu_app.queue_menu && menu_app.input.lines() == ["新草稿"]);
     assert!(!token.is_cancelled());
-    assert!(!app.queue_paused);
-    app.handle(function_key('q'), &mut dirty);
-    app.handle(Event::Paste("新草稿".into()), &mut dirty);
-    assert!(!app.queue_menu);
-    assert_eq!(app.input.lines(), &["新草稿"]);
-    assert!(!token.is_cancelled());
-}
 
-#[test]
-fn runtime_input_explicit_resume_preserves_draft_and_only_ready_dispatches() {
-    let (mut app, requests) = file_commands_app(commands::FileCommands::default());
-    app.input_queue
+    let (mut res, requests) = file_commands_app(commands::FileCommands::default());
+    res.input_queue
         .enqueue(PendingKind::FollowUp, "next task".into(), None, false)
         .unwrap();
-    app.queue_paused = true;
-    app.state = State::Ready;
-    let mut dirty = false;
-    app.handle(opposite_function_key('r'), &mut dirty);
-    assert!(app.queue_paused);
-    assert!(requests.try_recv().is_err());
-    app.input.insert_str("草稿");
-    let cursor = app.input.cursor();
+    res.queue_paused = true;
+    res.state = State::Ready;
+    res.handle(opposite_function_key('r'), &mut dirty);
+    assert!(res.queue_paused && requests.try_recv().is_err());
+    res.input.insert_str("草稿");
+    let cursor = res.input.cursor();
     for state in [State::Running, State::Cancelling, State::Unavailable] {
-        app.state = state;
-        app.handle(function_key('r'), &mut dirty);
-        assert!(app.queue_paused);
-        assert!(requests.try_recv().is_err());
+        res.state = state;
+        res.handle(function_key('r'), &mut dirty);
+        assert!(res.queue_paused && requests.try_recv().is_err());
     }
-    app.state = State::Ready;
-    app.handle(function_key('q'), &mut dirty);
-    app.handle(function_key('r'), &mut dirty);
-    assert!(!app.queue_paused);
-    assert!(!app.queue_menu);
+    res.state = State::Ready;
+    res.handle(function_key('q'), &mut dirty);
+    res.handle(function_key('r'), &mut dirty);
+    assert!(!res.queue_paused && !res.queue_menu);
     assert!(
         matches!(requests.try_recv().unwrap(), WorkerCommand::Run { prompt, .. } if prompt == "next task")
     );
-    assert_eq!(app.input.lines(), &["草稿"]);
-    assert_eq!(app.input.cursor(), cursor);
-    assert!(app.input_history.is_empty());
+    assert_eq!(res.input.lines(), &["草稿"]);
+    assert_eq!(res.input.cursor(), cursor);
+    assert!(res.input_history.is_empty());
 }
 
 #[test]
-fn runtime_input_scheduler_prioritizes_steering_and_pauses_on_cancel_race() {
+fn runtime_input_scheduler_steering_and_command_guards() {
     let (mut app, requests) = file_commands_app(commands::FileCommands::default());
     let (events, receiver) = mpsc::channel();
     app.events = Some(receiver);
@@ -300,7 +268,6 @@ fn runtime_input_scheduler_prioritizes_steering_and_pauses_on_cancel_race() {
     let cursor = app.input.cursor();
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert!(initial.is_cancelled());
-    // A committed final reply can win cancellation, but must not resume the queue.
     events
         .send(WorkerEvent::completed(
             Instant::now(),
@@ -308,9 +275,7 @@ fn runtime_input_scheduler_prioritizes_steering_and_pauses_on_cancel_race() {
         ))
         .unwrap();
     app.receive();
-    assert!(matches!(app.state, State::Ready));
-    assert!(app.queue_paused);
-    assert!(requests.try_recv().is_err());
+    assert!(matches!(app.state, State::Ready) && app.queue_paused && requests.try_recv().is_err());
     assert_eq!(app.input.cursor(), cursor);
     assert_eq!(app.input.lines(), &["草稿", "line"]);
     app.queue_paused = false;
@@ -324,8 +289,7 @@ fn runtime_input_scheduler_prioritizes_steering_and_pauses_on_cancel_race() {
         panic!()
     };
     assert_eq!(prompt, "steer");
-    assert!(!next.is_cancelled());
-    assert_eq!(app.input.cursor(), cursor);
+    assert!(!next.is_cancelled() && app.input.cursor() == cursor);
     events
         .send(WorkerEvent::completed(
             Instant::now(),
@@ -338,19 +302,15 @@ fn runtime_input_scheduler_prioritizes_steering_and_pauses_on_cancel_race() {
     );
     assert_eq!(app.input.lines(), &["草稿", "line"]);
     assert_eq!(app.input_history, ["initial", "queued", "steer"]);
-}
 
-#[test]
-fn runtime_input_modified_and_repeated_enter_preserve_draft_and_history_guard() {
-    let (mut app, requests) = file_commands_app(commands::FileCommands::default());
-    app.state = State::Running;
-    let mut dirty = false;
-    app.input.insert_str("one");
-    app.handle(
+    let (mut guarded, g_req) = file_commands_app(commands::FileCommands::default());
+    guarded.state = State::Running;
+    guarded.input.insert_str("one");
+    guarded.handle(
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
         &mut dirty,
     );
-    app.handle(
+    guarded.handle(
         Event::Key(KeyEvent::new_with_kind(
             KeyCode::Enter,
             KeyModifiers::NONE,
@@ -358,63 +318,58 @@ fn runtime_input_modified_and_repeated_enter_preserve_draft_and_history_guard() 
         )),
         &mut dirty,
     );
-    assert_eq!(app.input.lines(), &["one"]);
-    assert!(app.input_history.is_empty());
-    app.handle(key(KeyCode::Enter), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
-    assert_eq!(app.input_history, ["one"]);
+    assert_eq!(guarded.input.lines(), &["one"]);
+    assert!(guarded.input_history.is_empty());
+    guarded.handle(key(KeyCode::Enter), &mut dirty);
+    guarded.handle(key(KeyCode::Enter), &mut dirty);
+    assert_eq!(guarded.input_history, ["one"]);
     assert_eq!(
-        app.input_queue
+        guarded
+            .input_queue
             .snapshot_since(None)
             .unwrap()
             .unwrap()
             .steering(),
         1
     );
-    app.state = State::Ready;
-    app.queue_paused = true;
+    guarded.state = State::Ready;
+    guarded.queue_paused = true;
     for command in ["/new", "/resume", "/tree"] {
-        app.input = editor();
-        app.input.insert_str(command);
-        let cursor = app.input.cursor();
-        app.submit(PendingKind::Steering);
-        assert_eq!(app.input.lines(), &[command]);
-        assert_eq!(app.input.cursor(), cursor);
-        assert!(matches!(app.state, State::Ready));
-        assert!(requests.try_recv().is_err());
+        guarded.input = editor();
+        guarded.input.insert_str(command);
+        let cursor = guarded.input.cursor();
+        guarded.submit(PendingKind::Steering);
+        assert_eq!(guarded.input.lines(), &[command]);
+        assert_eq!(guarded.input.cursor(), cursor);
+        assert!(matches!(guarded.state, State::Ready) && g_req.try_recv().is_err());
     }
-    app.input = editor();
-    app.handle(key(KeyCode::Esc), &mut dirty);
-    app.handle(key(KeyCode::Esc), &mut dirty);
-    assert!(app.tree_panel.is_none());
-    assert!(requests.try_recv().is_err());
+    guarded.input = editor();
+    guarded.handle(key(KeyCode::Esc), &mut dirty);
+    guarded.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(guarded.tree_panel.is_none() && g_req.try_recv().is_err());
 }
 
 #[test]
-fn input_arrows_move_between_wrapped_lines_before_history() {
-    let mut app = app();
-    app.input_history.push("history".into());
+fn input_wrapping_height_and_native_cursor() {
+    let mut arrow_app = app();
+    arrow_app.input_history.push("history".into());
     let text = "abcdefghijklmnopqrstuvwxyz0123456789!";
     let mut dirty = false;
-    app.handle(Event::Paste(text.into()), &mut dirty);
-    draw(&mut app, 14, 12);
-    let cursor = app.input.cursor();
-    let row = app.input.screen_cursor().row;
+    arrow_app.handle(Event::Paste(text.into()), &mut dirty);
+    draw(&mut arrow_app, 14, 12);
+    let cursor = arrow_app.input.cursor();
+    let row = arrow_app.input.screen_cursor().row;
     assert!(row > 0);
+    arrow_app.handle(key(KeyCode::Up), &mut dirty);
+    draw(&mut arrow_app, 14, 12);
+    assert_eq!(arrow_app.input.screen_cursor().row, row - 1);
+    assert!(arrow_app.history_index.is_none());
+    arrow_app.handle(key(KeyCode::Down), &mut dirty);
+    draw(&mut arrow_app, 14, 12);
+    assert_eq!(arrow_app.input.cursor(), cursor);
+    assert_eq!(arrow_app.input.lines(), &[text]);
+    assert!(arrow_app.history_index.is_none());
 
-    app.handle(key(KeyCode::Up), &mut dirty);
-    draw(&mut app, 14, 12);
-    assert_eq!(app.input.screen_cursor().row, row - 1);
-    assert!(app.history_index.is_none());
-    app.handle(key(KeyCode::Down), &mut dirty);
-    draw(&mut app, 14, 12);
-    assert_eq!(app.input.cursor(), cursor);
-    assert_eq!(app.input.lines(), &[text]);
-    assert!(app.history_index.is_none());
-}
-
-#[test]
-fn input_paste_height_tracks_wrapped_rows_on_first_draw() {
     for (text, width, rows) in [
         ("", 14, 1),
         ("abcdefghijkl", 14, 1),
@@ -427,80 +382,83 @@ fn input_paste_height_tracks_wrapped_rows_on_first_draw() {
         ("abcdefghijklmnop\n\nlast", 14, 4),
         ("abcdefghijklmnopqrstuvwxyz", 9, 4),
     ] {
-        let mut app = app();
-        let mut dirty = false;
-        app.handle(Event::Paste(text.into()), &mut dirty);
-        let cursor = app.input.cursor();
-        let screen = draw(&mut app, width, 16);
+        let mut a = app();
+        a.handle(Event::Paste(text.into()), &mut dirty);
+        let cursor = a.input.cursor();
+        let screen = draw(&mut a, width, 16);
         assert_eq!(
-            app.main_layout(Rect::new(0, 0, width, 16))
+            a.main_layout(Rect::new(0, 0, width, 16))
                 .conversation
                 .height,
             13 - rows,
             "输入框应按折行后的行数增长：{text:?}"
         );
-        assert_eq!(app.input.cursor(), cursor);
-        assert_eq!(app.input_text(), text);
-        assert_eq!(app.input.scroll_offset(), (0, 0));
+        assert_eq!(a.input.cursor(), cursor);
+        assert_eq!(a.input_text(), text);
+        assert_eq!(a.input.scroll_offset(), (0, 0));
         if text == "abcdefghijklmnopqrstuvwxyz" && width == 14 {
-            assert!(screen.contains("❯ abcdefghijkl"));
-            assert!(screen.contains("  mnopqrstuvwx"));
-            assert!(screen.contains("  yz"));
+            assert!(
+                screen.contains("❯ abcdefghijkl")
+                    && screen.contains("  mnopqrstuvwx")
+                    && screen.contains("  yz")
+            );
         }
     }
-}
 
-#[test]
-fn input_wrapped_height_caps_at_six_rows_and_shrinks_after_editing() {
-    let mut app = app();
-    let mut dirty = false;
-    let text = "a".repeat(100);
-    app.handle(Event::Paste(text.clone()), &mut dirty);
-    draw(&mut app, 14, 16);
+    let mut capped = app();
+    let long = "a".repeat(100);
+    capped.handle(Event::Paste(long.clone()), &mut dirty);
+    draw(&mut capped, 14, 16);
     assert_eq!(
-        app.main_layout(Rect::new(0, 0, 14, 16)).conversation.height,
+        capped
+            .main_layout(Rect::new(0, 0, 14, 16))
+            .conversation
+            .height,
         7
     );
-    assert_eq!(app.input.scroll_offset(), (3, 0));
-    app.input.move_cursor(CursorMove::Jump(0, 0));
-    app.input.start_selection();
-    app.input.move_cursor(CursorMove::Jump(0, 24));
-    let selection = app.input.selection_range();
-    draw(&mut app, 14, 16);
-    assert_eq!(app.input.selection_range(), selection);
-    assert_eq!(app.input.scroll_offset(), (2, 0));
-    app.input.cancel_selection();
-    app.handle(control('a'), &mut dirty);
-    app.handle(control('k'), &mut dirty);
-    draw(&mut app, 14, 16);
-    assert_eq!(app.input_text(), "");
+    assert_eq!(capped.input.scroll_offset(), (3, 0));
+    capped.input.move_cursor(CursorMove::Jump(0, 0));
+    capped.input.start_selection();
+    capped.input.move_cursor(CursorMove::Jump(0, 24));
+    let selection = capped.input.selection_range();
+    draw(&mut capped, 14, 16);
+    assert_eq!(capped.input.selection_range(), selection);
+    assert_eq!(capped.input.scroll_offset(), (2, 0));
+    capped.input.cancel_selection();
+    capped.handle(control('a'), &mut dirty);
+    capped.handle(control('k'), &mut dirty);
+    draw(&mut capped, 14, 16);
+    assert_eq!(capped.input_text(), "");
     assert_eq!(
-        app.main_layout(Rect::new(0, 0, 14, 16)).conversation.height,
+        capped
+            .main_layout(Rect::new(0, 0, 14, 16))
+            .conversation
+            .height,
         12
     );
-    assert_eq!(app.input.scroll_offset(), (0, 0));
-    app.handle(control('u'), &mut dirty);
-    draw(&mut app, 14, 16);
-    assert_eq!(app.input_text(), text);
+    assert_eq!(capped.input.scroll_offset(), (0, 0));
+    capped.handle(control('u'), &mut dirty);
+    draw(&mut capped, 14, 16);
+    assert_eq!(capped.input_text(), long);
     assert_eq!(
-        app.main_layout(Rect::new(0, 0, 14, 16)).conversation.height,
+        capped
+            .main_layout(Rect::new(0, 0, 14, 16))
+            .conversation
+            .height,
         7
     );
-}
 
-#[test]
-fn input_native_cursor_follows_unicode_wrapping_scrolling_and_resize() {
     for (text, width, height, expected) in [
         ("", 100, 30, (2, 27)),
         ("中🙂h", 100, 30, (7, 27)),
         ("first\n中🙂h", 100, 30, (7, 27)),
         ("0\n1\n2\n3\n4\n5\n中🙂h", 100, 30, (7, 27)),
     ] {
-        let mut app = app();
-        app.input.insert_str(text);
+        let mut a = app();
+        a.input.insert_str(text);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
-            .draw(|frame| app.draw(frame, &StatusContext::default()))
+            .draw(|frame| a.draw(frame, &StatusContext::default()))
             .unwrap();
         assert!(terminal.backend().cursor_visible());
         assert_eq!(terminal.backend().cursor_position(), expected.into());
@@ -514,20 +472,20 @@ fn input_native_cursor_follows_unicode_wrapping_scrolling_and_resize() {
         );
     }
 
-    let mut app = app();
-    app.input.insert_str("abcdefghijklmnopqrstuvwxyz");
+    let mut resize = app();
+    resize.input.insert_str("abcdefghijklmnopqrstuvwxyz");
     for (width, column, top) in [(14, 4, 0), (40, 28, 0), (9, 7, 0)] {
         let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
         terminal
-            .draw(|frame| app.draw(frame, &StatusContext::default()))
+            .draw(|frame| resize.draw(frame, &StatusContext::default()))
             .unwrap();
         assert_eq!(terminal.backend().cursor_position(), (column, 9).into());
-        assert_eq!(app.input.scroll_offset(), (top, 0));
+        assert_eq!(resize.input.scroll_offset(), (top, 0));
     }
 }
 
 #[test]
-fn input_control_keys_respect_unicode_and_line_boundaries() {
+fn input_control_keys_and_menu_history() {
     let mut app = app();
     let mut dirty = false;
     app.handle(Event::Paste("first\n中🙂abc\nlast".into()), &mut dirty);
@@ -538,7 +496,6 @@ fn input_control_keys_respect_unicode_and_line_boundaries() {
     app.handle(control('e'), &mut dirty);
     app.handle(control('e'), &mut dirty);
     assert_eq!(app.input.cursor(), (1, 5));
-    // 行尾 Ctrl+K 一并删除换行符，把下一行接到本行末尾。
     app.handle(control('k'), &mut dirty);
     assert_eq!(app.input.lines(), &["first", "中🙂abclast"]);
     assert_eq!(app.input.cursor(), (1, 5));
@@ -549,30 +506,25 @@ fn input_control_keys_respect_unicode_and_line_boundaries() {
     app.handle(control('a'), &mut dirty);
     app.handle(control('k'), &mut dirty);
     assert_eq!(app.input.lines(), &["first", ""]);
-    // 最后一行行尾没有可删除的换行符：草稿保持不变。
     app.handle(control('k'), &mut dirty);
     assert_eq!(app.input.lines(), &["first", ""]);
-}
 
-#[test]
-fn input_history_yields_to_menus_and_control_edits_refresh_candidates() {
-    let mut app = app();
-    app.input_history.push("older task".into());
-    let mut dirty = false;
-    app.handle(Event::Paste("/".into()), &mut dirty);
-    app.handle(key(KeyCode::Down), &mut dirty);
-    assert_eq!(app.menu.as_ref().unwrap().selected_index(), Some(1));
-    app.handle(key(KeyCode::Up), &mut dirty);
-    assert_eq!(app.input.lines(), &["/"]);
-    assert!(app.history_index.is_none());
-    app.handle(control('a'), &mut dirty);
-    assert_eq!(app.input.cursor(), (0, 0));
-    app.handle(control('e'), &mut dirty);
-    assert_eq!(app.input.cursor(), (0, 1));
-    app.handle(control('a'), &mut dirty);
-    app.handle(control('k'), &mut dirty);
-    assert_eq!(app.input.lines(), &[""]);
-    assert!(app.menu.is_none());
-    app.handle(key(KeyCode::Up), &mut dirty);
-    assert_eq!(app.input.lines(), &["older task"]);
+    let mut hist = super::app();
+    hist.input_history.push("older task".into());
+    hist.handle(Event::Paste("/".into()), &mut dirty);
+    hist.handle(key(KeyCode::Down), &mut dirty);
+    assert_eq!(hist.menu.as_ref().unwrap().selected_index(), Some(1));
+    hist.handle(key(KeyCode::Up), &mut dirty);
+    assert_eq!(hist.input.lines(), &["/"]);
+    assert!(hist.history_index.is_none());
+    hist.handle(control('a'), &mut dirty);
+    assert_eq!(hist.input.cursor(), (0, 0));
+    hist.handle(control('e'), &mut dirty);
+    assert_eq!(hist.input.cursor(), (0, 1));
+    hist.handle(control('a'), &mut dirty);
+    hist.handle(control('k'), &mut dirty);
+    assert_eq!(hist.input.lines(), &[""]);
+    assert!(hist.menu.is_none());
+    hist.handle(key(KeyCode::Up), &mut dirty);
+    assert_eq!(hist.input.lines(), &["older task"]);
 }

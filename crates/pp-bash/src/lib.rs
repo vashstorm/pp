@@ -565,7 +565,7 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::*;
     use rustix::process::Pid;
     use std::time::Duration;

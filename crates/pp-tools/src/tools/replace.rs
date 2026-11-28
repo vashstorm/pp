@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn replace_snapshot_order_and_adjacency() {
+    fn replace_ordering_fuzzy_matching_and_newlines() {
         assert_eq!(
             apply_edits("one\ntwo\nthree\n", &[("three", "THREE"), ("one", "ONE")]).unwrap(),
             "ONE\ntwo\nTHREE\n"
@@ -321,10 +321,7 @@ mod tests {
             "ABc\n"
         );
         assert_eq!(apply_edits("aaa", &[("aa", "X")]).unwrap(), "Xa");
-    }
 
-    #[test]
-    fn replace_fuzzy_preserves_untouched_lines_by_position() {
         assert_eq!(
             apply_edits(
                 "keep “Ｋ”  \nsay “Hi”—x  \nend\n",
@@ -357,10 +354,22 @@ mod tests {
             apply_edits("keep Ｋ  \n“x”  ", &[("\"x\"", "")]).unwrap(),
             "keep Ｋ  \n  "
         );
+
+        for (source, old, new, expected) in [
+            ("\u{feff}a\r\nb\r\n", "a\nb", "A\nB", "\u{feff}A\r\nB\r\n"),
+            ("a\rb\r", "a\rb", "A\rB", "A\nB\n"),
+            ("a\rb\r\nc\n", "a", "A", "A\r\nb\r\nc\r\n"),
+            ("a\nb\r\n", "a", "A", "A\nb\n"),
+            ("abc", "b", "", "ac"),
+            ("abc", "abc", "", ""),
+            ("a\nb", "b", "B", "a\nB"),
+        ] {
+            assert_eq!(apply_edits(source, &[(old, new)]).unwrap(), expected);
+        }
     }
 
     #[test]
-    fn replace_rejects_ambiguity_overlap_missing_and_empty() {
+    fn replace_rejects_invalid_and_preserves_unicode_boundaries() {
         for (source, edits) in [
             ("X\nＡ\nA\n", vec![("Ａ", "B")]),
             ("abc\n", vec![("abc", "x"), ("bc", "y")]),
@@ -378,25 +387,7 @@ mod tests {
             apply_edits("one\ntwo\n", &[("one", "one"), ("two", "TWO")]).unwrap(),
             "one\nTWO\n"
         );
-    }
 
-    #[test]
-    fn replace_bom_newlines_deletion_and_eof() {
-        for (source, old, new, expected) in [
-            ("\u{feff}a\r\nb\r\n", "a\nb", "A\nB", "\u{feff}A\r\nB\r\n"),
-            ("a\rb\r", "a\rb", "A\rB", "A\nB\n"),
-            ("a\rb\r\nc\n", "a", "A", "A\r\nb\r\nc\r\n"),
-            ("a\nb\r\n", "a", "A", "A\nb\n"),
-            ("abc", "b", "", "ac"),
-            ("abc", "abc", "", ""),
-            ("a\nb", "b", "B", "a\nB"),
-        ] {
-            assert_eq!(apply_edits(source, &[(old, new)]).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn replace_fuzzy_whitespace_and_punctuation_boundaries() {
         assert_eq!(
             apply_edits("x\u{feff}\ny\n", &[("x\ny", "z")]).unwrap(),
             "z\n"
@@ -410,9 +401,7 @@ mod tests {
             apply_edits("say ‘hi’−Ｋ\u{a0}x\n", &[("say 'hi'-K x", "ok")]).unwrap(),
             "ok\n"
         );
-    }
-    #[test]
-    fn replace_fuzzy_preserves_same_line_bytes_and_unicode_boundaries() {
+
         assert_eq!(
             apply_edits("before Ｋ “x” Ａ  \n", &[("\"x\"", "Y")]).unwrap(),
             "before Ｋ Y Ａ  \n"

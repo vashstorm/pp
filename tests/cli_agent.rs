@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use axum::{body::Body, response::Response};
 use pp_test_support::{CapturedRequest, SseWriter, TestServer};
 use serde_json::{Value, json};

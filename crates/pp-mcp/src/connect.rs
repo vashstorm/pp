@@ -551,7 +551,7 @@ pub(super) fn exposed_name(server: &str, tool: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::plan_server_config;
     use super::*;
     use std::path::Path;
@@ -559,43 +559,44 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn plan_mcp_connect_cancelled_before_spawn_does_not_spawn() {
-        let marker = std::env::temp_dir().join(format!("pp_mcp_no_spawn_{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
-        let config =
-            plan_server_config(&["-c", &format!("touch {} && sleep 30", marker.display())]);
-        let mut configs = BTreeMap::new();
-        configs.insert("never".into(), config);
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let error = McpManager::connect(&configs, Path::new("."), &cancellation)
-            .err()
-            .unwrap();
-        assert!(error.downcast_ref::<Cancelled>().is_some());
-        assert!(format!("{error:#}").contains("connecting MCP server never"));
-        // spawn 前已检查取消，fixture 进程从未启动。
-        assert!(!marker.exists());
-    }
-
-    #[test]
-    fn plan_mcp_connect_cancelled_during_discovery_reclaims_process() {
-        let cancellation = CancellationToken::new();
-        let canceller = cancellation.clone();
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(50));
-            canceller.cancel();
-        });
-        let mut configs = BTreeMap::new();
-        // 超时远大于取消时机，确保失败来自取消而非请求超时。
-        let mut config = plan_server_config(&["-c", "sleep 30"]);
-        config.timeout_seconds = 30;
-        configs.insert("slow".into(), config);
-        let error = McpManager::connect(&configs, Path::new("."), &cancellation)
-            .err()
-            .unwrap();
-        // discovery 取消且显式回收成功：错误保持 Cancelled，
-        // 若停止失败会被升级为 CleanupError 而非 Cancelled。
-        assert!(error.downcast_ref::<Cancelled>().is_some());
+    fn plan_mcp_connect_cancellation_guards() {
+        {
+            let marker =
+                std::env::temp_dir().join(format!("pp_mcp_no_spawn_{}", std::process::id()));
+            let _ = std::fs::remove_file(&marker);
+            let config =
+                plan_server_config(&["-c", &format!("touch {} && sleep 30", marker.display())]);
+            let mut configs = BTreeMap::new();
+            configs.insert("never".into(), config);
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let error = McpManager::connect(&configs, Path::new("."), &cancellation)
+                .err()
+                .unwrap();
+            assert!(error.downcast_ref::<Cancelled>().is_some());
+            assert!(format!("{error:#}").contains("connecting MCP server never"));
+            // spawn 前已检查取消，fixture 进程从未启动。
+            assert!(!marker.exists());
+        }
+        {
+            let cancellation = CancellationToken::new();
+            let canceller = cancellation.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                canceller.cancel();
+            });
+            let mut configs = BTreeMap::new();
+            // 超时远大于取消时机，确保失败来自取消而非请求超时。
+            let mut config = plan_server_config(&["-c", "sleep 30"]);
+            config.timeout_seconds = 30;
+            configs.insert("slow".into(), config);
+            let error = McpManager::connect(&configs, Path::new("."), &cancellation)
+                .err()
+                .unwrap();
+            // discovery 取消且显式回收成功：错误保持 Cancelled，
+            // 若停止失败会被升级为 CleanupError 而非 Cancelled。
+            assert!(error.downcast_ref::<Cancelled>().is_some());
+        }
     }
 }
 
@@ -624,43 +625,43 @@ mod background_tests {
     }
 
     #[test]
-    fn background_connect_returns_immediately_and_registers_tools_before_await() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_config(dir.path(), "local");
-        let manager = Arc::new(McpManager::new_isolated(path, dir.path().to_path_buf()));
-        let started = Instant::now();
-        manager.start_connect(Access::Full);
-        // 启动不等握手：起线程与登记进度立即返回，工具表由后台补齐。
-        assert!(started.elapsed() < Duration::from_secs(1));
-        manager.await_connect(&CancellationToken::new()).unwrap();
-        let snapshot = manager.connect_snapshot();
-        assert!(snapshot.finished);
-        assert_eq!(snapshot.servers.len(), 1);
-        assert_eq!(snapshot.servers[0].name, "local");
-        assert_eq!(snapshot.servers[0].phase, ConnectPhase::Connected);
-        assert!(snapshot.servers[0].elapsed.is_some());
-        let tip = snapshot.tip().expect("已配置服务必须有总状态");
-        assert!(
-            tip.starts_with("Connected to MCP servers: 1 succeeded ("),
-            "{tip}"
-        );
-        assert!(!tip.contains("failed"), "{tip}");
-        assert!(tip.ends_with(')'), "{tip}");
-        // 首个任务前的屏障保证模型请求能看到 MCP 工具。
-        assert!(
-            !manager.definitions(Access::Full).is_empty(),
-            "{}",
-            manager.view(Access::Full).text()
-        );
-        manager.shutdown().unwrap();
-    }
-
-    #[test]
-    fn await_connect_on_a_manager_that_never_started_returns_at_once() {
-        let manager = McpManager::empty();
-        let started = Instant::now();
-        manager.await_connect(&CancellationToken::new()).unwrap();
-        assert!(started.elapsed() < Duration::from_secs(1));
-        assert!(manager.connect_snapshot().tip().is_none());
+    fn background_connect_lifecycle() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_config(dir.path(), "local");
+            let manager = Arc::new(McpManager::new_isolated(path, dir.path().to_path_buf()));
+            let started = Instant::now();
+            manager.start_connect(Access::Full);
+            // 启动不等握手：起线程与登记进度立即返回，工具表由后台补齐。
+            assert!(started.elapsed() < Duration::from_secs(1));
+            manager.await_connect(&CancellationToken::new()).unwrap();
+            let snapshot = manager.connect_snapshot();
+            assert!(snapshot.finished);
+            assert_eq!(snapshot.servers.len(), 1);
+            assert_eq!(snapshot.servers[0].name, "local");
+            assert_eq!(snapshot.servers[0].phase, ConnectPhase::Connected);
+            assert!(snapshot.servers[0].elapsed.is_some());
+            let tip = snapshot.tip().expect("已配置服务必须有总状态");
+            assert!(
+                tip.starts_with("Connected to MCP servers: 1 succeeded ("),
+                "{tip}"
+            );
+            assert!(!tip.contains("failed"), "{tip}");
+            assert!(tip.ends_with(')'), "{tip}");
+            // 首个任务前的屏障保证模型请求能看到 MCP 工具。
+            assert!(
+                !manager.definitions(Access::Full).is_empty(),
+                "{}",
+                manager.view(Access::Full).text()
+            );
+            manager.shutdown().unwrap();
+        }
+        {
+            let manager = McpManager::empty();
+            let started = Instant::now();
+            manager.await_connect(&CancellationToken::new()).unwrap();
+            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(manager.connect_snapshot().tip().is_none());
+        }
     }
 }

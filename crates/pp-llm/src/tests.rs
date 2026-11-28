@@ -180,475 +180,237 @@ fn chat_chunk(delta: Value, finish: Option<&str>) -> Value {
     })
 }
 
-#[test]
-fn http_errors_hide_body_and_redirects_are_not_followed() {
-    for status in [302u16, 401, 429, 500] {
-        let server = TestServer::start().unwrap();
-        let base_url = format!("http://{}", server.addr());
-        let mut client = test_client(&base_url);
-        let token = CancellationToken::new();
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                let request = server
-                    .recv_timeout(Duration::from_secs(3))
-                    .unwrap()
-                    .unwrap();
-                request
-                    .respond(
-                        Response::builder()
-                            .status(status)
-                            .header("Location", base_url.as_str())
-                            .body(Body::from("private-body"))
-                            .unwrap(),
-                    )
-                    .unwrap();
-            });
-            let mut sent = 0;
-            let mut finished = None;
-            let error = client
-                .complete(
-                    &CreateChatCompletionRequest::default(),
-                    &token,
-                    &mut || {
-                        sent += 1;
-                        Ok(())
-                    },
-                    &mut |event| {
-                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
-                            finished = Some((usage, success));
-                        }
-                    },
-                )
-                .err()
-                .unwrap()
-                .to_string();
-            assert_eq!(finished, Some((None, false)));
-            assert_eq!(sent, 1);
-            assert!(error.contains(&status.to_string()));
-            assert!(!error.contains("private-body") && !error.contains("private-key"));
-        });
-        assert!(
-            server
-                .recv_timeout(Duration::from_millis(50))
-                .unwrap()
-                .is_none()
-        );
-    }
-}
+mod integration {
+    use super::*;
 
-fn api_error(status: u16, code: Option<&str>) -> OpenAIError {
-    OpenAIError::ApiError(ApiErrorResponse {
-        status_code: reqwest::StatusCode::from_u16(status).unwrap(),
-        api_error: ApiError {
-            message: String::new(),
-            r#type: None,
-            param: None,
-            code: code.map(str::to_owned),
-            misalignment: None,
-        },
-    })
-}
-
-#[test]
-fn broken_response_body_reports_stream_failure_and_preserves_retry_boundary() {
-    for responses in [false, true] {
-        let server = TestServer::start().unwrap();
-        let mut client =
-            test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                for _ in 0..2 {
+    #[test]
+    fn http_errors_retry_policy_and_backoff_exhaustion() {
+        for status in [302u16, 401, 429, 500] {
+            let server = TestServer::start().unwrap();
+            let base_url = format!("http://{}", server.addr());
+            let mut client = test_client(&base_url);
+            let token = CancellationToken::new();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
                     let request = server
                         .recv_timeout(Duration::from_secs(3))
                         .unwrap()
                         .unwrap();
-                    assert_eq!(
-                        request.target(),
-                        if responses {
-                            "/responses"
-                        } else {
-                            "/chat/completions"
-                        }
-                    );
                     request
                         .respond(
                             Response::builder()
-                                .header("Content-Type", "text/event-stream")
-                                .header("Content-Encoding", "gzip")
-                                .body(Body::from("private-body-invalid-gzip"))
+                                .status(status)
+                                .header("Location", base_url.as_str())
+                                .body(Body::from("private-body"))
                                 .unwrap(),
                         )
                         .unwrap();
-                }
-            });
-            let mut sent = 0;
-            let mut finished = Vec::new();
-            let mut retries = Vec::new();
-            let mut on_sent = || {
-                sent += 1;
-                Ok(())
-            };
-            let mut emit = |event| match event {
-                AgentEvent::ModelRequestFinished { success, .. } => finished.push(success),
-                AgentEvent::RequestRetrying { reason, .. } => retries.push(reason),
-                _ => {}
-            };
-            let token = CancellationToken::new();
-            let error = if responses {
-                client
-                    .respond(&CreateResponse::default(), &token, &mut on_sent, &mut emit)
-                    .err()
-                    .unwrap()
-            } else {
-                client
+                });
+                let mut sent = 0;
+                let mut finished = None;
+                let error = client
                     .complete(
                         &CreateChatCompletionRequest::default(),
                         &token,
-                        &mut on_sent,
-                        &mut emit,
+                        &mut || {
+                            sent += 1;
+                            Ok(())
+                        },
+                        &mut |event| {
+                            if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                                finished = Some((usage, success));
+                            }
+                        },
                     )
                     .err()
                     .unwrap()
-            };
-            assert!(super::retry::model_request_failed(&error));
-            let message = error.to_string();
-            let api = if responses {
-                "Responses"
-            } else {
-                "Chat Completions"
-            };
+                    .to_string();
+                assert_eq!(finished, Some((None, false)));
+                assert_eq!(sent, 1);
+                assert!(error.contains(&status.to_string()));
+                assert!(!error.contains("private-body") && !error.contains("private-key"));
+            });
             assert!(
-                message.starts_with(&format!("{api} response stream interrupted")),
-                "{message}"
+                server
+                    .recv_timeout(Duration::from_millis(50))
+                    .unwrap()
+                    .is_none()
             );
-            assert!(!message.contains("private-body") && !message.contains("private-key"));
-            assert_eq!(sent, 1);
-            assert_eq!(finished, [false, false]);
-            assert_eq!(retries, [pp_core::events::RequestRetryReason::ModelError]);
-        });
-    }
-}
+        }
 
-#[test]
-fn request_retry_policy_shares_attempt_cap_budget_and_error_boundary() {
-    let delay = |error: anyhow::Error, waited, budget, attempt| {
-        let mut state = RequestAttempts::new(budget);
-        state.waited = waited;
-        state.attempt = attempt;
-        state.finish(&Err::<(), _>(error));
-        state.delay
-    };
-    let budget = Duration::from_secs(300);
-    for (attempt, seconds) in [(1, 2), (2, 4), (4, 16)] {
+        for responses in [false, true] {
+            let server = TestServer::start().unwrap();
+            let mut client =
+                test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for _ in 0..2 {
+                        let request = server
+                            .recv_timeout(Duration::from_secs(3))
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(
+                            request.target(),
+                            if responses {
+                                "/responses"
+                            } else {
+                                "/chat/completions"
+                            }
+                        );
+                        request
+                            .respond(
+                                Response::builder()
+                                    .header("Content-Type", "text/event-stream")
+                                    .header("Content-Encoding", "gzip")
+                                    .body(Body::from("private-body-invalid-gzip"))
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                    }
+                });
+                let mut sent = 0;
+                let mut finished = Vec::new();
+                let mut retries = Vec::new();
+                let mut on_sent = || {
+                    sent += 1;
+                    Ok(())
+                };
+                let mut emit = |event| match event {
+                    AgentEvent::ModelRequestFinished { success, .. } => finished.push(success),
+                    AgentEvent::RequestRetrying { reason, .. } => retries.push(reason),
+                    _ => {}
+                };
+                let token = CancellationToken::new();
+                let error = if responses {
+                    client
+                        .respond(&CreateResponse::default(), &token, &mut on_sent, &mut emit)
+                        .err()
+                        .unwrap()
+                } else {
+                    client
+                        .complete(
+                            &CreateChatCompletionRequest::default(),
+                            &token,
+                            &mut on_sent,
+                            &mut emit,
+                        )
+                        .err()
+                        .unwrap()
+                };
+                assert!(super::retry::model_request_failed(&error));
+                let message = error.to_string();
+                let api = if responses {
+                    "Responses"
+                } else {
+                    "Chat Completions"
+                };
+                assert!(
+                    message.starts_with(&format!("{api} response stream interrupted")),
+                    "{message}"
+                );
+                assert!(!message.contains("private-body") && !message.contains("private-key"));
+                assert_eq!(sent, 1);
+                assert_eq!(finished, [false, false]);
+                assert_eq!(retries, [pp_core::events::RequestRetryReason::ModelError]);
+            });
+        }
+
+        let delay = |error: anyhow::Error, waited, budget, attempt| {
+            let mut state = RequestAttempts::new(budget);
+            state.waited = waited;
+            state.attempt = attempt;
+            state.finish(&Err::<(), _>(error));
+            state.delay
+        };
+        let budget = Duration::from_secs(300);
+        for (attempt, seconds) in [(1, 2), (2, 4), (4, 16)] {
+            assert_eq!(
+                delay(
+                    provider_failure(api_error(400, None), "fixture"),
+                    Duration::ZERO,
+                    budget,
+                    attempt
+                ),
+                Some(Duration::from_secs(seconds))
+            );
+        }
+        for status in [302, 400, 401, 403, 408, 409, 429, 500, 599] {
+            assert_eq!(
+                delay(
+                    provider_failure(api_error(status, Some("pp-retry-after:0")), "fixture"),
+                    Duration::ZERO,
+                    budget,
+                    9
+                ),
+                Some(Duration::ZERO)
+            );
+            assert_eq!(
+                delay(
+                    provider_failure(api_error(status, None), "fixture"),
+                    Duration::ZERO,
+                    budget,
+                    10
+                ),
+                None
+            );
+        }
         assert_eq!(
             delay(
-                provider_failure(api_error(400, None), "fixture"),
-                Duration::ZERO,
+                provider_failure(api_error(503, Some("pp-retry-after:7")), "fixture"),
+                Duration::from_secs(296),
                 budget,
-                attempt
+                1
             ),
-            Some(Duration::from_secs(seconds))
-        );
-    }
-    for status in [302, 400, 401, 403, 408, 409, 429, 500, 599] {
-        assert_eq!(
-            delay(
-                provider_failure(api_error(status, Some("pp-retry-after:0")), "fixture"),
-                Duration::ZERO,
-                budget,
-                9
-            ),
-            Some(Duration::ZERO)
+            Some(Duration::from_secs(4))
         );
         assert_eq!(
             delay(
-                provider_failure(api_error(status, None), "fixture"),
-                Duration::ZERO,
+                provider_failure(api_error(503, None), "fixture"),
                 budget,
-                10
+                budget,
+                1
             ),
             None
         );
-    }
-    assert_eq!(
-        delay(
-            provider_failure(api_error(503, Some("pp-retry-after:7")), "fixture"),
-            Duration::from_secs(296),
-            budget,
-            1
-        ),
-        Some(Duration::from_secs(4))
-    );
-    assert_eq!(
-        delay(
-            provider_failure(api_error(503, None), "fixture"),
-            budget,
-            budget,
-            1
-        ),
-        None
-    );
-    assert_eq!(
-        delay(
-            provider_failure(api_error(503, None), "fixture"),
-            Duration::ZERO,
-            Duration::ZERO,
-            1
-        ),
-        None
-    );
-    assert_eq!(delay(Cancelled.into(), Duration::ZERO, budget, 1), None);
-    assert_eq!(
-        delay(
-            anyhow::anyhow!("local journal failure"),
-            Duration::ZERO,
-            budget,
-            1
-        ),
-        None
-    );
-}
+        assert_eq!(
+            delay(
+                provider_failure(api_error(503, None), "fixture"),
+                Duration::ZERO,
+                Duration::ZERO,
+                1
+            ),
+            None
+        );
+        assert_eq!(delay(Cancelled.into(), Duration::ZERO, budget, 1), None);
+        assert_eq!(
+            delay(
+                anyhow::anyhow!("local journal failure"),
+                Duration::ZERO,
+                budget,
+                1
+            ),
+            None
+        );
 
-#[test]
-fn request_retry_exponential_delays_cover_all_nine_retries() {
-    let mut state = RequestAttempts::new(Duration::from_secs(1022));
-    for (index, seconds) in [2, 4, 8, 16, 32, 64, 128, 256, 512].into_iter().enumerate() {
-        state.attempt = index as u32 + 1;
+        let mut state = RequestAttempts::new(Duration::from_secs(1022));
+        for (index, seconds) in [2, 4, 8, 16, 32, 64, 128, 256, 512].into_iter().enumerate() {
+            state.attempt = index as u32 + 1;
+            state.finish(&Err::<(), _>(provider_failure(
+                api_error(503, None),
+                "fixture",
+            )));
+            let delay = state.delay.take().expect("预算应支持完整的九次重试");
+            assert_eq!(delay, Duration::from_secs(seconds));
+            state.waited += delay;
+        }
+        assert_eq!(state.waited, state.budget);
+        state.attempt = 10;
         state.finish(&Err::<(), _>(provider_failure(
             api_error(503, None),
             "fixture",
         )));
-        let delay = state.delay.take().expect("预算应支持完整的九次重试");
-        assert_eq!(delay, Duration::from_secs(seconds));
-        state.waited += delay;
-    }
-    assert_eq!(state.waited, state.budget);
-    state.attempt = 10;
-    state.finish(&Err::<(), _>(provider_failure(
-        api_error(503, None),
-        "fixture",
-    )));
-    assert_eq!(state.delay, None);
-}
+        assert_eq!(state.delay, None);
 
-#[test]
-fn rate_limited_opening_retries_then_finishes_the_request() {
-    let server = TestServer::start().unwrap();
-    let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 30);
-    let token = CancellationToken::new();
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let first = server
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap()
-                .unwrap();
-            first
-                .respond(
-                    Response::builder()
-                        .status(429)
-                        .header("Retry-After", "0")
-                        .body(Body::from("private-body fixture"))
-                        .unwrap(),
-                )
-                .unwrap();
-            let second = server
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap()
-                .unwrap();
-            let mut writer = second.start_sse().unwrap();
-            writer
-                .frame(
-                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
-                        .to_string(),
-                )
-                .unwrap();
-            writer
-                .frame(&chat_chunk(json!({}), Some("stop")).to_string())
-                .unwrap();
-            writer.frame("[DONE]").unwrap();
-            writer.finish();
-        });
-        let mut sent = 0;
-        let mut rate_limited = Vec::new();
-        let turn = client
-            .complete(
-                &CreateChatCompletionRequest::default(),
-                &token,
-                &mut || {
-                    sent += 1;
-                    Ok(())
-                },
-                &mut |event| {
-                    if let AgentEvent::RequestRetrying {
-                        attempt, wait_ms, ..
-                    } = event
-                    {
-                        rate_limited.push((attempt, wait_ms));
-                    }
-                },
-            )
-            .unwrap();
-        assert_eq!(sent, 1);
-        assert_eq!(rate_limited, vec![(1, 0)]);
-        assert_eq!(
-            turn.message.content,
-            Some(ChatCompletionRequestAssistantMessageContent::Text(
-                "recovered".into()
-            ))
-        );
-    });
-    assert!(
-        server
-            .recv_timeout(Duration::from_millis(50))
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn rate_limited_opening_gives_up_when_budget_is_spent() {
-    let server = TestServer::start().unwrap();
-    // 1 秒预算会截断首次 2 秒退避并将其耗尽，第二次 429 直接失败。
-    let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
-    let token = CancellationToken::new();
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            for _ in 0..2 {
-                let request = server
-                    .recv_timeout(Duration::from_secs(3))
-                    .unwrap()
-                    .unwrap();
-                request
-                    .respond(
-                        Response::builder()
-                            .status(429)
-                            .body(Body::from("private-body fixture"))
-                            .unwrap(),
-                    )
-                    .unwrap();
-            }
-        });
-        let mut sent = 0;
-        let mut rate_limited = Vec::new();
-        let mut finished = None;
-        let error = client
-            .complete(
-                &CreateChatCompletionRequest::default(),
-                &token,
-                &mut || {
-                    sent += 1;
-                    Ok(())
-                },
-                &mut |event| match event {
-                    AgentEvent::RequestRetrying {
-                        attempt, wait_ms, ..
-                    } => {
-                        rate_limited.push((attempt, wait_ms));
-                    }
-                    AgentEvent::ModelRequestFinished { success, .. } => {
-                        finished = Some(success);
-                    }
-                    _ => {}
-                },
-            )
-            .err()
-            .unwrap()
-            .to_string();
-        assert_eq!(sent, 1);
-        assert_eq!(rate_limited, vec![(1, 1000)]);
-        assert_eq!(finished, Some(false));
-        assert!(error.contains("HTTP status 429"));
-        assert!(error.contains("gave up after 1 retries and 1s of backoff"));
-        assert!(!error.contains("private-body"));
-    });
-    assert!(
-        server
-            .recv_timeout(Duration::from_millis(50))
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn cancelled_before_request_reports_cancelled_without_sending() {
-    let server = TestServer::start().unwrap();
-    let mut client = test_client(&format!("http://{}", server.addr()));
-    let token = CancellationToken::new();
-    token.cancel();
-    let mut sent = 0;
-    let error = client
-        .complete(
-            &CreateChatCompletionRequest::default(),
-            &token,
-            &mut || {
-                sent += 1;
-                Ok(())
-            },
-            &mut |_| {},
-        )
-        .err()
-        .unwrap();
-    assert_eq!(sent, 1);
-    assert!(error.downcast_ref::<Cancelled>().is_some());
-    assert!(
-        server
-            .recv_timeout(Duration::from_millis(50))
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
-fn sent_callback_error_takes_precedence_over_cancellation() {
-    let mut client = test_client("http://127.0.0.1:1");
-    let token = CancellationToken::new();
-    token.cancel();
-    let mut sent = 0;
-    let error = client
-        .complete(
-            &CreateChatCompletionRequest::default(),
-            &token,
-            &mut || {
-                sent += 1;
-                bail!("persisting session failed")
-            },
-            &mut |_| {},
-        )
-        .err()
-        .unwrap();
-    assert_eq!(sent, 1);
-    assert_eq!(error.to_string(), "persisting session failed");
-    assert!(error.downcast_ref::<Cancelled>().is_none());
-}
-
-#[test]
-fn sqlite_model_usage_counts_logical_requests_once() {
-    // 发送前取消：未实际尝试发送，不计数。
-    {
-        let server = TestServer::start().unwrap();
-        let mut client = test_client(&format!("http://{}", server.addr()));
-        let token = CancellationToken::new();
-        token.cancel();
-        let error = client
-            .complete(
-                &CreateChatCompletionRequest::default(),
-                &token,
-                &mut || Ok(()),
-                &mut |_| {},
-            )
-            .err()
-            .unwrap();
-        assert!(error.downcast_ref::<Cancelled>().is_some());
-        assert_eq!(usage_of(&client, "fixture/primary"), 0);
-        assert!(
-            server
-                .recv_timeout(Duration::from_millis(50))
-                .unwrap()
-                .is_none()
-        );
-    }
-    // 建连 429 重试后成功：一次逻辑请求只计一次。
-    {
         let server = TestServer::start().unwrap();
         let mut client =
             test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 30);
@@ -685,25 +447,42 @@ fn sqlite_model_usage_counts_logical_requests_once() {
                 writer.frame("[DONE]").unwrap();
                 writer.finish();
             });
-            client
+            let mut sent = 0;
+            let mut rate_limited = Vec::new();
+            let turn = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
                     &token,
-                    &mut || Ok(()),
-                    &mut |_| {},
+                    &mut || {
+                        sent += 1;
+                        Ok(())
+                    },
+                    &mut |event| {
+                        if let AgentEvent::RequestRetrying {
+                            attempt, wait_ms, ..
+                        } = event
+                        {
+                            rate_limited.push((attempt, wait_ms));
+                        }
+                    },
                 )
                 .unwrap();
+            assert_eq!(sent, 1);
+            assert_eq!(rate_limited, vec![(1, 0)]);
+            assert_eq!(
+                turn.message.content,
+                Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    "recovered".into()
+                ))
+            );
         });
-        assert_eq!(usage_of(&client, "fixture/primary"), 1);
         assert!(
             server
                 .recv_timeout(Duration::from_millis(50))
                 .unwrap()
                 .is_none()
         );
-    }
-    // 发送后的失败（重试预算耗尽）：仍计一次。
-    {
+
         let server = TestServer::start().unwrap();
         let mut client =
             test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
@@ -725,34 +504,135 @@ fn sqlite_model_usage_counts_logical_requests_once() {
                         .unwrap();
                 }
             });
+            let mut sent = 0;
+            let mut rate_limited = Vec::new();
+            let mut finished = None;
             let error = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
                     &token,
-                    &mut || Ok(()),
-                    &mut |_| {},
+                    &mut || {
+                        sent += 1;
+                        Ok(())
+                    },
+                    &mut |event| match event {
+                        AgentEvent::RequestRetrying {
+                            attempt, wait_ms, ..
+                        } => {
+                            rate_limited.push((attempt, wait_ms));
+                        }
+                        AgentEvent::ModelRequestFinished { success, .. } => {
+                            finished = Some(success);
+                        }
+                        _ => {}
+                    },
                 )
                 .err()
-                .unwrap();
-            assert!(error.to_string().contains("HTTP status 429"));
+                .unwrap()
+                .to_string();
+            assert_eq!(sent, 1);
+            assert_eq!(rate_limited, vec![(1, 1000)]);
+            assert_eq!(finished, Some(false));
+            assert!(error.contains("HTTP status 429"));
+            assert!(error.contains("gave up after 1 retries and 1s of backoff"));
+            assert!(!error.contains("private-body"));
         });
-        assert_eq!(usage_of(&client, "fixture/primary"), 1);
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
     }
-    // 发送后取消：计一次。
-    {
+
+    fn api_error(status: u16, code: Option<&str>) -> OpenAIError {
+        OpenAIError::ApiError(ApiErrorResponse {
+            status_code: reqwest::StatusCode::from_u16(status).unwrap(),
+            api_error: ApiError {
+                message: String::new(),
+                r#type: None,
+                param: None,
+                code: code.map(str::to_owned),
+                misalignment: None,
+            },
+        })
+    }
+
+    #[test]
+    fn cancellation_precedence_and_runtime_rebuild() {
         let server = TestServer::start().unwrap();
         let mut client = test_client(&format!("http://{}", server.addr()));
         let token = CancellationToken::new();
+        token.cancel();
+        let mut sent = 0;
+        let error = client
+            .complete(
+                &CreateChatCompletionRequest::default(),
+                &token,
+                &mut || {
+                    sent += 1;
+                    Ok(())
+                },
+                &mut |_| {},
+            )
+            .err()
+            .unwrap();
+        assert_eq!(sent, 1);
+        assert!(error.downcast_ref::<Cancelled>().is_some());
+        assert!(
+            server
+                .recv_timeout(Duration::from_millis(50))
+                .unwrap()
+                .is_none()
+        );
+
+        let mut client = test_client("http://127.0.0.1:1");
+        let token = CancellationToken::new();
+        token.cancel();
+        let mut sent = 0;
+        let error = client
+            .complete(
+                &CreateChatCompletionRequest::default(),
+                &token,
+                &mut || {
+                    sent += 1;
+                    bail!("persisting session failed")
+                },
+                &mut |_| {},
+            )
+            .err()
+            .unwrap();
+        assert_eq!(sent, 1);
+        assert_eq!(error.to_string(), "persisting session failed");
+        assert!(error.downcast_ref::<Cancelled>().is_none());
+
+        let server = TestServer::start().unwrap();
+        let mut client = test_client(&format!("http://{}", server.addr()));
+        let (release_first, first_released) = std::sync::mpsc::channel::<()>();
+        let shared = &server;
         std::thread::scope(|scope| {
-            scope.spawn(|| {
-                let request = server
-                    .recv_timeout(Duration::from_secs(3))
+            scope.spawn(move || {
+                let request = shared
+                    .recv_timeout(Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
                 let mut writer = request.start_sse().unwrap();
                 writer
                     .frame(
-                        &chat_chunk(json!({"role":"assistant","content":"ignored"}), None)
+                        &chat_chunk(json!({"role":"assistant","content":"partial"}), None)
+                            .to_string(),
+                    )
+                    .unwrap();
+                first_released.recv_timeout(Duration::from_secs(5)).unwrap();
+                writer.finish();
+                let request = shared
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let mut writer = request.start_sse().unwrap();
+                writer
+                    .frame(
+                        &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
                             .to_string(),
                     )
                     .unwrap();
@@ -762,215 +642,307 @@ fn sqlite_model_usage_counts_logical_requests_once() {
                 writer.frame("[DONE]").unwrap();
                 writer.finish();
             });
+            let token = CancellationToken::new();
+            let mut sent = 0;
+            let mut events = 0;
+            let mut finished = None;
             let error = client
                 .complete(
                     &CreateChatCompletionRequest::default(),
                     &token,
                     &mut || {
-                        token.cancel();
+                        sent += 1;
                         Ok(())
                     },
+                    &mut |event| match event {
+                        AgentEvent::AssistantDelta { .. } => {
+                            events += 1;
+                            token.cancel();
+                        }
+                        AgentEvent::ModelRequestFinished { usage, success, .. } => {
+                            finished = Some((usage, success));
+                        }
+                        _ => {}
+                    },
+                )
+                .err()
+                .unwrap();
+            assert!(events > 0);
+            assert_eq!(sent, 1);
+            assert_eq!(finished, Some((None, false)));
+            assert!(error.downcast_ref::<Cancelled>().is_some());
+            client.cancel_pending_io();
+            assert!(client.runtime.is_none());
+            release_first.send(()).unwrap();
+            let token = CancellationToken::new();
+            let mut sent = 0;
+            let mut finished = None;
+            let turn = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || {
+                        sent += 1;
+                        Ok(())
+                    },
+                    &mut |event| {
+                        if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
+                            finished = Some((usage, success));
+                        }
+                    },
+                )
+                .unwrap();
+            assert_eq!(finished, Some((None, true)));
+            assert_eq!(sent, 1);
+            assert!(client.runtime.is_some());
+            assert_eq!(
+                turn.message.content,
+                Some(ChatCompletionRequestAssistantMessageContent::Text(
+                    "recovered".into()
+                ))
+            );
+            assert!(turn.message.tool_calls.is_none());
+            assert_eq!(turn.usage, None);
+            assert!(!turn.refusal);
+        });
+    }
+
+    #[test]
+    fn usage_counting_and_context_overflow_fail_fast() {
+        {
+            let server = TestServer::start().unwrap();
+            let mut client = test_client(&format!("http://{}", server.addr()));
+            let token = CancellationToken::new();
+            token.cancel();
+            let error = client
+                .complete(
+                    &CreateChatCompletionRequest::default(),
+                    &token,
+                    &mut || Ok(()),
                     &mut |_| {},
                 )
                 .err()
                 .unwrap();
             assert!(error.downcast_ref::<Cancelled>().is_some());
+            assert_eq!(usage_of(&client, "fixture/primary"), 0);
+            assert!(
+                server
+                    .recv_timeout(Duration::from_millis(50))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        {
+            let server = TestServer::start().unwrap();
+            let mut client =
+                test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 30);
+            let token = CancellationToken::new();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let first = server
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    first
+                        .respond(
+                            Response::builder()
+                                .status(429)
+                                .header("Retry-After", "0")
+                                .body(Body::from("private-body fixture"))
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    let second = server
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    let mut writer = second.start_sse().unwrap();
+                    writer
+                        .frame(
+                            &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
+                                .to_string(),
+                        )
+                        .unwrap();
+                    writer
+                        .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                        .unwrap();
+                    writer.frame("[DONE]").unwrap();
+                    writer.finish();
+                });
+                client
+                    .complete(
+                        &CreateChatCompletionRequest::default(),
+                        &token,
+                        &mut || Ok(()),
+                        &mut |_| {},
+                    )
+                    .unwrap();
+            });
+            assert_eq!(usage_of(&client, "fixture/primary"), 1);
+            assert!(
+                server
+                    .recv_timeout(Duration::from_millis(50))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        {
+            let server = TestServer::start().unwrap();
+            let mut client =
+                test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
+            let token = CancellationToken::new();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for _ in 0..2 {
+                        let request = server
+                            .recv_timeout(Duration::from_secs(3))
+                            .unwrap()
+                            .unwrap();
+                        request
+                            .respond(
+                                Response::builder()
+                                    .status(429)
+                                    .body(Body::from("private-body fixture"))
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                    }
+                });
+                let error = client
+                    .complete(
+                        &CreateChatCompletionRequest::default(),
+                        &token,
+                        &mut || Ok(()),
+                        &mut |_| {},
+                    )
+                    .err()
+                    .unwrap();
+                assert!(error.to_string().contains("HTTP status 429"));
+            });
+            assert_eq!(usage_of(&client, "fixture/primary"), 1);
+        }
+        {
+            let server = TestServer::start().unwrap();
+            let mut client = test_client(&format!("http://{}", server.addr()));
+            let token = CancellationToken::new();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let request = server
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    let mut writer = request.start_sse().unwrap();
+                    writer
+                        .frame(
+                            &chat_chunk(json!({"role":"assistant","content":"ignored"}), None)
+                                .to_string(),
+                        )
+                        .unwrap();
+                    writer
+                        .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                        .unwrap();
+                    writer.frame("[DONE]").unwrap();
+                    writer.finish();
+                });
+                let error = client
+                    .complete(
+                        &CreateChatCompletionRequest::default(),
+                        &token,
+                        &mut || {
+                            token.cancel();
+                            Ok(())
+                        },
+                        &mut |_| {},
+                    )
+                    .err()
+                    .unwrap();
+                assert!(error.downcast_ref::<Cancelled>().is_some());
+            });
+            assert_eq!(usage_of(&client, "fixture/primary"), 1);
+            assert!(
+                server
+                    .recv_timeout(Duration::from_millis(50))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        {
+            let server = TestServer::start().unwrap();
+            let mut client =
+                test_client_at(&format!("http://{}", server.addr()), 0, "fixture/secondary");
+            let completed = json!({
+                "type":"response.completed", "sequence_number":5,
+                "response":{
+                    "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
+                    "status":"completed",
+                    "output":[{"type":"message","id":"m","role":"assistant","status":"completed",
+                        "content":[{"type":"output_text","text":"answer","annotations":[]}]}]
+                }
+            })
+            .to_string();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let request = server
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap()
+                        .unwrap();
+                    let mut writer = request.start_sse().unwrap();
+                    writer.frame(&completed).unwrap();
+                    writer.finish();
+                });
+                let turn = client
+                    .respond(
+                        &CreateResponse::default(),
+                        &CancellationToken::new(),
+                        &mut || Ok(()),
+                        &mut |_| {},
+                    )
+                    .unwrap();
+                assert_eq!(turn.text, "answer");
+            });
+            assert_eq!(usage_of(&client, "fixture/secondary"), 1);
+            assert_eq!(usage_of(&client, "fixture/primary"), 0);
+        }
+
+        let server = TestServer::start().unwrap();
+        let mut client =
+            test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 60);
+        let token = CancellationToken::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let first = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .expect("first request");
+                first
+                    .respond(
+                        Response::builder()
+                            .status(400)
+                            .body(Body::from(
+                                r#"{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of secret-model-xyz"}}"#,
+                            ))
+                            .unwrap(),
+                    )
+                    .unwrap();
+            });
+            let err = client
+                .respond(
+                    &CreateResponse::default(),
+                    &token,
+                    &mut || Ok(()),
+                    &mut |_| {},
+                )
+                .err()
+                .unwrap();
+            assert!(crate::retry::is_context_overflow(&err), "{err:#}");
+            assert!(!err.to_string().contains("secret-model-xyz"), "{err:#}");
         });
-        assert_eq!(usage_of(&client, "fixture/primary"), 1);
         assert!(
             server
                 .recv_timeout(Duration::from_millis(50))
                 .unwrap()
-                .is_none()
+                .is_none(),
+            "context overflow must not retry"
         );
     }
-    // Responses 协议成功按各自引用计数，不影响其他模型。
-    {
-        let server = TestServer::start().unwrap();
-        let mut client =
-            test_client_at(&format!("http://{}", server.addr()), 0, "fixture/secondary");
-        let completed = json!({
-            "type":"response.completed", "sequence_number":5,
-            "response":{
-                "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
-                "status":"completed",
-                "output":[{"type":"message","id":"m","role":"assistant","status":"completed",
-                    "content":[{"type":"output_text","text":"answer","annotations":[]}]}]
-            }
-        })
-        .to_string();
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                let request = server
-                    .recv_timeout(Duration::from_secs(5))
-                    .unwrap()
-                    .unwrap();
-                let mut writer = request.start_sse().unwrap();
-                writer.frame(&completed).unwrap();
-                writer.finish();
-            });
-            let turn = client
-                .respond(
-                    &CreateResponse::default(),
-                    &CancellationToken::new(),
-                    &mut || Ok(()),
-                    &mut |_| {},
-                )
-                .unwrap();
-            assert_eq!(turn.text, "answer");
-        });
-        assert_eq!(usage_of(&client, "fixture/secondary"), 1);
-        assert_eq!(usage_of(&client, "fixture/primary"), 0);
-    }
-}
-
-#[test]
-fn cancelled_stream_is_dropped_and_next_request_rebuilds_runtime() {
-    let server = TestServer::start().unwrap();
-    let mut client = test_client(&format!("http://{}", server.addr()));
-    let (release_first, first_released) = std::sync::mpsc::channel::<()>();
-    // 接收端只能属于唯一线程；scoped worker 借 `&TestServer`，主线程保留 sender。
-    let shared = &server;
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
-            // First request: a single partial delta, then the response is held open.
-            let request = shared
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            let mut writer = request.start_sse().unwrap();
-            writer
-                .frame(
-                    &chat_chunk(json!({"role":"assistant","content":"partial"}), None).to_string(),
-                )
-                .unwrap();
-            first_released.recv_timeout(Duration::from_secs(5)).unwrap();
-            writer.finish();
-            // Second request: a fresh client must reconnect and finish normally.
-            let request = shared
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            let mut writer = request.start_sse().unwrap();
-            writer
-                .frame(
-                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
-                        .to_string(),
-                )
-                .unwrap();
-            writer
-                .frame(&chat_chunk(json!({}), Some("stop")).to_string())
-                .unwrap();
-            writer.frame("[DONE]").unwrap();
-            writer.finish();
-        });
-        let token = CancellationToken::new();
-        let mut sent = 0;
-        let mut events = 0;
-        let mut finished = None;
-        let error = client
-            .complete(
-                &CreateChatCompletionRequest::default(),
-                &token,
-                &mut || {
-                    sent += 1;
-                    Ok(())
-                },
-                &mut |event| match event {
-                    // Cancel from the first real stream delta, not from the
-                    // request lifecycle events that bracket the stream.
-                    AgentEvent::AssistantDelta { .. } => {
-                        events += 1;
-                        token.cancel();
-                    }
-                    AgentEvent::ModelRequestFinished { usage, success, .. } => {
-                        finished = Some((usage, success));
-                    }
-                    _ => {}
-                },
-            )
-            .err()
-            .unwrap();
-        assert!(events > 0);
-        assert_eq!(sent, 1);
-        assert_eq!(finished, Some((None, false)));
-        assert!(error.downcast_ref::<Cancelled>().is_some());
-        // Retire the cancelled stream's runtime; the next request rebuilds it.
-        client.cancel_pending_io();
-        assert!(client.runtime.is_none());
-        release_first.send(()).unwrap();
-        let token = CancellationToken::new();
-        let mut sent = 0;
-        let mut finished = None;
-        let turn = client
-            .complete(
-                &CreateChatCompletionRequest::default(),
-                &token,
-                &mut || {
-                    sent += 1;
-                    Ok(())
-                },
-                &mut |event| {
-                    if let AgentEvent::ModelRequestFinished { usage, success, .. } = event {
-                        finished = Some((usage, success));
-                    }
-                },
-            )
-            .unwrap();
-        assert_eq!(finished, Some((None, true)));
-        assert_eq!(sent, 1);
-        assert!(client.runtime.is_some());
-        assert_eq!(
-            turn.message.content,
-            Some(ChatCompletionRequestAssistantMessageContent::Text(
-                "recovered".into()
-            ))
-        );
-        assert!(turn.message.tool_calls.is_none());
-        assert_eq!(turn.usage, None);
-        assert!(!turn.refusal);
-    });
-}
-
-#[test]
-fn context_length_exceeded_fails_fast_without_retry_and_redacts_body() {
-    let server = TestServer::start().unwrap();
-    let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 60);
-    let token = CancellationToken::new();
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let first = server
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap()
-                .expect("first request");
-            first
-                .respond(
-                    Response::builder()
-                        .status(400)
-                        .body(Body::from(
-                            r#"{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of secret-model-xyz"}}"#,
-                        ))
-                        .unwrap(),
-                )
-                .unwrap();
-        });
-        let err = client
-            .respond(
-                &CreateResponse::default(),
-                &token,
-                &mut || Ok(()),
-                &mut |_| {},
-            )
-            .err()
-            .unwrap();
-        assert!(crate::retry::is_context_overflow(&err), "{err:#}");
-        assert!(!err.to_string().contains("secret-model-xyz"), "{err:#}");
-    });
-    assert!(
-        server
-            .recv_timeout(Duration::from_millis(50))
-            .unwrap()
-            .is_none(),
-        "context overflow must not retry"
-    );
 }

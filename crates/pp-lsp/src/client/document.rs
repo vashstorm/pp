@@ -441,7 +441,7 @@ pub(crate) fn language_id(definition: &ServerDefinition, path: &Path) -> String 
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::*;
     use super::*;
     use serde_json::Value;

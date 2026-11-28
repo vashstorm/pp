@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn file_picker_activation_filters_without_rescanning() {
+fn file_picker_navigation_and_completion_keys() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new_with_skills(
         Err(anyhow::anyhow!("fixture")),
@@ -31,12 +31,8 @@ fn file_picker_activation_filters_without_rescanning() {
     assert_eq!(app.file_query.as_ref().unwrap().prefix, "main");
     app.state = State::Running;
     app.refresh_candidates(false);
-    assert!(app.menu.is_some());
-    assert!(app.file_query.is_some());
-}
+    assert!(app.menu.is_some() && app.file_query.is_some());
 
-#[test]
-fn file_picker_confirmation_keys_replace_only_current_reference() {
     for confirm in [KeyCode::Enter, KeyCode::Tab, KeyCode::Right] {
         let (mut app, scans, replies, commands) = file_picker_fixture();
         let mut dirty = false;
@@ -64,10 +60,7 @@ fn file_picker_confirmation_keys_replace_only_current_reference() {
         assert!(commands.try_recv().is_err());
         assert!(matches!(app.state, State::Ready));
     }
-}
 
-#[test]
-fn file_picker_directory_navigation_completes_draft_without_submitting() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("查看 @".into()), &mut dirty);
@@ -142,10 +135,7 @@ fn file_picker_directory_navigation_completes_draft_without_submitting() {
     assert_eq!(app.input.lines(), &["查看 @\"docs/my folder/说明.md\" "]);
     assert!(app.menu.is_none());
     assert!(commands.try_recv().is_err());
-}
 
-#[test]
-fn file_picker_tab_extends_the_shared_path_and_keeps_the_reference_editable() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("首行\n查看 @\"test".into()), &mut dirty);
@@ -167,12 +157,11 @@ fn file_picker_tab_extends_the_shared_path_and_keeps_the_reference_editable() {
     app.handle(key(KeyCode::Char('申')), &mut dirty);
     app.handle(key(KeyCode::Tab), &mut dirty);
     assert_eq!(app.input.lines(), &["首行", "查看 @\"test 中文申.md\" "]);
-    assert!(app.menu.is_none());
-    assert!(commands.try_recv().is_err());
+    assert!(app.menu.is_none() && commands.try_recv().is_err());
 }
 
 #[test]
-fn file_picker_nested_filtering_and_reactivation_reset_directory() {
+fn file_picker_reset_pending_and_cursor_history() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("@".into()), &mut dirty);
@@ -202,18 +191,14 @@ fn file_picker_nested_filtering_and_reactivation_reset_directory() {
     app.receive();
     assert_eq!(menu_values(&app), [MenuAction::FileDirectory(0)]);
     assert!(commands.try_recv().is_err());
-}
 
-#[test]
-fn file_picker_pending_blocks_confirmation_and_escape_ignores_late_reply() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("查看 @".into()), &mut dirty);
     scans.try_recv().unwrap();
-    app.handle(key(KeyCode::Enter), &mut dirty);
-    app.handle(key(KeyCode::Tab), &mut dirty);
-    app.handle(key(KeyCode::Right), &mut dirty);
-    app.handle(key(KeyCode::Left), &mut dirty);
+    for code in [KeyCode::Enter, KeyCode::Tab, KeyCode::Right, KeyCode::Left] {
+        app.handle(key(code), &mut dirty);
+    }
     assert_eq!(app.input.lines(), &["查看 @"]);
     assert!(commands.try_recv().is_err());
     app.handle(key(KeyCode::Esc), &mut dirty);
@@ -228,10 +213,7 @@ fn file_picker_pending_blocks_confirmation_and_escape_ignores_late_reply() {
     assert_eq!(menu_values(&app), [MenuAction::File(0)]);
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert!(app.handle(control('c'), &mut dirty));
-}
 
-#[test]
-fn file_picker_cursor_history_and_resize_preserve_draft_and_selection() {
     let (mut app, scans, replies, _) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("查看 @".into()), &mut dirty);
@@ -274,7 +256,7 @@ fn file_picker_cursor_history_and_resize_preserve_draft_and_selection() {
 }
 
 #[test]
-fn file_picker_missing_references_preserve_draft_and_errors_preserve_worker() {
+fn file_picker_errors_and_suppression() {
     for result in [
         Ok(Vec::new()),
         Ok(vec!["src/other.rs".into()]),
@@ -298,27 +280,23 @@ fn file_picker_missing_references_preserve_draft_and_errors_preserve_worker() {
         assert!(commands.try_recv().is_err());
         assert_eq!(app.input_text(), "查看 @missing");
     }
+
     let (mut app, scans, replies, commands) = file_picker_fixture();
     drop(replies);
     let mut dirty = false;
     app.handle(Event::Paste("@".into()), &mut dirty);
     scans.try_recv().unwrap();
     app.receive();
-    assert!(matches!(app.state, State::Ready));
-    assert_eq!(app.input.lines(), &["@"]);
+    assert!(matches!(app.state, State::Ready) && app.input.lines() == ["@"]);
     assert!(commands.try_recv().is_err());
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     assert!(draw(&mut app, 100, 30).contains("File picker unavailable; restart pp."));
-}
 
-#[test]
-fn file_picker_request_disconnect_preserves_draft_and_agent() {
     let (mut app, scans, _replies, commands) = file_picker_fixture();
     drop(scans);
     let mut dirty = false;
     app.handle(Event::Paste("查看 @".into()), &mut dirty);
-    assert!(matches!(app.state, State::Ready));
-    assert!(!app.files_pending);
+    assert!(matches!(app.state, State::Ready) && !app.files_pending);
     assert_eq!(app.input.lines(), &["查看 @"]);
     assert_notification(&mut app, Color::Rgb(224, 108, 117));
     assert!(draw(&mut app, 100, 30).contains("File picker unavailable; restart pp."));
@@ -326,10 +304,7 @@ fn file_picker_request_disconnect_preserves_draft_and_agent() {
     assert!(
         matches!(commands.try_recv(), Ok(WorkerCommand::Run { prompt: text, .. }) if text == "查看 @")
     );
-}
 
-#[test]
-fn file_picker_busy_slash_and_vertical_movement_do_not_reopen_files() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("first\n@".into()), &mut dirty);
@@ -351,8 +326,7 @@ fn file_picker_busy_slash_and_vertical_movement_do_not_reopen_files() {
     app.state = State::Ready;
     app.clear_input();
     app.handle(Event::Paste("/model @".into()), &mut dirty);
-    assert!(app.file_query.is_none());
-    assert!(scans.try_recv().is_err());
+    assert!(app.file_query.is_none() && scans.try_recv().is_err());
     app.handle(key(KeyCode::Esc), &mut dirty);
     app.clear_input();
     app.handle(Event::Paste("@".into()), &mut dirty);
@@ -362,12 +336,11 @@ fn file_picker_busy_slash_and_vertical_movement_do_not_reopen_files() {
     replies.send(Ok(vec!["src/main.rs".into()])).unwrap();
     app.receive();
     assert_eq!(app.input.lines(), &[""]);
-    assert!(app.model_panel.is_some());
-    assert!(app.file_query.is_none());
+    assert!(app.model_panel.is_some() && app.file_query.is_none());
 }
 
 #[test]
-fn streaming_completion_template_arguments_include_file_references() {
+fn file_picker_templates_and_plan_focus() {
     for text in ["/review @", "/review first\n查看 @"] {
         let (mut app, scans, replies, commands) = file_picker_fixture();
         app.state = State::Running;
@@ -383,25 +356,19 @@ fn streaming_completion_template_arguments_include_file_references() {
         assert!(commands.try_recv().is_err());
         assert!(matches!(app.state, State::Running));
     }
-}
 
-#[test]
-fn completion_plan_list_discussion_tracks_input_focus_and_late_scans() {
     let (mut app, scans, replies, requests) = file_picker_fixture();
     app.workflow = ready_plan_workflow();
     app.plan_list_panel = Some(plan_list::Panel::new());
     app.plan_panel = Some(plan::Panel::review(plan_review_fixture(PlanStatus::Ready)));
     app.handle(Event::Paste("查看 @".into()), &mut false);
-    assert!(app.completion_input_focused());
-    assert!(app.resource_input_available());
+    assert!(app.completion_input_focused() && app.resource_input_available());
     scans.try_recv().unwrap();
-    // 焦点切回操作区后，迟到的扫描结果不能把菜单重新覆盖到计划上。
     app.handle(key(KeyCode::BackTab), &mut false);
     assert!(!app.completion_input_focused());
     replies.send(Ok(vec!["README.md".into()])).unwrap();
     app.receive();
     assert!(app.menu.is_none() && app.file_query.is_none());
-    // 回到输入框即可继续补全，不要求再修改草稿。
     app.handle(key(KeyCode::Tab), &mut false);
     assert!(app.completion_input_focused());
     scans.try_recv().unwrap();
@@ -415,17 +382,12 @@ fn completion_plan_list_discussion_tracks_input_focus_and_late_scans() {
     app.handle(key(KeyCode::Right), &mut false);
     app.handle(key(KeyCode::Right), &mut false);
     assert_eq!(app.input.lines(), &["查看 @src/README.md "]);
-    assert!(app.plan_panel.is_some());
-    assert!(requests.try_recv().is_err());
+    assert!(app.plan_panel.is_some() && requests.try_recv().is_err());
     app.clear_input();
     app.handle(Event::Paste("/model something".into()), &mut false);
-    assert!(app.model_panel.is_none());
-    assert!(app.menu.is_none());
+    assert!(app.model_panel.is_none() && app.menu.is_none());
     assert_eq!(app.input.lines(), &["/model something"]);
-}
 
-#[test]
-fn completion_plan_pending_escape_dismisses_picker_before_panel() {
     let (mut app, scans, replies, requests) = file_picker_fixture();
     app.plan_panel = Some(plan::Panel::review(plan_review_fixture(PlanStatus::Ready)));
     app.handle(Event::Paste("@".into()), &mut false);
@@ -445,7 +407,7 @@ fn completion_plan_pending_escape_dismisses_picker_before_panel() {
 }
 
 #[test]
-fn completion_pending_recall_refreshes_candidates_and_modal_focus_blocks_scans() {
+fn file_picker_recall_and_stale_token_guard() {
     let (mut app, scans, replies, requests) = file_picker_fixture();
     app.input_queue
         .enqueue(PendingKind::FollowUp, "查看 @".into(), None, false)
@@ -453,7 +415,6 @@ fn completion_pending_recall_refreshes_candidates_and_modal_focus_blocks_scans()
     let id = app.input_queue.snapshot_since(None).unwrap().unwrap().items[0].id;
     app.recall_pending(id);
     scans.try_recv().unwrap();
-    // ask 独占输入时，后台回复不应给主草稿打开补全。
     let (_answers, _cancellation) = ask_fixture(&mut app);
     replies.send(Ok(vec!["README.md".into()])).unwrap();
     app.receive();
@@ -461,10 +422,7 @@ fn completion_pending_recall_refreshes_candidates_and_modal_focus_blocks_scans()
     assert!(!app.resource_input_available());
     assert_eq!(app.input.lines(), &["查看 @"]);
     assert!(requests.try_recv().is_err());
-}
 
-#[test]
-fn file_picker_stale_action_cannot_replace_another_token() {
     let (mut app, scans, replies, commands) = file_picker_fixture();
     let mut dirty = false;
     app.handle(Event::Paste("@a @b".into()), &mut dirty);

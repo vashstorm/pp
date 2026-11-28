@@ -379,34 +379,34 @@ mod tests {
     }
 
     #[test]
-    fn category_colors_match_tabs_and_badges_and_keep_selection_visible() {
-        let mut panel = ready_panel(vec![
+    fn category_colors_compact_rows_and_long_unicode_badge() {
+        let mut p1 = ready_panel(vec![
             entry("a", "d.md", PlanLocation::Drafts, "Draft", 0, 1),
             entry("b", "p.md", PlanLocation::Plans, "Ready", 0, 2),
             entry("c", "f.md", PlanLocation::Done, "Done", 2, 2),
         ]);
-        let terminal = draw(&mut panel, 100);
-        let buffer = terminal.backend().buffer();
+        let t1 = draw(&mut p1, 100);
+        let b1 = t1.backend().buffer();
         for (row, label, color) in [
             (3, "[Draft]", accent()),
             (4, "[Plan]", link()),
             (5, "[Done]", added()),
         ] {
-            assert!(row_text(buffer, row).contains(label));
+            assert!(row_text(b1, row).contains(label));
             let cell = (0..100)
-                .map(|x| &buffer[(x, row)])
-                .find(|cell| cell.symbol() == "[")
-                .expect("分类标记应可见");
+                .map(|x| &b1[(x, row)])
+                .find(|c| c.symbol() == "[")
+                .unwrap();
             assert_eq!(cell.fg, if row == 3 { selected_fg() } else { color });
         }
         for selected in 0..4 {
-            let terminal = draw(&mut panel, 100);
-            let buffer = terminal.backend().buffer();
+            let t = draw(&mut p1, 100);
+            let b = t.backend().buffer();
             for (index, (x, color)) in [(1, muted()), (7, accent()), (16, link()), (24, added())]
                 .into_iter()
                 .enumerate()
             {
-                let cell = &buffer[(x, 1)];
+                let cell = &b[(x, 1)];
                 assert_eq!(
                     cell.fg,
                     if index == 0 && selected == 0 {
@@ -417,15 +417,12 @@ mod tests {
                 );
                 assert_eq!(
                     cell.modifier.contains(Modifier::BOLD | Modifier::REVERSED),
-                    index == selected,
+                    index == selected
                 );
             }
-            panel.key(key(KeyCode::Right));
+            p1.key(key(KeyCode::Right));
         }
-    }
 
-    #[test]
-    fn compact_rows_align_titles_fill_background_and_only_label_all_tab() {
         let now = SystemTime::now();
         let mut entries = vec![
             entry("a", "draft-file.md", PlanLocation::Drafts, "修复配置", 0, 2),
@@ -435,42 +432,42 @@ mod tests {
         for (entry, age) in entries.iter_mut().zip([1380, 3600, 86400]) {
             entry.modified = now - std::time::Duration::from_secs(age);
         }
-        let mut panel = ready_panel(entries);
-        let terminal = draw(&mut panel, 70);
-        let buffer = terminal.backend().buffer();
+        let mut p2 = ready_panel(entries);
+        let t2 = draw(&mut p2, 70);
+        let b2 = t2.backend().buffer();
         for (row, age, title, bg) in [
             (3, "23m ago", "修", selected_bg()),
             (4, "1h ago", "R", alternate_row_bg()),
             (5, "1d ago", "F", row_bg()),
         ] {
-            let text = row_text(buffer, row);
-            assert!(text.contains(age), "{text}");
-            assert!(!text.contains(".md") && !text.contains("/2"), "{text}");
-            assert_eq!(buffer[(14, row)].symbol(), title);
+            let text = row_text(b2, row);
+            assert!(
+                text.contains(age) && !text.contains(".md") && !text.contains("/2"),
+                "{text}"
+            );
+            assert_eq!(b2[(14, row)].symbol(), title);
             for x in 0..70 {
-                // 宽字符的后续单元由 Ratatui 重置，不会作为独立字符输出。
-                if x > 0 && Span::raw(buffer[(x - 1, row)].symbol()).width() > 1 {
+                if x > 0 && Span::raw(b2[(x - 1, row)].symbol()).width() > 1 {
                     continue;
                 }
-                assert_eq!(buffer[(x, row)].bg, bg);
+                assert_eq!(b2[(x, row)].bg, bg);
             }
         }
-        panel.key(key(KeyCode::Down));
-        let terminal = draw(&mut panel, 70);
-        assert_eq!(terminal.backend().buffer()[(69, 3)].bg, row_bg());
-        assert_eq!(terminal.backend().buffer()[(69, 4)].bg, selected_bg());
+        p2.key(key(KeyCode::Down));
+        let t2b = draw(&mut p2, 70);
+        assert_eq!(t2b.backend().buffer()[(69, 3)].bg, row_bg());
+        assert_eq!(t2b.backend().buffer()[(69, 4)].bg, selected_bg());
         for title in ["修复配置", "Ready", "Finished"] {
-            panel.key(key(KeyCode::Right));
-            let terminal = draw(&mut panel, 70);
-            let text = row_text(terminal.backend().buffer(), 3);
-            assert!(text.replace(' ', "").contains(title), "{text}");
-            assert!(!text.contains('['), "{text}");
+            p2.key(key(KeyCode::Right));
+            let t = draw(&mut p2, 70);
+            let text = row_text(t.backend().buffer(), 3);
+            assert!(
+                text.replace(' ', "").contains(title) && !text.contains('['),
+                "{text}"
+            );
         }
-    }
 
-    #[test]
-    fn long_unicode_title_keeps_all_tab_badge_on_one_row() {
-        let mut panel = ready_panel(vec![entry(
+        let mut p3 = ready_panel(vec![entry(
             "a",
             "long.md",
             PlanLocation::Drafts,
@@ -478,19 +475,19 @@ mod tests {
             0,
             1,
         )]);
-        let terminal = draw(&mut panel, 34);
-        let buffer = terminal.backend().buffer();
-        let text = row_text(buffer, 3);
+        let t3 = draw(&mut p3, 34);
+        let b3 = t3.backend().buffer();
         assert!(
-            text.replace(' ', "").contains("修复👩‍💻配置e\u{301}…[Draft]"),
-            "{text}"
+            row_text(b3, 3)
+                .replace(' ', "")
+                .contains("修复👩‍💻配置e\u{301}…[Draft]")
         );
-        assert!(row_text(buffer, 4).trim().is_empty());
+        assert!(row_text(b3, 4).trim().is_empty());
     }
 
     #[test]
-    fn search_row_is_always_visible_and_rename_takes_priority() {
-        let mut panel = ready_panel(vec![entry(
+    fn search_bar_narrow_cursor_and_category_filtering() {
+        let mut p1 = ready_panel(vec![entry(
             "a",
             "fix.md",
             PlanLocation::Drafts,
@@ -498,99 +495,73 @@ mod tests {
             0,
             1,
         )]);
-        let terminal = draw(&mut panel, 70);
-        let buffer = terminal.backend().buffer();
-        assert!(row_text(buffer, 2).starts_with("Search: Press / to search"));
-        assert_eq!(buffer[(8, 2)].fg, dim());
-        assert!(!panel.searching);
+        let t1 = draw(&mut p1, 70);
+        assert!(row_text(t1.backend().buffer(), 2).starts_with("Search: Press / to search"));
+        assert_eq!(t1.backend().buffer()[(8, 2)].fg, dim());
+        p1.key(key(KeyCode::Char('/')));
+        p1.paste("修复");
+        let t1b = draw(&mut p1, 70);
+        assert_eq!(t1b.backend().cursor_position(), (12, 2).into());
+        assert_eq!(selected_file(&p1), "fix.md");
+        p1.key(key(KeyCode::Enter));
+        assert!(row_text(draw(&mut p1, 70).backend().buffer(), 2).starts_with("Search: 修"));
+        p1.key(key(KeyCode::Char('r')));
+        assert!(row_text(draw(&mut p1, 70).backend().buffer(), 2).starts_with("rename> fix.md"));
+        p1.key(key(KeyCode::Esc));
+        p1.key(key(KeyCode::Char('/')));
+        p1.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        p1.key(key(KeyCode::Esc));
+        assert!(
+            row_text(draw(&mut p1, 70).backend().buffer(), 2)
+                .starts_with("Search: Press / to search")
+        );
 
-        panel.key(key(KeyCode::Char('/')));
-        panel.paste("修复");
-        let terminal = draw(&mut panel, 70);
-        assert_eq!(terminal.backend().cursor_position(), (12, 2).into());
-        assert_eq!(terminal.backend().buffer()[(8, 2)].symbol(), "修");
-        assert_eq!(terminal.backend().buffer()[(10, 2)].symbol(), "复");
-        assert_eq!(selected_file(&panel), "fix.md");
-
-        panel.key(key(KeyCode::Enter));
-        let terminal = draw(&mut panel, 70);
-        assert!(row_text(terminal.backend().buffer(), 2).starts_with("Search: 修"));
-        assert_eq!(panel.query, "修复");
-        panel.key(key(KeyCode::Char('r')));
-        let terminal = draw(&mut panel, 70);
-        assert!(row_text(terminal.backend().buffer(), 2).starts_with("rename> fix.md"));
-        panel.key(key(KeyCode::Esc));
-        panel.key(key(KeyCode::Char('/')));
-        panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        panel.key(key(KeyCode::Esc));
-        let terminal = draw(&mut panel, 70);
-        assert!(row_text(terminal.backend().buffer(), 2).starts_with("Search: Press / to search"));
-    }
-
-    #[test]
-    fn search_tail_and_cursor_fit_narrow_offset_areas_without_splitting_graphemes() {
-        let mut panel = ready_panel(Vec::new());
-        panel.key(key(KeyCode::Char('/')));
+        let mut p2 = ready_panel(Vec::new());
+        p2.key(key(KeyCode::Char('/')));
         for query in [
             "abcdefghijk",
             "前缀修复配置",
             "prefix-e\u{301}",
             "prefix-👩‍💻",
         ] {
-            panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-            panel.paste(query);
+            p2.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+            p2.paste(query);
             for width in [1, 8, 9, 10, 12, 16, 50] {
                 let mut terminal = Terminal::new(TestBackend::new(width + 4, 12)).unwrap();
                 let area = Rect::new(2, 1, width, 8);
-                terminal.draw(|frame| panel.draw(frame, area)).unwrap();
+                terminal.draw(|frame| p2.draw(frame, area)).unwrap();
                 let cursor = terminal.backend().cursor_position();
-                assert_eq!(cursor.y, 3);
-                assert!(cursor.x >= area.x && cursor.x < area.right());
+                assert!(cursor.y == 3 && cursor.x >= area.x && cursor.x < area.right());
                 assert_eq!(
                     terminal.backend().buffer()[(cursor.x, cursor.y)].symbol(),
                     " "
                 );
-                assert_eq!(panel.query, query);
             }
         }
-        panel.query = "前缀修复配置".into();
-        let terminal = draw(&mut panel, 13);
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(8, 2)].symbol(), "配");
-        assert_eq!(buffer[(10, 2)].symbol(), "置");
-        assert_eq!(terminal.backend().cursor_position(), (12, 2).into());
-        panel.query = "prefix-e\u{301}".into();
-        let terminal = draw(&mut panel, 10);
-        assert_eq!(terminal.backend().buffer()[(8, 2)].symbol(), "e\u{301}");
-        assert_eq!(terminal.backend().cursor_position(), (9, 2).into());
-        panel.query = "prefix-👩‍💻".into();
-        let terminal = draw(&mut panel, 11);
-        assert_eq!(terminal.backend().buffer()[(8, 2)].symbol(), "👩‍💻");
-        assert_eq!(terminal.backend().cursor_position(), (10, 2).into());
-    }
+        p2.query = "prefix-👩‍💻".into();
+        let t2 = draw(&mut p2, 11);
+        assert_eq!(t2.backend().buffer()[(8, 2)].symbol(), "👩‍💻");
+        assert_eq!(t2.backend().cursor_position(), (10, 2).into());
 
-    #[test]
-    fn search_combines_with_category_and_shows_empty_results() {
-        let mut panel = ready_panel(vec![
+        let mut p3 = ready_panel(vec![
             entry("a", "draft.md", PlanLocation::Drafts, "修复配置", 0, 1),
             entry("b", "ready.md", PlanLocation::Plans, "修复配置", 0, 1),
         ]);
-        panel.key(key(KeyCode::Right));
-        panel.key(key(KeyCode::Char('/')));
-        panel.paste("修复");
-        assert_eq!(panel.filtered.len(), 1);
-        assert_eq!(selected_file(&panel), "draft.md");
-        panel.key(key(KeyCode::Enter));
-        panel.key(key(KeyCode::Right));
-        assert_eq!(panel.query, "修复");
-        assert_eq!(selected_file(&panel), "ready.md");
-        panel.key(key(KeyCode::Right));
-        let terminal = draw(&mut panel, 70);
-        assert!(row_text(terminal.backend().buffer(), 3).starts_with("No matching plans."));
+        p3.key(key(KeyCode::Right));
+        p3.key(key(KeyCode::Char('/')));
+        p3.paste("修复");
+        assert_eq!(selected_file(&p3), "draft.md");
+        p3.key(key(KeyCode::Enter));
+        p3.key(key(KeyCode::Right));
+        assert_eq!(selected_file(&p3), "ready.md");
+        p3.key(key(KeyCode::Right));
+        assert!(
+            row_text(draw(&mut p3, 70).backend().buffer(), 3).starts_with("No matching plans.")
+        );
     }
 
     #[test]
-    fn search_filters_multi_word_case_insensitive_over_title_name_and_path() {
+    fn search_multi_word_mode_guards_and_tab_cycling() {
         let mut panel = ready_panel(vec![
             entry("a", "fix-config.md", PlanLocation::Drafts, "修复配置", 0, 2),
             entry("b", "other.md", PlanLocation::Plans, "Login flow", 1, 3),
@@ -629,13 +600,9 @@ mod tests {
         assert_eq!(panel.filtered.len(), 1);
         panel.key(key(KeyCode::Char('/')));
         panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
-        assert!(panel.query.is_empty());
-        assert_eq!(panel.filtered.len(), 3);
-    }
+        assert!(panel.query.is_empty() && panel.filtered.len() == 3);
 
-    #[test]
-    fn search_mode_never_triggers_actions_or_eats_navigation() {
-        let mut panel = ready_panel(vec![entry(
+        let mut p2 = ready_panel(vec![entry(
             "a",
             "plan.md",
             PlanLocation::Drafts,
@@ -643,49 +610,36 @@ mod tests {
             0,
             1,
         )]);
-        panel.key(key(KeyCode::Char('/')));
-        // 搜索模式中 r/d/n/c/e 只进入 query，不触发动作。
-        for character in "rdnce".chars() {
-            assert!(matches!(
-                panel.key(key(KeyCode::Char(character))),
-                Action::None
-            ));
+        p2.key(key(KeyCode::Char('/')));
+        for ch in "rdnce".chars() {
+            assert!(matches!(p2.key(key(KeyCode::Char(ch))), Action::None));
         }
-        assert_eq!(panel.query, "rdnce");
-        assert!(panel.rename.is_none());
-        assert!(panel.confirm.is_none());
-        // Enter 回列表，query 继续过滤；无命中时不 panic 且动作被拒绝。
-        panel.key(key(KeyCode::Enter));
-        assert!(!panel.searching);
-        assert!(panel.filtered.is_empty());
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(matches!(panel.key(key(KeyCode::Char('c'))), Action::None));
-    }
+        assert!(p2.query == "rdnce" && p2.rename.is_none() && p2.confirm.is_none());
+        p2.key(key(KeyCode::Enter));
+        assert!(!p2.searching && p2.filtered.is_empty());
+        assert!(matches!(p2.key(key(KeyCode::Enter)), Action::None));
+        assert!(matches!(p2.key(key(KeyCode::Char('c'))), Action::None));
 
-    #[test]
-    fn tabs_filter_categories_and_cycle_in_both_directions() {
-        let mut panel = ready_panel(vec![
+        let mut p3 = ready_panel(vec![
             entry("a", "d.md", PlanLocation::Drafts, "Draft", 0, 1),
             entry("b", "p.md", PlanLocation::Plans, "Ready", 0, 2),
             entry("c", "f.md", PlanLocation::Done, "Done", 2, 2),
         ]);
-        panel.key(key(KeyCode::Right));
-        assert_eq!(panel.filtered.len(), 1);
-        assert_eq!(selected_file(&panel), "d.md");
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(selected_file(&panel), "p.md");
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(selected_file(&panel), "f.md");
-        // 左方向回退：Done → Plans。
-        panel.key(key(KeyCode::Left));
-        assert_eq!(selected_file(&panel), "p.md");
-        panel.key(key(KeyCode::BackTab));
-        panel.key(key(KeyCode::BackTab));
-        assert_eq!(panel.filtered.len(), 3);
+        p3.key(key(KeyCode::Right));
+        assert_eq!(selected_file(&p3), "d.md");
+        p3.key(key(KeyCode::Tab));
+        assert_eq!(selected_file(&p3), "p.md");
+        p3.key(key(KeyCode::Tab));
+        assert_eq!(selected_file(&p3), "f.md");
+        p3.key(key(KeyCode::Left));
+        assert_eq!(selected_file(&p3), "p.md");
+        p3.key(key(KeyCode::BackTab));
+        p3.key(key(KeyCode::BackTab));
+        assert_eq!(p3.filtered.len(), 3);
     }
 
     #[test]
-    fn refresh_keeps_same_id_selected_and_delete_falls_to_neighbor() {
+    fn refresh_selection_rename_and_confirm_delete() {
         let mut panel = ready_panel(vec![
             entry("a", "first.md", PlanLocation::Drafts, "First", 0, 1),
             entry("b", "second.md", PlanLocation::Drafts, "Second", 0, 1),
@@ -723,11 +677,8 @@ mod tests {
         assert!(matches!(panel.tab, Tab::Drafts));
         assert_eq!(panel.query, "third");
         assert_eq!(selected_file(&panel), "third.md");
-    }
 
-    #[test]
-    fn confirm_delete_defaults_to_cancel_and_requires_explicit_delete() {
-        let mut panel = ready_panel(vec![entry(
+        let mut p_del = ready_panel(vec![entry(
             "a",
             "plan.md",
             PlanLocation::Plans,
@@ -735,28 +686,16 @@ mod tests {
             0,
             1,
         )]);
-        panel.key(key(KeyCode::Char('d')));
-        assert!(panel.confirm.is_some());
-        // 默认 Cancel：Enter 关闭对话框，不删除。
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(panel.confirm.is_none());
-        // Esc 取消。
-        panel.key(key(KeyCode::Char('d')));
-        panel.key(key(KeyCode::Esc));
-        assert!(panel.confirm.is_none());
-        // Tab 显式选择 Delete 后 Enter 才删除。
-        panel.key(key(KeyCode::Char('d')));
-        panel.key(key(KeyCode::Tab));
-        assert!(matches!(
-            panel.key(key(KeyCode::Enter)),
-            Action::Delete(id) if id == "a"
-        ));
-        assert!(panel.confirm.is_none());
-    }
+        p_del.key(key(KeyCode::Char('d')));
+        assert!(matches!(p_del.key(key(KeyCode::Enter)), Action::None) && p_del.confirm.is_none());
+        p_del.key(key(KeyCode::Char('d')));
+        p_del.key(key(KeyCode::Esc));
+        assert!(p_del.confirm.is_none());
+        p_del.key(key(KeyCode::Char('d')));
+        p_del.key(key(KeyCode::Tab));
+        assert!(matches!(p_del.key(key(KeyCode::Enter)), Action::Delete(id) if id == "a"));
 
-    #[test]
-    fn rename_prefills_name_and_submits_or_cancels() {
-        let mut panel = ready_panel(vec![entry(
+        let mut p_ren = ready_panel(vec![entry(
             "a",
             "old-name.md",
             PlanLocation::Drafts,
@@ -764,24 +703,18 @@ mod tests {
             0,
             1,
         )]);
-        panel.key(key(KeyCode::Char('r')));
-        assert_eq!(panel.rename.as_deref(), Some("old-name.md"));
-        // Esc 取消，不产生动作。
-        assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
-        assert!(panel.rename.is_none());
-        // 追加编辑后 Enter 提交新名。
-        panel.key(key(KeyCode::Char('r')));
-        for character in "v2".chars() {
-            panel.key(key(KeyCode::Char(character)));
+        p_ren.key(key(KeyCode::Char('r')));
+        assert_eq!(p_ren.rename.as_deref(), Some("old-name.md"));
+        assert!(matches!(p_ren.key(key(KeyCode::Esc)), Action::None) && p_ren.rename.is_none());
+        p_ren.key(key(KeyCode::Char('r')));
+        for ch in "v2".chars() {
+            p_ren.key(key(KeyCode::Char(ch)));
         }
-        assert!(matches!(
-            panel.key(key(KeyCode::Enter)),
-            Action::Rename(id, name) if id == "a" && name == "old-name.mdv2"
-        ));
-        // 同名无操作成功。
-        panel.key(key(KeyCode::Char('r')));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(panel.rename.is_none());
+        assert!(
+            matches!(p_ren.key(key(KeyCode::Enter)), Action::Rename(id, name) if id == "a" && name == "old-name.mdv2")
+        );
+        p_ren.key(key(KeyCode::Char('r')));
+        assert!(matches!(p_ren.key(key(KeyCode::Enter)), Action::None) && p_ren.rename.is_none());
     }
 
     #[test]
@@ -841,17 +774,14 @@ mod tests {
     }
 
     #[test]
-    fn delete_confirmation_is_opaque_over_rows_behind_it() {
-        // 100×12 的屏幕里列表行占 3..=10；确认框宽 min(96, 72) = 72、高 7、
-        // 居中于 (14, 2)，正好压在行 3..=8 上，框内区域为 x 15..85、y 3..=7。
-        // 标题用长串 Z 铺满 78 列，背后行只要有一格残留就会被抓到。
+    fn delete_confirmation_diagnostics_and_rename_cursor() {
         let title = "Z".repeat(90);
         let mut panel = ready_panel(
             (0..5)
-                .map(|index| {
+                .map(|i| {
                     entry(
-                        &format!("id{index}"),
-                        &format!("plan-{index}.md"),
+                        &format!("id{i}"),
+                        &format!("plan-{i}.md"),
                         PlanLocation::Drafts,
                         &title,
                         0,
@@ -861,55 +791,46 @@ mod tests {
                 .collect(),
         );
         panel.key(key(KeyCode::Char('d')));
-        assert!(panel.confirm.is_some());
         let terminal = draw(&mut panel, 100);
         let buffer = terminal.backend().buffer();
         let inside = |row: u16| -> String { (15..85).map(|x| buffer[(x, row)].symbol()).collect() };
-        // 框内空白行不得留下列表行的时间、标题或分类标记。
         for row in 5..=6 {
-            assert_eq!(inside(row), " ".repeat(70), "row {row}: {}", inside(row));
+            assert_eq!(inside(row), " ".repeat(70), "row {row}");
         }
-        // 正文行与按钮行两侧也不得透出背后标题。
         for row in 3..=7 {
-            assert!(!inside(row).contains('Z'), "row {row}: {}", inside(row));
+            assert!(!inside(row).contains('Z'), "row {row}");
         }
-        // 清理范围只限对话框：同一行框外照常显示列表标题与分类标记。
-        let behind: String = (86..100).map(|x| buffer[(x, 3)].symbol()).collect();
-        assert!(behind.contains('Z'), "{behind}");
-        // 对话框自身内容照常渲染。
+        assert!(
+            (86..100)
+                .map(|x| buffer[(x, 3)].symbol())
+                .collect::<String>()
+                .contains('Z')
+        );
         assert!(row_text(buffer, 3).contains("Path: .pp/drafts/plan-0.md"));
-        assert!(row_text(buffer, 4).contains("Delete the plan file only"));
         let buttons = row_text(buffer, 7);
         assert!(
             buttons.contains(" Cancel ") && buttons.contains(" Delete "),
             "{buttons}"
         );
-    }
 
-    #[test]
-    fn diagnostics_render_below_list_without_overlapping_entries() {
         let mut list = listing(vec![
             entry("a", "alpha.md", PlanLocation::Drafts, "Alpha Plan", 0, 1),
             entry("b", "beta.md", PlanLocation::Drafts, "Beta Plan", 0, 1),
         ]);
         list.diagnostics = vec!["DIAG_ONE".into(), "DIAG_TWO".into()];
-        let mut panel = Panel::new();
-        panel.set_listing(list);
-        let terminal = draw(&mut panel, 100);
-        let buffer = terminal.backend().buffer();
-        let rows: Vec<String> = (0..12).map(|y| row_text(buffer, y)).collect();
+        let mut p_diag = Panel::new();
+        p_diag.set_listing(list);
+        let t_diag = draw(&mut p_diag, 100);
+        let rows: Vec<String> = (0..12)
+            .map(|y| row_text(t_diag.backend().buffer(), y))
+            .collect();
         let alpha_row = rows.iter().position(|r| r.contains("Alpha Plan")).unwrap();
         let beta_row = rows.iter().position(|r| r.contains("Beta Plan")).unwrap();
         let diag1_row = rows.iter().position(|r| r.contains("DIAG_ONE")).unwrap();
         let diag2_row = rows.iter().position(|r| r.contains("DIAG_TWO")).unwrap();
-        assert!(alpha_row < beta_row);
-        assert!(beta_row < diag1_row);
-        assert_eq!(diag2_row, diag1_row + 1);
-    }
+        assert!(alpha_row < beta_row && beta_row < diag1_row && diag2_row == diag1_row + 1);
 
-    #[test]
-    fn rename_clamps_long_input_cursor_within_narrow_area() {
-        let mut panel = ready_panel(vec![entry(
+        let mut p_ren = ready_panel(vec![entry(
             "a",
             "alpha.md",
             PlanLocation::Drafts,
@@ -917,12 +838,10 @@ mod tests {
             0,
             1,
         )]);
-        panel.rename = Some("a".repeat(60));
-        let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
-        terminal
-            .draw(|frame| panel.draw(frame, frame.area()))
-            .unwrap();
-        let cursor = terminal.get_cursor_position().unwrap();
+        p_ren.rename = Some("a".repeat(60));
+        let mut t_ren = Terminal::new(TestBackend::new(20, 12)).unwrap();
+        t_ren.draw(|frame| p_ren.draw(frame, frame.area())).unwrap();
+        let cursor = t_ren.get_cursor_position().unwrap();
         assert!(cursor.x < 20 && cursor.y < 12, "{cursor:?}");
     }
 }

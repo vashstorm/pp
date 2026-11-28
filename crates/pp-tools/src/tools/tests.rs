@@ -2,8 +2,19 @@ use super::*;
 use pp_core::plan::PlanLocation;
 use std::{fs, sync::mpsc::sync_channel};
 mod artifact_cases;
+mod background_cases;
+mod edit_cases;
+mod embedded_shell;
 mod eval_cases;
+mod file_cases;
+mod lsp_cases;
+mod lsp_save_cases;
+mod pipeline;
+mod policy_cases;
 mod sandbox_cases;
+mod shell_display_cases;
+mod streaming_cases;
+mod todo_cases;
 mod wait_cases;
 mod web_search_cases;
 
@@ -232,15 +243,3 @@ fn todo_call(tools: &Tools, workflow: &WorkflowState, arguments: Value) -> ToolE
         &mut |_| {},
     )
 }
-
-mod background_cases;
-mod edit_cases;
-mod embedded_shell;
-mod file_cases;
-mod lsp_cases;
-mod lsp_save_cases;
-mod pipeline;
-mod policy_cases;
-mod shell_display_cases;
-mod streaming_cases;
-mod todo_cases;

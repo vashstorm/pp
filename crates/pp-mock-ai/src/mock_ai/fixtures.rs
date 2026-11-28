@@ -429,123 +429,125 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fail_scenario_retries_twice_then_recovers() {
-        use pp_core::events::RequestRetryReason;
-        let server = super::super::MockServer::start().unwrap();
-        let mut retries = Vec::new();
-        let mut reply = String::new();
-        let mut succeeded = false;
-        let report = run_test(
-            MockTest::Fail,
-            server.endpoint(),
-            None,
-            &CancellationToken::new(),
-            &mut |event| match event {
-                MockTestEvent::Progress(AgentEvent::RequestRetrying {
-                    reason,
-                    attempt,
-                    wait_ms,
-                }) => retries.push((reason, attempt, wait_ms)),
-                MockTestEvent::Progress(AgentEvent::AssistantFinished { text }) => reply = text,
-                MockTestEvent::Progress(AgentEvent::ModelRequestFinished { success, .. }) => {
-                    succeeded |= success;
-                }
-                MockTestEvent::Prepared(_) | MockTestEvent::Progress(_) => {}
-            },
-        )
-        .unwrap();
-        assert_eq!(retries.len(), 2);
-        assert_eq!(retries[0], (RequestRetryReason::HttpStatus(503), 1, 2000));
-        assert_eq!(retries[1], (RequestRetryReason::RateLimited, 2, 4000));
-        assert!(succeeded, "third attempt must finish the request");
-        assert!(reply.contains("Fail fixture complete"), "{reply}");
-        assert_eq!(report.calls, 0);
+    fn fail_retry_scenario_and_usage_reporting() {
+        {
+            use pp_core::events::RequestRetryReason;
+            let server = super::super::MockServer::start().unwrap();
+            let mut retries = Vec::new();
+            let mut reply = String::new();
+            let mut succeeded = false;
+            let report = run_test(
+                MockTest::Fail,
+                server.endpoint(),
+                None,
+                &CancellationToken::new(),
+                &mut |event| match event {
+                    MockTestEvent::Progress(AgentEvent::RequestRetrying {
+                        reason,
+                        attempt,
+                        wait_ms,
+                    }) => retries.push((reason, attempt, wait_ms)),
+                    MockTestEvent::Progress(AgentEvent::AssistantFinished { text }) => reply = text,
+                    MockTestEvent::Progress(AgentEvent::ModelRequestFinished {
+                        success, ..
+                    }) => {
+                        succeeded |= success;
+                    }
+                    MockTestEvent::Prepared(_) | MockTestEvent::Progress(_) => {}
+                },
+            )
+            .unwrap();
+            assert_eq!(retries.len(), 2);
+            assert_eq!(retries[0], (RequestRetryReason::HttpStatus(503), 1, 2000));
+            assert_eq!(retries[1], (RequestRetryReason::RateLimited, 2, 4000));
+            assert!(succeeded, "third attempt must finish the request");
+            assert!(reply.contains("Fail fixture complete"), "{reply}");
+            assert_eq!(report.calls, 0);
+        }
+        {
+            let server = super::super::MockServer::start().unwrap();
+            let usage = pp_core::context::TokenUsage {
+                input_tokens: 120,
+                output_tokens: 30,
+                cached_tokens: Some(40),
+                cache_write_tokens: Some(5),
+                reasoning_tokens: Some(0),
+            };
+            let scenario = serde_json::from_value(json!({
+                "prompt":"Report the scripted usage.", "edit_mode":"replace", "files":{},
+                "lanes":{"root":[{"think":"用量", "content":"reported", "usage":usage}]}
+            }))
+            .unwrap();
+            let mut finished = None;
+            let mut context = None;
+            run_scenario(
+                scenario,
+                MockTest::Read,
+                &server.endpoint(),
+                None,
+                &CancellationToken::new(),
+                &mut |event| match event {
+                    MockTestEvent::Progress(AgentEvent::ModelRequestFinished {
+                        usage,
+                        success: true,
+                        ..
+                    }) => finished = usage,
+                    MockTestEvent::Progress(AgentEvent::ContextUpdated { usage }) => {
+                        context = Some(usage)
+                    }
+                    _ => {}
+                },
+            )
+            .unwrap();
+            assert_eq!(finished, Some(usage));
+            let context = context.unwrap();
+            assert_eq!(context.last_request, Some(usage));
+            assert_eq!(context.session_output_tokens, 30);
+        }
     }
 
     #[test]
-    fn mock_ai_agent_preserves_reported_usage_in_context() {
-        let server = super::super::MockServer::start().unwrap();
-        let usage = pp_core::context::TokenUsage {
-            input_tokens: 120,
-            output_tokens: 30,
-            cached_tokens: Some(40),
-            cache_write_tokens: Some(5),
-            reasoning_tokens: Some(0),
-        };
-        let scenario = serde_json::from_value(json!({
-            "prompt":"Report the scripted usage.", "edit_mode":"replace", "files":{},
-            "lanes":{"root":[{"think":"用量", "content":"reported", "usage":usage}]}
-        }))
-        .unwrap();
-        let mut finished = None;
-        let mut context = None;
-        run_scenario(
-            scenario,
-            MockTest::Read,
-            &server.endpoint(),
-            None,
-            &CancellationToken::new(),
-            &mut |event| match event {
-                MockTestEvent::Progress(AgentEvent::ModelRequestFinished {
-                    usage,
-                    success: true,
-                    ..
-                }) => finished = usage,
-                MockTestEvent::Progress(AgentEvent::ContextUpdated { usage }) => {
-                    context = Some(usage)
-                }
-                _ => {}
-            },
-        )
-        .unwrap();
-        assert_eq!(finished, Some(usage));
-        let context = context.unwrap();
-        assert_eq!(context.last_request, Some(usage));
-        assert_eq!(context.session_output_tokens, 30);
-    }
-
-    #[test]
-    fn fixed_mock_workspace_requires_an_absolute_tmp_directory() {
-        for declared in ["relative/dir", "/Users/mock", "/tmp", "/tmpfoo/mock", ""] {
+    fn fixed_mock_workspace_and_setup_path_validation() {
+        {
+            for declared in ["relative/dir", "/Users/mock", "/tmp", "/tmpfoo/mock", ""] {
+                assert!(
+                    FixedWorkspace::prepare(declared).is_err(),
+                    "{declared} must be rejected"
+                );
+            }
+            let created = format!("/tmp/pp-mock-fixed-{}", std::process::id());
+            let existing = format!("/tmp/pp-mock-kept-{}", std::process::id());
+            fs::create_dir_all(&existing).unwrap();
+            {
+                let first = FixedWorkspace::prepare(&created).unwrap();
+                assert!(first.created && fs::metadata(&first.path).unwrap().is_dir());
+                let kept = FixedWorkspace::prepare(&existing).unwrap();
+                assert!(!kept.created);
+            }
             assert!(
-                FixedWorkspace::prepare(declared).is_err(),
-                "{declared} must be rejected"
+                !Path::new(&created).exists(),
+                "created workspace is removed"
+            );
+            assert!(
+                Path::new(&existing).exists(),
+                "a pre-existing directory is kept"
+            );
+            fs::remove_dir_all(&existing).unwrap();
+        }
+        {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = root.path().join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            for path in ["../escape.txt", "/absolute.txt", "", "./relative.txt"] {
+                assert!(setup_file(&workspace, path, "not written").is_err());
+            }
+            assert!(FixedWorkspace::prepare("/tmp/mock-safe/../escape").is_err());
+            assert!(!root.path().join("escape.txt").exists());
+            setup_file(&workspace, "nested/note.txt", "kept").unwrap();
+            assert_eq!(
+                fs::read_to_string(workspace.join("nested/note.txt")).unwrap(),
+                "kept"
             );
         }
-        let created = format!("/tmp/pp-mock-fixed-{}", std::process::id());
-        let existing = format!("/tmp/pp-mock-kept-{}", std::process::id());
-        fs::create_dir_all(&existing).unwrap();
-        {
-            let first = FixedWorkspace::prepare(&created).unwrap();
-            assert!(first.created && fs::metadata(&first.path).unwrap().is_dir());
-            let kept = FixedWorkspace::prepare(&existing).unwrap();
-            assert!(!kept.created);
-        }
-        assert!(
-            !Path::new(&created).exists(),
-            "created workspace is removed"
-        );
-        assert!(
-            Path::new(&existing).exists(),
-            "a pre-existing directory is kept"
-        );
-        fs::remove_dir_all(&existing).unwrap();
-    }
-
-    #[test]
-    fn mock_ai_fixture_setup_rejects_parent_and_absolute_paths() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = root.path().join("workspace");
-        fs::create_dir(&workspace).unwrap();
-        for path in ["../escape.txt", "/absolute.txt", "", "./relative.txt"] {
-            assert!(setup_file(&workspace, path, "not written").is_err());
-        }
-        assert!(FixedWorkspace::prepare("/tmp/mock-safe/../escape").is_err());
-        assert!(!root.path().join("escape.txt").exists());
-        setup_file(&workspace, "nested/note.txt", "kept").unwrap();
-        assert_eq!(
-            fs::read_to_string(workspace.join("nested/note.txt")).unwrap(),
-            "kept"
-        );
     }
 }

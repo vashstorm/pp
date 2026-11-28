@@ -7,7 +7,7 @@ use super::*;
 use std::{
     fs,
     io::Read,
-    os::unix::fs::{PermissionsExt, symlink},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
 };
@@ -379,13 +379,6 @@ fn rebuild_request(records: &[Value]) -> Value {
     request
 }
 
-fn session_state_mut(records: &mut [Value]) -> &mut Value {
-    &mut records
-        .iter_mut()
-        .find(|record| record["customType"] == "pp.session_state")
-        .expect("missing native state")["data"]
-}
-
 fn canonical_messages(records: &[Value]) -> Vec<Value> {
     records
         .iter()
@@ -484,14 +477,6 @@ fn push_entry(records: &mut Vec<Value>, mut entry: Value) {
     records.push(entry);
 }
 
-fn relink_entries(records: &mut [Value]) {
-    let mut parent = Value::Null;
-    for record in records.iter_mut().skip(1) {
-        record["parentId"] = parent;
-        parent = record["id"].clone();
-    }
-}
-
 fn make_saved_session(
     api: Api,
     server: &TestServer,
@@ -560,41 +545,6 @@ fn with_mutated_records(path: &Path, mutate: impl FnOnce(&mut Vec<Value>)) {
         .map(|record| format!("{record}\n"))
         .collect::<String>();
     write_session_text(path, &text);
-}
-
-// A freshly saved Chat session with one mutation applied to its records.
-fn corrupted_base(
-    server: &TestServer,
-    cwd: &Path,
-    mutate: impl FnOnce(&mut Vec<Value>),
-) -> (tempfile::TempDir, String) {
-    let home = tempfile::tempdir().unwrap();
-    let (id, path) = make_saved_session(
-        Api::Chat,
-        server,
-        home.path(),
-        cwd,
-        "remember base",
-        "base noted",
-    );
-    with_mutated_records(&path, mutate);
-    (home, id)
-}
-
-fn insert_raw_line(path: &Path, index: usize, line: &str) {
-    let text = session_text(path);
-    let mut lines: Vec<&str> = text.lines().collect();
-    lines.insert(index, line);
-    write_session_text(path, &format!("{}\n", lines.join("\n")));
-}
-
-fn copy_session(from: &Path, to: &Path, id: &str) {
-    fs::create_dir_all(sessions_dir(to)).unwrap();
-    fs::copy(
-        sessions_dir(from).join(format!("{id}.jsonl")),
-        sessions_dir(to).join(format!("{id}.jsonl")),
-    )
-    .unwrap();
 }
 
 #[path = "session/lifecycle_cases.rs"]

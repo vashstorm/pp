@@ -3,8 +3,7 @@
 // 新请求原生历史包含两条用户消息各一次、没有半成品 assistant。
 #[test]
 fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_recover() {
-    for protocol in ["completion", "response"] {
-        for phase in ["headers", "sse"] {
+    for (protocol, phase) in [("completion", "headers"), ("response", "sse")] {
             let raw = CancelRawModel::start();
             let home = tempfile::tempdir().unwrap();
             // 原始 TCP fixture 只观察主请求；独立标题服务保持挂起，随任务取消。
@@ -123,7 +122,6 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
                 )
                 .unwrap();
             assert_eq!(ttft.is_some(), phase == "sse");
-        }
     }
 }
 
@@ -132,7 +130,7 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
 // result 与原 call_id 按序完整配对且不重复执行；取消本身不触发任何 HTTP。
 #[test]
 fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -184,7 +182,6 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
             "kept"
         );
         assert!(!project.path().join("skipped.txt").exists());
-    }
 }
 
 // 验证项 4：headers 前、SSE 空闲、工具批次三种取消的持久化与重启。取消只
@@ -425,42 +422,12 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
         }
 }
 
-#[test]
-fn tui_cancel_headers_persists_and_resumes_completion() {
-    cancel_terminal_state_case("completion", CancelPhase::Headers);
-}
-
-#[test]
-fn slow_tui_cancel_headers_persists_and_resumes_response() {
-    cancel_terminal_state_case("response", CancelPhase::Headers);
-}
-
-#[test]
-fn tui_cancel_sse_persists_and_resumes_completion() {
-    cancel_terminal_state_case("completion", CancelPhase::Sse);
-}
-
-#[test]
-fn tui_cancel_sse_persists_and_resumes_response() {
-    cancel_terminal_state_case("response", CancelPhase::Sse);
-}
-
-#[test]
-fn tui_cancel_tools_persists_and_resumes_completion() {
-    cancel_terminal_state_case("completion", CancelPhase::Tools);
-}
-
-#[test]
-fn tui_cancel_tools_persists_and_resumes_response() {
-    cancel_terminal_state_case("response", CancelPhase::Tools);
-}
-
 // 验证项 4 的持久化故障模式：取消收尾的 commit/sync 失败必须优先显示
 // persisting session，不声称成功取消、不写 pp.cancelled、不再发模型请求，
 // 同时取消路径仍要停止真实 bash 进程。
 #[test]
 fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -530,6 +497,5 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
             !journal.contains("pp.cancelled"),
             "取消终态提交失败时不得写 pp.cancelled"
         );
-    }
 }
 

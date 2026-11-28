@@ -1,769 +1,785 @@
-use super::*;
-use axum::{body::Body, response::Response};
-use pp_test_support::TestServer;
-use std::sync::Arc;
+mod integration {
+    use super::super::*;
+    use axum::{body::Body, response::Response};
+    use pp_test_support::TestServer;
+    use std::sync::Arc;
 
-#[test]
-fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
-    for protocol in ["completion", "response"] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("AGENTS.md");
-        std::fs::write(&path, "loaded-before-network-result").unwrap();
-        let server = Arc::new(TestServer::start().unwrap());
-        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
-        agent.tools.reset_project_instructions([dir
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("AGENTS.md")]);
-        let mut initial_system: Option<String> = None;
-        for (round, (expected, next, expected_loads)) in [
-            (
-                "loaded-before-network-result",
-                "changed-after-request-open",
-                1,
-            ),
-            (
-                "changed-after-request-open",
-                "changed-after-request-open",
-                1,
-            ),
-            (
-                "changed-after-request-open",
-                "changed-after-request-open",
-                0,
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut events = Vec::new();
-            let mut captured_system = None;
-            let server_ref = &server;
-            let path_ref = &path;
-            std::thread::scope(|scope| {
-                let captured = &mut captured_system;
-                let prev_system = initial_system.as_deref();
-                scope.spawn(move || {
-                    let request = server_ref
-                        .recv_timeout(std::time::Duration::from_secs(5))
-                        .unwrap()
-                        .expect("actual provider request");
-                    let body: Value = request.json().unwrap();
-                    let system = if protocol == "response" {
-                        body["instructions"].as_str().unwrap()
-                    } else {
-                        body["messages"][0]["content"].as_str().unwrap()
-                    };
-                    if round == 0 {
-                        assert!(system.contains(expected));
-                        *captured = Some(system.to_owned());
-                    } else {
-                        // 已有对话历史后改写 AGENTS.md 不破坏 system 前缀缓存，改为尾部 developer 追加。
-                        assert_eq!(Some(system), prev_system);
-                        assert!(body.to_string().contains(expected));
-                    }
-                    // 首次建连结果返回前改写磁盘；卡片必须仍使用已发送的快照。
-                    std::fs::write(path_ref, next).unwrap();
-                    request
-                        .respond(Response::builder().status(500).body(Body::empty()).unwrap())
-                        .unwrap();
+    #[test]
+    fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("AGENTS.md");
+            std::fs::write(&path, "loaded-before-network-result").unwrap();
+            let server = Arc::new(TestServer::start().unwrap());
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
+            agent.tools.reset_project_instructions([dir
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("AGENTS.md")]);
+            let mut initial_system: Option<String> = None;
+            for (round, (expected, next, expected_loads)) in [
+                (
+                    "loaded-before-network-result",
+                    "changed-after-request-open",
+                    1,
+                ),
+                (
+                    "changed-after-request-open",
+                    "changed-after-request-open",
+                    1,
+                ),
+                (
+                    "changed-after-request-open",
+                    "changed-after-request-open",
+                    0,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut events = Vec::new();
+                let mut captured_system = None;
+                let server_ref = &server;
+                let path_ref = &path;
+                std::thread::scope(|scope| {
+                    let captured = &mut captured_system;
+                    let prev_system = initial_system.as_deref();
+                    scope.spawn(move || {
+                        let request = server_ref
+                            .recv_timeout(std::time::Duration::from_secs(5))
+                            .unwrap()
+                            .expect("actual provider request");
+                        let body: Value = request.json().unwrap();
+                        let system = if protocol == "response" {
+                            body["instructions"].as_str().unwrap()
+                        } else {
+                            body["messages"][0]["content"].as_str().unwrap()
+                        };
+                        if round == 0 {
+                            assert!(system.contains(expected));
+                            *captured = Some(system.to_owned());
+                        } else {
+                            // 已有对话历史后改写 AGENTS.md 不破坏 system 前缀缓存，改为尾部 developer 追加。
+                            assert_eq!(Some(system), prev_system);
+                            assert!(body.to_string().contains(expected));
+                        }
+                        // 首次建连结果返回前改写磁盘；卡片必须仍使用已发送的快照。
+                        std::fs::write(path_ref, next).unwrap();
+                        request
+                            .respond(Response::builder().status(500).body(Body::empty()).unwrap())
+                            .unwrap();
+                    });
+                    assert!(
+                        agent
+                            .run(
+                                "actual request",
+                                &CancellationToken::new(),
+                                None,
+                                &mut |event| { events.push(event) }
+                            )
+                            .is_err()
+                    );
                 });
-                assert!(
-                    agent
-                        .run(
-                            "actual request",
-                            &CancellationToken::new(),
-                            None,
-                            &mut |event| { events.push(event) }
-                        )
-                        .is_err()
-                );
-            });
-            if initial_system.is_none() {
-                initial_system = captured_system;
+                if initial_system.is_none() {
+                    initial_system = captured_system;
+                }
+                let loads: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        AgentEvent::ProjectInstructionsLoaded { content, .. } => {
+                            Some(content.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(loads, vec![expected; expected_loads]);
             }
-            let loads: Vec<_> = events
+            let id = agent.session_id().unwrap().to_owned();
+            drop(agent);
+            let restored = persistence::load_test(
+                &dir.path().join("sessions"),
+                &dir.path().join("sessions/.locks"),
+                Some(&id),
+                true,
+            )
+            .unwrap();
+            let loads: Vec<_> = restored
+                .replay
                 .iter()
-                .filter_map(|event| match event {
-                    AgentEvent::ProjectInstructionsLoaded { content, .. } => Some(content.as_str()),
+                .filter_map(|record| match record {
+                    persistence::ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+                        content,
+                        ..
+                    }) => Some(content.as_str()),
                     _ => None,
                 })
                 .collect();
-            assert_eq!(loads, vec![expected; expected_loads]);
+            assert_eq!(
+                loads,
+                ["loaded-before-network-result", "changed-after-request-open"]
+            );
         }
-        let id = agent.session_id().unwrap().to_owned();
-        drop(agent);
-        let restored = persistence::load_test(
-            &dir.path().join("sessions"),
-            &dir.path().join("sessions/.locks"),
-            Some(&id),
-            true,
-        )
-        .unwrap();
-        let loads: Vec<_> = restored
-            .replay
-            .iter()
-            .filter_map(|record| match record {
-                persistence::ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
-                    content,
-                    ..
-                }) => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            loads,
-            ["loaded-before-network-result", "changed-after-request-open"]
-        );
     }
-}
 
-#[test]
-fn resume_preparation_preserves_current_session_and_releases_failed_candidate() {
-    const FIXTURE: &str = "PP_TEST_RESUME_PREPARATION";
-    let Ok(root) = std::env::var(FIXTURE) else {
-        let home = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "agent::tests::session_task_cases::resume_preparation_preserves_current_session_and_releases_failed_candidate", "--nocapture"])
+    #[test]
+    fn resume_preparation_preserves_current_session_and_releases_failed_candidate() {
+        const FIXTURE: &str = "PP_TEST_RESUME_PREPARATION";
+        let Ok(root) = std::env::var(FIXTURE) else {
+            let home = tempfile::tempdir().unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent::tests::session_task_cases::integration::resume_preparation_preserves_current_session_and_releases_failed_candidate", "--nocapture"])
             .env("HOME", home.path())
             .env(FIXTURE, home.path())
             .status().unwrap();
-        assert!(status.success());
-        return;
-    };
-    let root = std::path::Path::new(&root);
-    let global = root.join(".pp/agent");
-    let sessions = global.join("sessions");
-    std::fs::create_dir_all(&global).unwrap();
-    let models = global.join("models.yml");
-    let settings = global.join("settings.yml");
-    let configuration =
+            assert!(status.success());
+            return;
+        };
+        let root = std::path::Path::new(&root);
+        let global = root.join(".pp/agent");
+        let sessions = global.join("sessions");
+        std::fs::create_dir_all(&global).unwrap();
+        let models = global.join("models.yml");
+        let settings = global.join("settings.yml");
+        let configuration =
         json!({"providers":{"fixture": {"api_key":"fixture","models":{"one": {"model":"one"}}}}})
             .to_string();
-    std::fs::write(&models, &configuration).unwrap();
-    let mut ids = Vec::new();
-    let mut agents = Vec::new();
-    for name in ["old", "saved"] {
-        let cwd = root.join(name);
-        std::fs::create_dir(&cwd).unwrap();
-        let mut agent = Agent::new(
-            ModelCatalog::from_files(&settings, &models).unwrap(),
-            Tools::new(cwd, EditMode::Hashline).unwrap(),
-            sessions.clone(),
-        )
-        .unwrap();
-        let Session::Response(request) = &mut agent.session else {
-            panic!()
-        };
-        response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
-            role: Role::User,
-            content: name.into(),
-            ..Default::default()
-        }));
-        let metadata = Metadata {
-            role_route: None,
-            cwd: agent.tools.cwd(),
-            model_reference: &agent.current_model.reference,
-            think_level: agent.think_level,
-            edit_mode: agent.tools.edit_mode(),
-            tool_limits: agent.tools.limits,
-            base_system: &agent.base_system,
-            prompt_source: agent.prompt_source.as_ref(),
-        };
-        agent
-            .journal
-            .sent(
-                &metadata,
-                (&agent.session).into(),
-                &agent.workflow,
-                Some(name),
-                None,
+        std::fs::write(&models, &configuration).unwrap();
+        let mut ids = Vec::new();
+        let mut agents = Vec::new();
+        for name in ["old", "saved"] {
+            let cwd = root.join(name);
+            std::fs::create_dir(&cwd).unwrap();
+            let mut agent = Agent::new(
+                ModelCatalog::from_files(&settings, &models).unwrap(),
+                Tools::new(cwd, EditMode::Hashline).unwrap(),
+                sessions.clone(),
             )
             .unwrap();
-        ids.push(agent.session_id().unwrap().to_owned());
-        agents.push(agent);
-    }
-    let saved = agents.pop().unwrap();
-    let expected = serde_json::to_value(&saved.session).unwrap();
-    drop(saved);
-    let mut old = agents.pop().unwrap();
-    let before = serde_json::to_value(&old.session).unwrap();
-    let cwd = std::env::current_dir().unwrap();
-    assert!(old.resume(&ids[0], &CancellationToken::new()).is_err());
-    // 运行中的恢复使用当前配置，不重新读取磁盘上的模型文件。
-    std::fs::write(&models, "invalid configuration").unwrap();
-    let candidate =
-        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).unwrap();
-    let definitions = old
-        .tools
-        .all_definitions(candidate.checkpoint.workflow.mode);
-    let (candidate_session, _) = old
-        .resumed_session(
-            candidate.checkpoint,
-            &old.current_model,
-            old.think_level,
-            definitions,
-        )
-        .unwrap();
-    let mut expected = expected;
-    expected["request"]["instructions"] = before["request"]["instructions"].clone();
-    assert_eq!(candidate.journal.id(), Some(ids[1].as_str()));
-    assert_eq!(serde_json::to_value(&candidate_session).unwrap(), expected);
-    assert_eq!(old.session_id(), Some(ids[0].as_str()));
-    assert_eq!(serde_json::to_value(&old.session).unwrap(), before);
-    assert_eq!(std::env::current_dir().unwrap(), cwd);
-    assert!(
-        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_err()
-    );
-    assert!(
-        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err()
-    );
-    drop(candidate.journal);
-    assert!(
-        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_ok()
-    );
-    let before_resume_store = old.pipe_store();
-    old.resume(&ids[1], &CancellationToken::new()).unwrap();
-    assert_eq!(old.session_id(), Some(ids[1].as_str()));
-    // 恢复是新的有效会话根：临时管道 registry 换实例，旧 URI 不再解析。
-    assert!(!before_resume_store.same_instance(&old.pipe_store()));
-    assert!(
-        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true).is_ok()
-    );
-    assert!(
-        persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true).is_err()
-    );
-}
-
-#[test]
-fn cancellation_before_request_saves_accepted_input_and_replays_terminal() {
-    for protocol in ["completion", "response"] {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.yml");
-        let models = dir.path().join("models.yml");
-        let sessions = dir.path().join("sessions");
-        std::fs::write(
-            &models,
-            json!({"providers":{"fixture": { "api_key":"fixture-key", "protocol":protocol,
-                "base_url":"http://127.0.0.1:1/v1", "models":{"one": {"model":"one"}}
-            }}})
-            .to_string(),
-        )
-        .unwrap();
-        let mut agent = Agent::new(
-            ModelCatalog::from_files(&settings, &models).unwrap(),
-            Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
-            sessions.clone(),
-        )
-        .unwrap();
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let outcome = agent
-            .run("accepted input", &cancellation, None, &mut |event| {
-                assert!(
-                    !matches!(
-                        event,
-                        AgentEvent::AssistantStarted | AgentEvent::ToolStarted { .. }
-                    ),
-                    "no request or tool may start"
-                );
-            })
+            let Session::Response(request) = &mut agent.session else {
+                panic!()
+            };
+            response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                role: Role::User,
+                content: name.into(),
+                ..Default::default()
+            }));
+            let metadata = Metadata {
+                role_route: None,
+                cwd: agent.tools.cwd(),
+                model_reference: &agent.current_model.reference,
+                think_level: agent.think_level,
+                edit_mode: agent.tools.edit_mode(),
+                tool_limits: agent.tools.limits,
+                base_system: &agent.base_system,
+                prompt_source: agent.prompt_source.as_ref(),
+            };
+            agent
+                .journal
+                .sent(
+                    &metadata,
+                    (&agent.session).into(),
+                    &agent.workflow,
+                    Some(name),
+                    None,
+                )
+                .unwrap();
+            ids.push(agent.session_id().unwrap().to_owned());
+            agents.push(agent);
+        }
+        let saved = agents.pop().unwrap();
+        let expected = serde_json::to_value(&saved.session).unwrap();
+        drop(saved);
+        let mut old = agents.pop().unwrap();
+        let before = serde_json::to_value(&old.session).unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert!(old.resume(&ids[0], &CancellationToken::new()).is_err());
+        // 运行中的恢复使用当前配置，不重新读取磁盘上的模型文件。
+        std::fs::write(&models, "invalid configuration").unwrap();
+        let candidate =
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true)
+                .unwrap();
+        let definitions = old
+            .tools
+            .all_definitions(candidate.checkpoint.workflow.mode);
+        let (candidate_session, _) = old
+            .resumed_session(
+                candidate.checkpoint,
+                &old.current_model,
+                old.think_level,
+                definitions,
+            )
             .unwrap();
-        assert_eq!(outcome, RunOutcome::Cancelled);
-        let id = agent.session_id().unwrap().to_owned();
-        drop(agent);
-        let restored =
-            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+        let mut expected = expected;
+        expected["request"]["instructions"] = before["request"]["instructions"].clone();
+        assert_eq!(candidate.journal.id(), Some(ids[1].as_str()));
+        assert_eq!(serde_json::to_value(&candidate_session).unwrap(), expected);
+        assert_eq!(old.session_id(), Some(ids[0].as_str()));
+        assert_eq!(serde_json::to_value(&old.session).unwrap(), before);
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
         assert!(
-            matches!(restored.replay.as_slice(), [persistence::ReplayRecord::User(text), persistence::ReplayRecord::Cancelled] if text == "accepted input")
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true)
+                .is_err()
         );
-        let native = serde_json::to_value(&restored.checkpoint.session).unwrap();
-        let entries = if protocol == "completion" {
-            native["request"]["messages"].as_array().unwrap()
-        } else {
-            native["request"]["input"].as_array().unwrap()
-        };
-        assert_eq!(
-            entries
-                .iter()
-                .filter(|entry| entry["role"] == "user")
-                .count(),
-            1
+        assert!(
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true)
+                .is_err()
         );
-        assert!(!persistence::indexed_listing(&sessions).unwrap().sessions[0].done);
+        drop(candidate.journal);
+        assert!(
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true)
+                .is_ok()
+        );
+        let before_resume_store = old.pipe_store();
+        old.resume(&ids[1], &CancellationToken::new()).unwrap();
+        assert_eq!(old.session_id(), Some(ids[1].as_str()));
+        // 恢复是新的有效会话根：临时管道 registry 换实例，旧 URI 不再解析。
+        assert!(!before_resume_store.same_instance(&old.pipe_store()));
+        assert!(
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true)
+                .is_ok()
+        );
+        assert!(
+            persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true)
+                .is_err()
+        );
     }
-}
 
-#[test]
-fn background_finish_run_reclaims_processes_for_every_outcome() {
-    let dir = tempfile::tempdir().unwrap();
-    // 不发真实请求，仅借共享 fixture 构造 Agent；地址占位即可。
-    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-    let mut previous = None;
-    for outcome in [0, 1, 2] {
-        let token = CancellationToken::new();
-        let started = agent.tools.execute("bash", &json!({"command":"sh -c 'printf \"%s\\n%s\" \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60'","mode":"background"}).to_string(), "start", pp_tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
-        let snapshot: serde_json::Value = serde_json::from_str(&started.output).unwrap();
-        let id = snapshot["task_id"].as_str().unwrap().to_owned();
-        assert_ne!(previous.as_ref(), Some(&id));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !dir.path().join("marker").exists() {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let marker = std::fs::read_to_string(dir.path().join("marker")).unwrap();
-        let (pid, scratch) = marker.split_once('\n').unwrap();
-        let pid = rustix::process::Pid::from_raw(pid.parse().unwrap()).unwrap();
-        let result = match outcome {
-            0 => Ok(RunOutcome::Completed),
-            1 => Err(anyhow::anyhow!("provider failed")),
-            _ => {
-                token.cancel();
-                Err(Cancelled.into())
-            }
-        };
-        let finished = agent.finish_run(result, &token);
-        match outcome {
-            0 => assert_eq!(finished.unwrap(), RunOutcome::Completed),
-            1 => assert!(
-                finished
-                    .unwrap_err()
-                    .to_string()
-                    .contains("provider failed")
-            ),
-            _ => assert_eq!(finished.unwrap(), RunOutcome::Cancelled),
-        }
-        assert_eq!(
-            rustix::process::test_kill_process(pid),
-            Err(rustix::io::Errno::SRCH)
-        );
-        assert!(!std::path::Path::new(scratch).exists());
-        let old = agent.tools.execute(
-            "bash_task",
-            &json!({"task_id":id,"action":"status"}).to_string(),
-            "status",
-            pp_tools::ToolPolicy::Execute {
-                workflow: &agent.workflow,
-            },
-            &CancellationToken::new(),
-            &mut |_| {},
-        );
-        assert!(old.output.contains("Unknown background task"));
-        previous = Some(id);
-        std::fs::remove_file(dir.path().join("marker")).unwrap();
-    }
-}
-
-#[test]
-fn finish_task_archives_completed_plan_only_on_success_boundary() {
-    use pp_core::plan::PlanLocation;
-    use pp_core::plan::PlanStatus;
-    use pp_core::plan::plan_tasks;
-    use pp_tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock};
-
-    let archive_agent = |dir: &std::path::Path, protocol: &str| -> Agent {
-        let mut agent = runtime_input_agent(dir, protocol, "127.0.0.1:1", "");
-        let mut workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
-        workflow.mode = pp_core::plan::WorkMode::Execute;
-        {
-            let document = workflow.plan.as_mut().expect("plan bound");
-            document.file_name = Some("create-canary.md".into());
-            document.approved_tasks = Some(
-                plan_tasks(PLAN_CONTENT)
-                    .into_iter()
-                    .map(|task| task.text)
-                    .collect(),
-            );
-        }
-        agent.workflow = workflow;
-        let workspace = agent.tools.plan_workspace();
-        let _lock = PlanCatalogLock::acquire(workspace).unwrap();
-        let snapshot = plan_catalog::load_catalog(workspace).unwrap();
-        let mut catalog = snapshot.catalog;
-        let id = agent.workflow.plan.as_ref().unwrap().id.clone();
-        catalog.entries.push(PlanCatalogEntry {
-            id,
-            file_name: "create-canary.md".into(),
-            location: PlanLocation::Plans,
-            deleted: false,
-            deleted_file_identity: None,
-        });
-        plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
-        drop(_lock);
-        seed_session(&mut agent, EXPLORATION);
-        write_plan_file(&agent, &PLAN_CONTENT.replace("- [ ]", "- [x]"));
-        agent
-    };
-
-    for protocol in ["completion", "response"] {
-        // Completed 且未取消：归档到 done。
-        let dir = tempfile::tempdir().unwrap();
-        let mut agent = archive_agent(dir.path(), protocol);
-        let cancellation = CancellationToken::new();
-        let result = agent.finish_task(
-            "test",
-            std::time::Instant::now(),
-            Ok(RunOutcome::Completed),
-            &cancellation,
-            None,
-            &mut |_| {},
-        );
-        assert_eq!(result.unwrap(), RunOutcome::Completed);
-        assert!(!dir.path().join(".pp/plans/create-canary.md").exists());
-        assert!(dir.path().join(".pp/done/create-canary.md").exists());
-        let document = agent.workflow.plan.as_ref().unwrap();
-        assert_eq!(document.status, PlanStatus::Completed);
-        assert_eq!(document.location, PlanLocation::Done);
-
-        // Completed 但取消已置位：进度刷新保留，归档不发生。
-        let dir = tempfile::tempdir().unwrap();
-        let mut agent = archive_agent(dir.path(), protocol);
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let result = agent.finish_task(
-            "test",
-            std::time::Instant::now(),
-            Ok(RunOutcome::Completed),
-            &cancellation,
-            None,
-            &mut |_| {},
-        );
-        assert_eq!(result.unwrap(), RunOutcome::Completed);
-        assert!(dir.path().join(".pp/plans/create-canary.md").exists());
-        assert!(!dir.path().join(".pp/done/create-canary.md").exists());
-        assert_eq!(
-            agent.workflow.plan.as_ref().unwrap().status,
-            PlanStatus::Executed
-        );
-
-        // 任务失败：不归档。
-        let dir = tempfile::tempdir().unwrap();
-        let mut agent = archive_agent(dir.path(), protocol);
-        let result = agent.finish_task(
-            "test",
-            std::time::Instant::now(),
-            Err(anyhow::anyhow!("provider failed")),
-            &CancellationToken::new(),
-            None,
-            &mut |_| {},
-        );
-        assert!(result.unwrap_err().to_string().contains("provider failed"));
-        assert!(dir.path().join(".pp/plans/create-canary.md").exists());
-        assert!(!dir.path().join(".pp/done/create-canary.md").exists());
-
-        // AwaitingPlanReview：不归档。
-        let dir = tempfile::tempdir().unwrap();
-        let mut agent = archive_agent(dir.path(), protocol);
-        let result = agent.finish_task(
-            "test",
-            std::time::Instant::now(),
-            Ok(RunOutcome::AwaitingPlanReview),
-            &CancellationToken::new(),
-            None,
-            &mut |_| {},
-        );
-        assert_eq!(result.unwrap(), RunOutcome::AwaitingPlanReview);
-        assert!(dir.path().join(".pp/plans/create-canary.md").exists());
-        assert!(!dir.path().join(".pp/done/create-canary.md").exists());
-    }
-}
-
-#[test]
-fn system_prompt_render_failure_preserves_native_session_and_journal() {
-    for protocol in ["completion", "response"] {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.yml");
-        let models = dir.path().join("models.yml");
-        std::fs::write(&settings, "default_model: fixture/one\n").unwrap();
-        std::fs::write(
-            &models,
-            json!({"providers":{"fixture":{
-                "protocol":protocol, "api_key":"fixture-key",
-                "models":{"one":{"model":"one"},"two":{"model":"two"}}
-            }}})
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("base.md"), "{{#if (eq model \"two\")}}{{missing}}{{/if}}{{#if (eq work_mode \"plan\")}}{{missing}}{{/if}}custom {{model}}").unwrap();
-        let source = crate::system_prompt::Snapshot::discover(
-            dir.path(),
-            dir.path(),
-            None,
-            Some("base.md"),
-            None,
-        )
-        .unwrap();
-        let mut agent = Agent::new_with_prompt(
-            pp_config::model_state::ModelState::shared(
+    #[test]
+    fn cancellation_before_request_and_background_finish_reclaim() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.yml");
+            let models = dir.path().join("models.yml");
+            let sessions = dir.path().join("sessions");
+            std::fs::write(
+                &models,
+                json!({"providers":{"fixture": { "api_key":"fixture-key", "protocol":protocol,
+                    "base_url":"http://127.0.0.1:1/v1", "models":{"one": {"model":"one"}}
+                }}})
+                .to_string(),
+            )
+            .unwrap();
+            let mut agent = Agent::new(
                 ModelCatalog::from_files(&settings, &models).unwrap(),
-            ),
-            Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
-            dir.path().join("sessions"),
-            dir.path().join("sessions/.locks"),
-            source,
-            dir.path().join("sessions/.stats/stats.db"),
-        )
-        .unwrap();
-        seed_session(&mut agent, "preserve this input");
-        let native = serde_json::to_value(&agent.session).unwrap();
-        let path = dir
-            .path()
-            .join("sessions")
-            .join(format!("{}.jsonl", agent.session_id().unwrap()));
-        let journal = std::fs::read(&path).unwrap();
-        assert!(
-            format!("{:#}", agent.switch_model("fixture/two").unwrap_err()).contains("base.md")
-        );
-        assert_eq!(agent.current_model.reference, "fixture/one");
-        assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
-        assert_eq!(std::fs::read(&path).unwrap(), journal);
-        agent.workflow.mode = pp_core::plan::WorkMode::Plan;
-        assert!(agent.refresh_instructions().is_err());
-        assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
-        assert_eq!(std::fs::read(&path).unwrap(), journal);
-    }
-}
+                Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+                sessions.clone(),
+            )
+            .unwrap();
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let outcome = agent
+                .run("accepted input", &cancellation, None, &mut |event| {
+                    assert!(
+                        !matches!(
+                            event,
+                            AgentEvent::AssistantStarted | AgentEvent::ToolStarted { .. }
+                        ),
+                        "no request or tool may start"
+                    );
+                })
+                .unwrap();
+            assert_eq!(outcome, RunOutcome::Cancelled);
+            let id = agent.session_id().unwrap().to_owned();
+            drop(agent);
+            let restored =
+                persistence::load_test(&sessions, &sessions.join(".locks"), Some(&id), true)
+                    .unwrap();
+            assert!(
+                matches!(restored.replay.as_slice(), [persistence::ReplayRecord::User(text), persistence::ReplayRecord::Cancelled] if text == "accepted input")
+            );
+            let native = serde_json::to_value(&restored.checkpoint.session).unwrap();
+            let entries = if protocol == "completion" {
+                native["request"]["messages"].as_array().unwrap()
+            } else {
+                native["request"]["input"].as_array().unwrap()
+            };
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|entry| entry["role"] == "user")
+                    .count(),
+                1
+            );
+            assert!(!persistence::indexed_listing(&sessions).unwrap().sessions[0].done);
+        }
 
-#[test]
-fn model_switch_failure_keeps_native_history_and_selection() {
-    let dir = tempfile::tempdir().unwrap();
-    let settings = dir.path().join("settings.yml");
-    let models = dir.path().join("models.yml");
-    std::fs::write(
-        &models,
-        json!({"providers": {
-            "a": { "api_key":"fixture-key", "models":{
-                "one": {"model":"one"}, "two": {"model":"two"}}},
-            "bad": { "api_key":"secret-marker\ninvalid", "models":{
-                "one": {"model":"bad"}}}}})
-        .to_string(),
-    )
-    .unwrap();
-    let catalog = ModelCatalog::from_files(&settings, &models).unwrap();
-    let mut agent = Agent::new(
-        catalog,
-        Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
-        dir.path().join("sessions"),
-    )
-    .unwrap();
-    let Session::Response(request) = &mut agent.session else {
-        panic!()
-    };
-    response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
-        role: Role::User,
-        content: "remember me".into(),
-        ..Default::default()
-    }));
-    let before = serde_json::to_value(&request).unwrap();
-    for reference in ["bad/one", "missing/secret-marker", "secret-marker"] {
-        let error = agent.switch_model(reference).unwrap_err().to_string();
-        assert!(!error.contains("secret-marker"));
-        assert_eq!(agent.current_model().reference, "a/one");
-        let Session::Response(request) = &agent.session else {
-            panic!()
+        {
+            let dir = tempfile::tempdir().unwrap();
+            // 不发真实请求，仅借共享 fixture 构造 Agent；地址占位即可。
+            let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+            let mut previous = None;
+            for outcome in [0, 1, 2] {
+                let token = CancellationToken::new();
+                let started = agent.tools.execute("bash", &json!({"command":"sh -c 'printf \"%s\\n%s\" \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60'","mode":"background"}).to_string(), "start", pp_tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
+                let snapshot: serde_json::Value = serde_json::from_str(&started.output).unwrap();
+                let id = snapshot["task_id"].as_str().unwrap().to_owned();
+                assert_ne!(previous.as_ref(), Some(&id));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !dir.path().join("marker").exists() {
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                let marker = std::fs::read_to_string(dir.path().join("marker")).unwrap();
+                let (pid, scratch) = marker.split_once('\n').unwrap();
+                let pid = rustix::process::Pid::from_raw(pid.parse().unwrap()).unwrap();
+                let result = match outcome {
+                    0 => Ok(RunOutcome::Completed),
+                    1 => Err(anyhow::anyhow!("provider failed")),
+                    _ => {
+                        token.cancel();
+                        Err(Cancelled.into())
+                    }
+                };
+                let finished = agent.finish_run(result, &token);
+                match outcome {
+                    0 => assert_eq!(finished.unwrap(), RunOutcome::Completed),
+                    1 => assert!(
+                        finished
+                            .unwrap_err()
+                            .to_string()
+                            .contains("provider failed")
+                    ),
+                    _ => assert_eq!(finished.unwrap(), RunOutcome::Cancelled),
+                }
+                assert_eq!(
+                    rustix::process::test_kill_process(pid),
+                    Err(rustix::io::Errno::SRCH)
+                );
+                assert!(!std::path::Path::new(scratch).exists());
+                let old = agent.tools.execute(
+                    "bash_task",
+                    &json!({"task_id":id,"action":"status"}).to_string(),
+                    "status",
+                    pp_tools::ToolPolicy::Execute {
+                        workflow: &agent.workflow,
+                    },
+                    &CancellationToken::new(),
+                    &mut |_| {},
+                );
+                assert!(old.output.contains("Unknown background task"));
+                previous = Some(id);
+                std::fs::remove_file(dir.path().join("marker")).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn finish_task_archives_completed_plan_only_on_success_boundary() {
+        use pp_core::plan::PlanLocation;
+        use pp_core::plan::PlanStatus;
+        use pp_core::plan::plan_tasks;
+        use pp_tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock};
+
+        let archive_agent = |dir: &std::path::Path, protocol: &str| -> Agent {
+            let mut agent = runtime_input_agent(dir, protocol, "127.0.0.1:1", "");
+            let mut workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
+            workflow.mode = pp_core::plan::WorkMode::Execute;
+            {
+                let document = workflow.plan.as_mut().expect("plan bound");
+                document.file_name = Some("create-canary.md".into());
+                document.approved_tasks = Some(
+                    plan_tasks(PLAN_CONTENT)
+                        .into_iter()
+                        .map(|task| task.text)
+                        .collect(),
+                );
+            }
+            agent.workflow = workflow;
+            let workspace = agent.tools.plan_workspace();
+            let _lock = PlanCatalogLock::acquire(workspace).unwrap();
+            let snapshot = plan_catalog::load_catalog(workspace).unwrap();
+            let mut catalog = snapshot.catalog;
+            let id = agent.workflow.plan.as_ref().unwrap().id.clone();
+            catalog.entries.push(PlanCatalogEntry {
+                id,
+                file_name: "create-canary.md".into(),
+                location: PlanLocation::Plans,
+                deleted: false,
+                deleted_file_identity: None,
+            });
+            plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
+            drop(_lock);
+            seed_session(&mut agent, EXPLORATION);
+            write_plan_file(&agent, &PLAN_CONTENT.replace("- [ ]", "- [x]"));
+            agent
         };
-        assert_eq!(serde_json::to_value(request).unwrap(), before);
-    }
-    agent.switch_model("a/one").unwrap();
-    let Session::Response(request) = &agent.session else {
-        panic!()
-    };
-    assert_eq!(serde_json::to_value(request).unwrap(), before);
-    agent.switch_model("a/two").unwrap();
-    let Session::Response(request) = &agent.session else {
-        panic!()
-    };
-    let mut expected = before;
-    expected["model"] = json!("two");
-    assert_eq!(serde_json::to_value(request).unwrap(), expected);
-    agent.reset();
-    assert_eq!(agent.current_model().reference, "a/two");
-    let Session::Response(request) = &agent.session else {
-        panic!()
-    };
-    assert!(matches!(&request.input, InputParam::Items(items) if items.is_empty()));
-    assert_eq!(
-        serde_json::to_value(request).unwrap()["instructions"],
-        expected["instructions"]
-    );
-}
 
-#[test]
-fn bang_shell_agent_is_local_and_plan_is_read_only() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:9", "");
-    let before = serde_json::to_value(&agent.session).unwrap();
-    let mut events = Vec::new();
-    agent
-        .run_shell(
-            "printf local; exit 7",
-            "local",
-            &CancellationToken::new(),
-            &mut |event| events.push(event),
-        )
-        .unwrap();
-    assert!(events.iter().any(
-        |event| matches!(event, AgentEvent::ToolFinished { result, .. } if result["exit_code"] == 7)
-    ));
-    assert_eq!(serde_json::to_value(&agent.session).unwrap(), before);
-    assert!(!dir.path().join("sessions").exists());
-    agent.workflow.mode = pp_core::plan::WorkMode::Plan;
-    let error = agent
-        .run_shell(
-            "touch forbidden",
-            "local",
-            &CancellationToken::new(),
-            &mut |_| {},
-        )
-        .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Shell commands are unavailable in Plan mode."
-    );
-    assert!(!dir.path().join("forbidden").exists());
-}
-
-#[test]
-fn compact_after_cancelled_todo_reminder_succeeds_both_protocols() {
-    for protocol in ["completion", "response"] {
-        let dir = tempfile::tempdir().unwrap();
-        let server = Arc::new(TestServer::start().unwrap());
-        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
-        let cancel = CancellationToken::new();
-        let cancel_worker = cancel.clone();
-        let serving = protocol.to_owned();
-        let worker = Arc::clone(&server);
-        let handle = std::thread::spawn(move || {
-            // 第 1 轮：初始化未完成 todo 批次（产生第 1 个完整 boundary）。
-            let request = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            let _: Value = request.json().unwrap();
-            tool_call_for(
-                &serving,
-                request,
-                "todo",
-                &json!({"op":"init","items":["step one","step two"]}).to_string(),
-            );
-            // 第 2 轮：返回纯文本回复（产生第 2 个完整 boundary），因 todo 未完成自动注入 Developer 提醒并进入第 3 轮。
-            let request = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            let _: Value = request.json().unwrap();
-            final_for(&serving, request, "partial progress before reminder", true);
-            // 第 3 轮：收到携带 Developer 提醒的请求后触发手动取消。
-            let request = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            let body: Value = request.json().unwrap();
-            assert!(
-                body.to_string()
-                    .contains("You stopped with 2 incomplete todo item(s):")
-            );
-            cancel_worker.cancel();
-            let _ = request.respond(Response::builder().status(200).body(Body::empty()).unwrap());
-            // 随后处理手动 /compact 发出的摘要请求。
-            let summary_req = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            let summary_body: Value = summary_req.json().unwrap();
-            assert!(
-                summary_body
-                    .to_string()
-                    .contains("Summarize the preceding conversation")
-            );
-            final_for(&serving, summary_req, "compact summary", true);
-        });
-
-        let outcome = agent
-            .run(
-                &format!("start task {}", "x".repeat(2000)),
-                &cancel,
+        for protocol in ["completion", "response"] {
+            // Completed 且未取消：归档到 done。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let cancellation = CancellationToken::new();
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Ok(RunOutcome::Completed),
+                &cancellation,
                 None,
                 &mut |_| {},
+            );
+            assert_eq!(result.unwrap(), RunOutcome::Completed);
+            assert!(!dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(dir.path().join(".pp/done/create-canary.md").exists());
+            let document = agent.workflow.plan.as_ref().unwrap();
+            assert_eq!(document.status, PlanStatus::Completed);
+            assert_eq!(document.location, PlanLocation::Done);
+
+            // Completed 但取消已置位：进度刷新保留，归档不发生。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let cancellation = CancellationToken::new();
+            cancellation.cancel();
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Ok(RunOutcome::Completed),
+                &cancellation,
+                None,
+                &mut |_| {},
+            );
+            assert_eq!(result.unwrap(), RunOutcome::Completed);
+            assert!(dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(!dir.path().join(".pp/done/create-canary.md").exists());
+            assert_eq!(
+                agent.workflow.plan.as_ref().unwrap().status,
+                PlanStatus::Executed
+            );
+
+            // 任务失败：不归档。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Err(anyhow::anyhow!("provider failed")),
+                &CancellationToken::new(),
+                None,
+                &mut |_| {},
+            );
+            assert!(result.unwrap_err().to_string().contains("provider failed"));
+            assert!(dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(!dir.path().join(".pp/done/create-canary.md").exists());
+
+            // AwaitingPlanReview：不归档。
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = archive_agent(dir.path(), protocol);
+            let result = agent.finish_task(
+                "test",
+                std::time::Instant::now(),
+                Ok(RunOutcome::AwaitingPlanReview),
+                &CancellationToken::new(),
+                None,
+                &mut |_| {},
+            );
+            assert_eq!(result.unwrap(), RunOutcome::AwaitingPlanReview);
+            assert!(dir.path().join(".pp/plans/create-canary.md").exists());
+            assert!(!dir.path().join(".pp/done/create-canary.md").exists());
+        }
+    }
+
+    #[test]
+    fn system_prompt_model_switch_failures_and_local_bang_shell() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.yml");
+            let models = dir.path().join("models.yml");
+            std::fs::write(&settings, "default_model: fixture/one\n").unwrap();
+            std::fs::write(
+                &models,
+                json!({"providers":{"fixture":{
+                    "protocol":protocol, "api_key":"fixture-key",
+                    "models":{"one":{"model":"one"},"two":{"model":"two"}}
+                }}})
+                .to_string(),
             )
             .unwrap();
-        assert_eq!(outcome, RunOutcome::Cancelled);
-
-        let compact_outcome = agent
-            .compact(&CancellationToken::new(), &mut |_| {})
+            std::fs::write(dir.path().join("base.md"), "{{#if (eq model \"two\")}}{{missing}}{{/if}}{{#if (eq work_mode \"plan\")}}{{missing}}{{/if}}custom {{model}}").unwrap();
+            let source = crate::system_prompt::Snapshot::discover(
+                dir.path(),
+                dir.path(),
+                None,
+                Some("base.md"),
+                None,
+            )
             .unwrap();
-        assert!(matches!(
-            compact_outcome,
-            super::context::CompactionOutcome::Compacted { .. }
+            let mut agent = Agent::new_with_prompt(
+                pp_config::model_state::ModelState::shared(
+                    ModelCatalog::from_files(&settings, &models).unwrap(),
+                ),
+                Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+                dir.path().join("sessions"),
+                dir.path().join("sessions/.locks"),
+                source,
+                dir.path().join("sessions/.stats/stats.db"),
+            )
+            .unwrap();
+            seed_session(&mut agent, "preserve this input");
+            let native = serde_json::to_value(&agent.session).unwrap();
+            let path = dir
+                .path()
+                .join("sessions")
+                .join(format!("{}.jsonl", agent.session_id().unwrap()));
+            let journal = std::fs::read(&path).unwrap();
+            assert!(
+                format!("{:#}", agent.switch_model("fixture/two").unwrap_err()).contains("base.md")
+            );
+            assert_eq!(agent.current_model.reference, "fixture/one");
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
+            assert_eq!(std::fs::read(&path).unwrap(), journal);
+            agent.workflow.mode = pp_core::plan::WorkMode::Plan;
+            assert!(agent.refresh_instructions().is_err());
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), native);
+            assert_eq!(std::fs::read(&path).unwrap(), journal);
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.yml");
+            let models = dir.path().join("models.yml");
+            std::fs::write(
+                &models,
+                json!({"providers": {
+                "a": { "api_key":"fixture-key", "models":{
+                    "one": {"model":"one"}, "two": {"model":"two"}}},
+                "bad": { "api_key":"secret-marker\ninvalid", "models":{
+                    "one": {"model":"bad"}}}}})
+                .to_string(),
+            )
+            .unwrap();
+            let catalog = ModelCatalog::from_files(&settings, &models).unwrap();
+            let mut agent = Agent::new(
+                catalog,
+                Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+                dir.path().join("sessions"),
+            )
+            .unwrap();
+            let Session::Response(request) = &mut agent.session else {
+                panic!()
+            };
+            response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+                role: Role::User,
+                content: "remember me".into(),
+                ..Default::default()
+            }));
+            let before = serde_json::to_value(&request).unwrap();
+            for reference in ["bad/one", "missing/secret-marker", "secret-marker"] {
+                let error = agent.switch_model(reference).unwrap_err().to_string();
+                assert!(!error.contains("secret-marker"));
+                assert_eq!(agent.current_model().reference, "a/one");
+                let Session::Response(request) = &agent.session else {
+                    panic!()
+                };
+                assert_eq!(serde_json::to_value(request).unwrap(), before);
+            }
+            agent.switch_model("a/one").unwrap();
+            let Session::Response(request) = &agent.session else {
+                panic!()
+            };
+            assert_eq!(serde_json::to_value(request).unwrap(), before);
+            agent.switch_model("a/two").unwrap();
+            let Session::Response(request) = &agent.session else {
+                panic!()
+            };
+            let mut expected = before;
+            expected["model"] = json!("two");
+            assert_eq!(serde_json::to_value(request).unwrap(), expected);
+            agent.reset();
+            assert_eq!(agent.current_model().reference, "a/two");
+            let Session::Response(request) = &agent.session else {
+                panic!()
+            };
+            assert!(matches!(&request.input, InputParam::Items(items) if items.is_empty()));
+            assert_eq!(
+                serde_json::to_value(request).unwrap()["instructions"],
+                expected["instructions"]
+            );
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:9", "");
+            let before = serde_json::to_value(&agent.session).unwrap();
+            let mut events = Vec::new();
+            agent
+                .run_shell(
+                    "printf local; exit 7",
+                    "local",
+                    &CancellationToken::new(),
+                    &mut |event| events.push(event),
+                )
+                .unwrap();
+            assert!(events.iter().any(
+            |event| matches!(event, AgentEvent::ToolFinished { result, .. } if result["exit_code"] == 7)
         ));
-        handle.join().unwrap();
+            assert_eq!(serde_json::to_value(&agent.session).unwrap(), before);
+            assert!(!dir.path().join("sessions").exists());
+            agent.workflow.mode = pp_core::plan::WorkMode::Plan;
+            let error = agent
+                .run_shell(
+                    "touch forbidden",
+                    "local",
+                    &CancellationToken::new(),
+                    &mut |_| {},
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "Shell commands are unavailable in Plan mode."
+            );
+            assert!(!dir.path().join("forbidden").exists());
+        }
     }
-}
 
-#[test]
-fn prompt_cache_policy_applies_retention_disables_key_and_shares_subagent_batch_key() {
-    let mut session = Session::new(
-        "gpt-5.4".into(),
-        Protocol::Response,
-        "system".into(),
-        EditMode::Replace,
-    );
-    session.apply_cache_policy(
-        true,
-        Some(pp_config::models::PromptCacheRetention::Hours24),
-        || "pp-session-1".into(),
-    );
-    assert_eq!(session.prompt_cache_key(), Some("pp-session-1"));
-    assert_eq!(
-        session.prompt_cache_retention(),
-        Some(async_openai::types::responses::PromptCacheRetention::Hours24)
-    );
+    #[test]
+    fn compact_after_cancelled_todo_reminder_succeeds_both_protocols() {
+        for protocol in ["completion", "response"] {
+            let dir = tempfile::tempdir().unwrap();
+            let server = Arc::new(TestServer::start().unwrap());
+            let mut agent =
+                runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
+            let cancel = CancellationToken::new();
+            let cancel_worker = cancel.clone();
+            let serving = protocol.to_owned();
+            let worker = Arc::clone(&server);
+            let handle = std::thread::spawn(move || {
+                // 第 1 轮：初始化未完成 todo 批次（产生第 1 个完整 boundary）。
+                let request = worker
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let _: Value = request.json().unwrap();
+                tool_call_for(
+                    &serving,
+                    request,
+                    "todo",
+                    &json!({"op":"init","items":["step one","step two"]}).to_string(),
+                );
+                // 第 2 轮：返回纯文本回复（产生第 2 个完整 boundary），因 todo 未完成自动注入 Developer 提醒并进入第 3 轮。
+                let request = worker
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let _: Value = request.json().unwrap();
+                final_for(&serving, request, "partial progress before reminder", true);
+                // 第 3 轮：收到携带 Developer 提醒的请求后触发手动取消。
+                let request = worker
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let body: Value = request.json().unwrap();
+                assert!(
+                    body.to_string()
+                        .contains("You stopped with 2 incomplete todo item(s):")
+                );
+                cancel_worker.cancel();
+                let _ =
+                    request.respond(Response::builder().status(200).body(Body::empty()).unwrap());
+                // 随后处理手动 /compact 发出的摘要请求。
+                let summary_req = worker
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let summary_body: Value = summary_req.json().unwrap();
+                assert!(
+                    summary_body
+                        .to_string()
+                        .contains("Summarize the preceding conversation")
+                );
+                final_for(&serving, summary_req, "compact summary", true);
+            });
 
-    // 禁用 prompt_cache_key 时清除 key；retention 仍按策略更新。
-    session.apply_cache_policy(
-        false,
-        Some(pp_config::models::PromptCacheRetention::InMemory),
-        || "pp-ignored".into(),
-    );
-    assert_eq!(session.prompt_cache_key(), None);
-    assert_eq!(
-        session.prompt_cache_retention(),
-        Some(async_openai::types::responses::PromptCacheRetention::InMemory)
-    );
+            let outcome = agent
+                .run(
+                    &format!("start task {}", "x".repeat(2000)),
+                    &cancel,
+                    None,
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(outcome, RunOutcome::Cancelled);
 
-    // 同一角色、共享上下文、计划与模型派生相同的子 Agent 批次缓存键；任一维度变化即分离。
-    let k1 = super::generate_subagent_prompt_cache_key("explorer", "ctx-a", "plan-1", "gpt-5.4");
-    let k2 = super::generate_subagent_prompt_cache_key("explorer", "ctx-a", "plan-1", "gpt-5.4");
-    let k_other_role =
-        super::generate_subagent_prompt_cache_key("review", "ctx-a", "plan-1", "gpt-5.4");
-    let k_other_ctx =
-        super::generate_subagent_prompt_cache_key("explorer", "ctx-b", "plan-1", "gpt-5.4");
-    assert_eq!(k1, k2);
-    assert!(k1.starts_with("pp-sub-"));
-    assert_ne!(k1, k_other_role);
-    assert_ne!(k1, k_other_ctx);
-}
+            let compact_outcome = agent
+                .compact(&CancellationToken::new(), &mut |_| {})
+                .unwrap();
+            assert!(matches!(
+                compact_outcome,
+                super::super::context::CompactionOutcome::Compacted { .. }
+            ));
+            handle.join().unwrap();
+        }
+    }
 
-#[test]
-fn subagent_token_and_cost_budgets_warn_at_limit_and_halt_at_150_percent() {
-    let dir = tempfile::tempdir().unwrap();
-    let work = dir.path().join("work");
-    let sessions = dir.path().join("sessions");
-    let config_dir = dir.path().join("config");
-    std::fs::create_dir_all(&work).unwrap();
-    std::fs::create_dir_all(&sessions).unwrap();
-    std::fs::create_dir_all(&config_dir).unwrap();
-    std::fs::write(work.join("note.txt"), "hello").unwrap();
+    #[test]
+    fn prompt_cache_policy_applies_retention_disables_key_and_shares_subagent_batch_key() {
+        let mut session = Session::new(
+            "gpt-5.4".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
+        );
+        session.apply_cache_policy(
+            true,
+            Some(pp_config::models::PromptCacheRetention::Hours24),
+            || "pp-session-1".into(),
+        );
+        assert_eq!(session.prompt_cache_key(), Some("pp-session-1"));
+        assert_eq!(
+            session.prompt_cache_retention(),
+            Some(async_openai::types::responses::PromptCacheRetention::Hours24)
+        );
 
-    for (case, token_budget, cost_budget_usd, expected_err) in [
-        ("token", Some(1000), None, "subagent token budget exhausted"),
-        ("cost", None, Some(0.015), "subagent cost budget exhausted"),
-    ] {
-        let server = Arc::new(TestServer::start().unwrap());
-        let models_path = config_dir.join(format!("models-{case}.yml"));
-        let settings_path = config_dir.join(format!("settings-{case}.yml"));
-        std::fs::write(
+        // 禁用 prompt_cache_key 时清除 key；retention 仍按策略更新。
+        session.apply_cache_policy(
+            false,
+            Some(pp_config::models::PromptCacheRetention::InMemory),
+            || "pp-ignored".into(),
+        );
+        assert_eq!(session.prompt_cache_key(), None);
+        assert_eq!(
+            session.prompt_cache_retention(),
+            Some(async_openai::types::responses::PromptCacheRetention::InMemory)
+        );
+
+        // 同一角色、共享上下文、计划与模型派生相同的子 Agent 批次缓存键；任一维度变化即分离。
+        let k1 = super::super::generate_subagent_prompt_cache_key(
+            "explorer", "ctx-a", "plan-1", "gpt-5.4",
+        );
+        let k2 = super::super::generate_subagent_prompt_cache_key(
+            "explorer", "ctx-a", "plan-1", "gpt-5.4",
+        );
+        let k_other_role = super::super::generate_subagent_prompt_cache_key(
+            "review", "ctx-a", "plan-1", "gpt-5.4",
+        );
+        let k_other_ctx = super::super::generate_subagent_prompt_cache_key(
+            "explorer", "ctx-b", "plan-1", "gpt-5.4",
+        );
+        assert_eq!(k1, k2);
+        assert!(k1.starts_with("pp-sub-"));
+        assert_ne!(k1, k_other_role);
+        assert_ne!(k1, k_other_ctx);
+    }
+
+    #[test]
+    fn subagent_token_and_cost_budgets_warn_at_limit_and_halt_at_150_percent() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let sessions = dir.path().join("sessions");
+        let config_dir = dir.path().join("config");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(work.join("note.txt"), "hello").unwrap();
+
+        for (case, token_budget, cost_budget_usd, expected_err) in [
+            ("token", Some(1000), None, "subagent token budget exhausted"),
+            ("cost", None, Some(0.015), "subagent cost budget exhausted"),
+        ] {
+            let server = Arc::new(TestServer::start().unwrap());
+            let models_path = config_dir.join(format!("models-{case}.yml"));
+            let settings_path = config_dir.join(format!("settings-{case}.yml"));
+            std::fs::write(
             &models_path,
             format!(
                 "providers:\n  fixture:\n    protocol: response\n    api_key: secret\n    base_url: http://{}\n    models:\n      primary:\n        model: fixture-model\n        cost: {{ input: 10.0, cacheRead: 1.0, output: 20.0 }}\n",
@@ -771,111 +787,112 @@ fn subagent_token_and_cost_budgets_warn_at_limit_and_halt_at_150_percent() {
             ),
         )
         .unwrap();
-        std::fs::write(&settings_path, "rate_limit_retry_budget_seconds: 0\n").unwrap();
-        let catalog = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
-        let mut agent = Agent::new(
-            catalog,
-            Tools::new(work.clone(), EditMode::Replace).unwrap(),
-            sessions.join(case),
-        )
-        .unwrap();
-        let mut binding = crate::subagent::Binding::root(
-            crate::subagent::RootOptions {
-                dir: dir.path().join(format!("sub-{case}")),
-                user: dir.path().to_path_buf(),
-                cwd: work.clone(),
-                model: "fixture/primary".into(),
-                thinking: ThinkLevel::None,
-                settings: pp_config::config::TaskSettings {
-                    token_budget,
-                    cost_budget_usd,
-                    ..Default::default()
+            std::fs::write(&settings_path, "rate_limit_retry_budget_seconds: 0\n").unwrap();
+            let catalog = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+            let mut agent = Agent::new(
+                catalog,
+                Tools::new(work.clone(), EditMode::Replace).unwrap(),
+                sessions.join(case),
+            )
+            .unwrap();
+            let mut binding = crate::subagent::Binding::root(
+                crate::subagent::RootOptions {
+                    dir: dir.path().join(format!("sub-{case}")),
+                    user: dir.path().to_path_buf(),
+                    cwd: work.clone(),
+                    model: "fixture/primary".into(),
+                    thinking: ThinkLevel::None,
+                    settings: pp_config::config::TaskSettings {
+                        token_budget,
+                        cost_budget_usd,
+                        ..Default::default()
+                    },
+                    plan_mode: false,
                 },
-                plan_mode: false,
-            },
-            std::sync::Arc::new(|_, _| anyhow::bail!("unused")),
-            std::sync::Arc::new(|_| Ok(())),
-        )
-        .unwrap();
-        binding.depth = 1;
-        agent.subagent = Some(binding);
+                std::sync::Arc::new(|_, _| anyhow::bail!("unused")),
+                std::sync::Arc::new(|_| Ok(())),
+            )
+            .unwrap();
+            binding.depth = 1;
+            agent.subagent = Some(binding);
 
-        let worker = Arc::clone(&server);
-        let handle = std::thread::spawn(move || {
-            // 两次工具调用：每次 600 input (0 cached) + 500 output = 1100 tokens，
-            // 费用 = 600*10/1e6 + 500*20/1e6 = $0.016/轮：
-            // - 第 1 轮后累计 1100 tokens ($0.016) >= 1.0x 但 < 1.5x -> 第 2 轮注入收尾提示；
-            // - 第 2 轮后累计 2200 tokens ($0.032) >= 1.5x -> 第 3 轮前硬熔断。
-            let sse_call = |call_id: &str| {
-                let response = json!({
-                    "id": format!("resp_{call_id}"),
-                    "object": "response",
-                    "created_at": 0,
-                    "model": "fixture-model",
-                    "status": "completed",
-                    "output": [{
-                        "type": "function_call",
-                        "id": format!("fc_{call_id}"),
-                        "call_id": call_id,
-                        "name": "read",
-                        "arguments": "{\"path\":\"note.txt\"}",
-                        "status": "completed"
-                    }],
-                    "usage": {
-                        "input_tokens": 600,
-                        "output_tokens": 500,
-                        "total_tokens": 1100,
-                        "input_tokens_details": {"cached_tokens": 0},
-                        "output_tokens_details": {"reasoning_tokens": 0}
-                    }
-                });
-                format!(
-                    "data: {}\n\n",
-                    json!({"type": "response.completed", "sequence_number": 1, "response": response})
+            let worker = Arc::clone(&server);
+            let handle = std::thread::spawn(move || {
+                // 两次工具调用：每次 600 input (0 cached) + 500 output = 1100 tokens，
+                // 费用 = 600*10/1e6 + 500*20/1e6 = $0.016/轮：
+                // - 第 1 轮后累计 1100 tokens ($0.016) >= 1.0x 但 < 1.5x -> 第 2 轮注入收尾提示；
+                // - 第 2 轮后累计 2200 tokens ($0.032) >= 1.5x -> 第 3 轮前硬熔断。
+                let sse_call = |call_id: &str| {
+                    let response = json!({
+                        "id": format!("resp_{call_id}"),
+                        "object": "response",
+                        "created_at": 0,
+                        "model": "fixture-model",
+                        "status": "completed",
+                        "output": [{
+                            "type": "function_call",
+                            "id": format!("fc_{call_id}"),
+                            "call_id": call_id,
+                            "name": "read",
+                            "arguments": "{\"path\":\"note.txt\"}",
+                            "status": "completed"
+                        }],
+                        "usage": {
+                            "input_tokens": 600,
+                            "output_tokens": 500,
+                            "total_tokens": 1100,
+                            "input_tokens_details": {"cached_tokens": 0},
+                            "output_tokens_details": {"reasoning_tokens": 0}
+                        }
+                    });
+                    format!(
+                        "data: {}\n\n",
+                        json!({"type": "response.completed", "sequence_number": 1, "response": response})
+                    )
+                };
+
+                let req1 = worker
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let body1: Value = req1.json().unwrap();
+                assert!(!body1.to_string().contains("Token or cost budget reached."));
+                req1.respond(
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(sse_call("call_1")))
+                        .unwrap(),
                 )
-            };
-
-            let req1 = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
                 .unwrap();
-            let body1: Value = req1.json().unwrap();
-            assert!(!body1.to_string().contains("Token or cost budget reached."));
-            req1.respond(
-                Response::builder()
-                    .status(200)
-                    .header("content-type", "text/event-stream")
-                    .body(Body::from(sse_call("call_1")))
-                    .unwrap(),
-            )
-            .unwrap();
 
-            let req2 = worker
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap()
+                let req2 = worker
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let body2: Value = req2.json().unwrap();
+                assert!(
+                    body2.to_string().contains("Token or cost budget reached."),
+                    "case={case} expected soft wrap-up developer notice: {body2}"
+                );
+                req2.respond(
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(sse_call("call_2")))
+                        .unwrap(),
+                )
                 .unwrap();
-            let body2: Value = req2.json().unwrap();
+            });
+
+            let err = agent
+                .run("inspect", &CancellationToken::new(), None, &mut |_| {})
+                .unwrap_err();
             assert!(
-                body2.to_string().contains("Token or cost budget reached."),
-                "case={case} expected soft wrap-up developer notice: {body2}"
+                format!("{err:#}").contains(expected_err),
+                "case={case} unexpected error: {err:#}"
             );
-            req2.respond(
-                Response::builder()
-                    .status(200)
-                    .header("content-type", "text/event-stream")
-                    .body(Body::from(sse_call("call_2")))
-                    .unwrap(),
-            )
-            .unwrap();
-        });
-
-        let err = agent
-            .run("inspect", &CancellationToken::new(), None, &mut |_| {})
-            .unwrap_err();
-        assert!(
-            format!("{err:#}").contains(expected_err),
-            "case={case} unexpected error: {err:#}"
-        );
-        handle.join().unwrap();
+            handle.join().unwrap();
+        }
     }
 }

@@ -487,270 +487,273 @@ mod tests {
         fs::write(path, value.to_string()).unwrap();
     }
     #[test]
-    fn mcp_discovery_precedence_overrides_and_user_only() {
-        let home = tempfile::tempdir().unwrap();
-        let pp = home.path().join(".pp/agent/mcp.json");
-        put(
-            &pp,
-            json!({"mcpServers":{"same":{"command":"pp"}},"enabledServers":["off"],"disabledServers":["same","off"]}),
-        );
-        put(
-            &home.path().join(".claude.json"),
-            json!({"projects":{"ignored":{"mcpServers":{"project":{"command":"bad"}}}},"mcpServers":{"same":{"command":"claude"},"off":{"command":"off","enabled":false},"claude":{"command":"claude"}}}),
-        );
-        put(
-            &home.path().join(".claude/mcp.json"),
-            json!({"mcpServers":{"claude":{"command":"shadowed"},"alternate":{"command":"alternate"}}}),
-        );
-        fs::create_dir_all(home.path().join(".codex")).unwrap();
-        fs::write(home.path().join(".codex/config.toml"), "[mcp_servers.same]\ncommand='codex'\n[mcp_servers.codex]\ncommand='codex'\ncwd='server'\ntool_timeout_sec=2\n").unwrap();
-        let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
-        assert_eq!(dir.entries.len(), 5);
-        assert_eq!(stdio(&dir.entries["same"]).command, "pp");
-        assert_eq!(stdio(&dir.entries["claude"]).command, "claude");
-        assert!(!dir.entries["same"].enabled);
-        assert!(!dir.entries["off"].enabled);
-        let codex = dir.entries["codex"].config.as_ref().unwrap();
-        assert_eq!(codex.timeout(), Duration::from_secs(2));
-        assert_eq!(
-            stdio(&dir.entries["codex"]).cwd.as_deref(),
-            Some(home.path().join(".codex/server").as_path())
-        );
-    }
-    #[test]
-    fn mcp_remote_headers_environment_precedence_fallback_and_validation() {
-        let url = "https://mcp.context7.com/mcp";
-        let literal = BTreeMap::from([("Context7-API-Key".into(), "literal-secret".into())]);
-        let environment = BTreeMap::from([("context7-api-key".into(), "PP_TEST_KEY".into())]);
-        let config = remote_config(url, &literal, &environment, |_| {
-            Ok(Some("env-secret".into()))
-        })
-        .unwrap();
-        assert_eq!(config.headers["context7-api-key"], "env-secret");
-        let config = remote_config(url, &literal, &environment, |_| Ok(None)).unwrap();
-        assert_eq!(config.headers["Context7-API-Key"], "literal-secret");
-        assert!(remote_config(url, &literal, &environment, |_| Ok(Some(String::new()))).is_err());
-        assert!(remote_config(url, &BTreeMap::new(), &environment, |_| Ok(None)).is_err());
-        assert!(
-            remote_config(url, &BTreeMap::new(), &environment, |_| Ok(Some(
-                "only-env".into()
-            )))
-            .is_ok()
-        );
-        assert!(remote_config(url, &literal, &BTreeMap::new(), |_| unreachable!()).is_ok());
-        for key in [
-            "bad header",
-            "Accept",
-            "mcp-session-id",
-            "MCP-Protocol-Version",
-            "Host",
-            "Connection",
-            "Content-Length",
-        ] {
-            let headers = BTreeMap::from([(key.into(), "secret".into())]);
-            assert!(remote_config(url, &headers, &BTreeMap::new(), |_| unreachable!()).is_err());
-        }
-        let duplicate = BTreeMap::from([
-            ("X-Key".into(), "one".into()),
-            ("x-key".into(), "two".into()),
-        ]);
-        assert!(remote_config(url, &duplicate, &BTreeMap::new(), |_| unreachable!()).is_err());
-        assert!(
-            remote_config(url, &BTreeMap::new(), &duplicate, |_| Ok(Some(
-                "key".into()
-            )))
-            .is_err()
-        );
-        for value in ["", "key\r\nInjected: secret"] {
-            assert!(
-                remote_config(
-                    url,
-                    &BTreeMap::from([("X-Key".into(), value.into())]),
-                    &BTreeMap::new(),
-                    |_| unreachable!()
-                )
-                .is_err()
+    fn mcp_discovery_precedence_remote_headers_and_native_fields() {
+        {
+            let home = tempfile::tempdir().unwrap();
+            let pp = home.path().join(".pp/agent/mcp.json");
+            put(
+                &pp,
+                json!({"mcpServers":{"same":{"command":"pp"}},"enabledServers":["off"],"disabledServers":["same","off"]}),
+            );
+            put(
+                &home.path().join(".claude.json"),
+                json!({"projects":{"ignored":{"mcpServers":{"project":{"command":"bad"}}}},"mcpServers":{"same":{"command":"claude"},"off":{"command":"off","enabled":false},"claude":{"command":"claude"}}}),
+            );
+            put(
+                &home.path().join(".claude/mcp.json"),
+                json!({"mcpServers":{"claude":{"command":"shadowed"},"alternate":{"command":"alternate"}}}),
+            );
+            fs::create_dir_all(home.path().join(".codex")).unwrap();
+            fs::write(home.path().join(".codex/config.toml"), "[mcp_servers.same]\ncommand='codex'\n[mcp_servers.codex]\ncommand='codex'\ncwd='server'\ntool_timeout_sec=2\n").unwrap();
+            let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
+            assert_eq!(dir.entries.len(), 5);
+            assert_eq!(stdio(&dir.entries["same"]).command, "pp");
+            assert_eq!(stdio(&dir.entries["claude"]).command, "claude");
+            assert!(!dir.entries["same"].enabled);
+            assert!(!dir.entries["off"].enabled);
+            let codex = dir.entries["codex"].config.as_ref().unwrap();
+            assert_eq!(codex.timeout(), Duration::from_secs(2));
+            assert_eq!(
+                stdio(&dir.entries["codex"]).cwd.as_deref(),
+                Some(home.path().join(".codex/server").as_path())
             );
         }
-        for url in [
-            "file:///secret",
-            "https://user:secret@example.com/mcp",
-            "https://example.com/mcp#secret",
-            "secret",
-        ] {
-            assert!(remote_config(url, &literal, &BTreeMap::new(), |_| unreachable!()).is_err());
-        }
-    }
-
-    #[test]
-    fn mcp_remote_native_config_ignores_unknown_fields_and_preserves_save() {
-        let home = tempfile::tempdir().unwrap();
-        let pp = home.path().join("mcp.json");
-        let remote = json!({"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"X-Key":"literal"},"env_headers":{"x-key":"PP_TEST_MCP_ENV_MISSING_536F"},"command":"unused","extra":[1]});
-        let extra = json!({"version":2});
-        put(
-            &pp,
-            json!({"mcpServers":{"remote":remote,"sse":{"type":"sse","url":"https://example.com/sse"}},"extra":extra}),
-        );
-        put(
-            &home.path().join(".claude.json"),
-            json!({"mcpServers":{"foreign":remote}}),
-        );
-        fs::create_dir_all(home.path().join(".codex")).unwrap();
-        fs::write(
-            home.path().join(".codex/config.toml"),
-            "[mcp_servers.codex]\nurl='https://example.com/mcp'\n",
-        )
-        .unwrap();
-        let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
-        assert!(matches!(
-            dir.entries["remote"].config.as_ref().unwrap().transport,
-            TransportConfig::Http(_)
-        ));
-        assert!(matches!(
-            dir.entries["sse"].config.as_ref().unwrap().transport,
-            TransportConfig::Sse(_)
-        ));
-        assert!(dir.entries["foreign"].config.is_none());
-        assert!(dir.entries["codex"].config.is_none());
-        dir.save_enabled("remote", false, &CancellationToken::new())
+        {
+            let url = "https://mcp.context7.com/mcp";
+            let literal = BTreeMap::from([("Context7-API-Key".into(), "literal-secret".into())]);
+            let environment = BTreeMap::from([("context7-api-key".into(), "PP_TEST_KEY".into())]);
+            let config = remote_config(url, &literal, &environment, |_| {
+                Ok(Some("env-secret".into()))
+            })
             .unwrap();
-        let saved = read_native(&pp).unwrap();
-        assert_eq!(saved.mcp_servers["remote"], remote);
-        assert_eq!(saved.extra["extra"], extra);
-        for field in [json!({"timeout":0}), json!({"timeout":null})] {
-            let mut bad = remote.clone();
-            bad.as_object_mut()
-                .unwrap()
-                .extend(field.as_object().unwrap().clone());
-            put(&pp, json!({"mcpServers":{"bad":bad}}));
+            assert_eq!(config.headers["context7-api-key"], "env-secret");
+            let config = remote_config(url, &literal, &environment, |_| Ok(None)).unwrap();
+            assert_eq!(config.headers["Context7-API-Key"], "literal-secret");
             assert!(
-                Directory::load_at(&pp, None).unwrap().entries["bad"]
+                remote_config(url, &literal, &environment, |_| Ok(Some(String::new()))).is_err()
+            );
+            assert!(remote_config(url, &BTreeMap::new(), &environment, |_| Ok(None)).is_err());
+            assert!(
+                remote_config(url, &BTreeMap::new(), &environment, |_| Ok(Some(
+                    "only-env".into()
+                )))
+                .is_ok()
+            );
+            assert!(remote_config(url, &literal, &BTreeMap::new(), |_| unreachable!()).is_ok());
+            for key in [
+                "bad header",
+                "Accept",
+                "mcp-session-id",
+                "MCP-Protocol-Version",
+                "Host",
+                "Connection",
+                "Content-Length",
+            ] {
+                let headers = BTreeMap::from([(key.into(), "secret".into())]);
+                assert!(
+                    remote_config(url, &headers, &BTreeMap::new(), |_| unreachable!()).is_err()
+                );
+            }
+            let duplicate = BTreeMap::from([
+                ("X-Key".into(), "one".into()),
+                ("x-key".into(), "two".into()),
+            ]);
+            assert!(remote_config(url, &duplicate, &BTreeMap::new(), |_| unreachable!()).is_err());
+            assert!(
+                remote_config(url, &BTreeMap::new(), &duplicate, |_| Ok(Some(
+                    "key".into()
+                )))
+                .is_err()
+            );
+            for value in ["", "key\r\nInjected: secret"] {
+                assert!(
+                    remote_config(
+                        url,
+                        &BTreeMap::from([("X-Key".into(), value.into())]),
+                        &BTreeMap::new(),
+                        |_| unreachable!()
+                    )
+                    .is_err()
+                );
+            }
+            for url in [
+                "file:///secret",
+                "https://user:secret@example.com/mcp",
+                "https://example.com/mcp#secret",
+                "secret",
+            ] {
+                assert!(
+                    remote_config(url, &literal, &BTreeMap::new(), |_| unreachable!()).is_err()
+                );
+            }
+        }
+        {
+            let home = tempfile::tempdir().unwrap();
+            let pp = home.path().join("mcp.json");
+            let remote = json!({"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"X-Key":"literal"},"env_headers":{"x-key":"PP_TEST_MCP_ENV_MISSING_536F"},"command":"unused","extra":[1]});
+            let extra = json!({"version":2});
+            put(
+                &pp,
+                json!({"mcpServers":{"remote":remote,"sse":{"type":"sse","url":"https://example.com/sse"}},"extra":extra}),
+            );
+            put(
+                &home.path().join(".claude.json"),
+                json!({"mcpServers":{"foreign":remote}}),
+            );
+            fs::create_dir_all(home.path().join(".codex")).unwrap();
+            fs::write(
+                home.path().join(".codex/config.toml"),
+                "[mcp_servers.codex]\nurl='https://example.com/mcp'\n",
+            )
+            .unwrap();
+            let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
+            assert!(matches!(
+                dir.entries["remote"].config.as_ref().unwrap().transport,
+                TransportConfig::Http(_)
+            ));
+            assert!(matches!(
+                dir.entries["sse"].config.as_ref().unwrap().transport,
+                TransportConfig::Sse(_)
+            ));
+            assert!(dir.entries["foreign"].config.is_none());
+            assert!(dir.entries["codex"].config.is_none());
+            dir.save_enabled("remote", false, &CancellationToken::new())
+                .unwrap();
+            let saved = read_native(&pp).unwrap();
+            assert_eq!(saved.mcp_servers["remote"], remote);
+            assert_eq!(saved.extra["extra"], extra);
+            for field in [json!({"timeout":0}), json!({"timeout":null})] {
+                let mut bad = remote.clone();
+                bad.as_object_mut()
+                    .unwrap()
+                    .extend(field.as_object().unwrap().clone());
+                put(&pp, json!({"mcpServers":{"bad":bad}}));
+                assert!(
+                    Directory::load_at(&pp, None).unwrap().entries["bad"]
+                        .config
+                        .is_none()
+                );
+            }
+            put(
+                &pp,
+                json!({"mcpServers":{"no_type":{"url":"https://example.com/mcp"}}}),
+            );
+            assert!(
+                Directory::load_at(&pp, None).unwrap().entries["no_type"]
                     .config
                     .is_none()
             );
         }
-        put(
-            &pp,
-            json!({"mcpServers":{"no_type":{"url":"https://example.com/mcp"}}}),
-        );
-        assert!(
-            Directory::load_at(&pp, None).unwrap().entries["no_type"]
-                .config
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn mcp_read_only_config_accepts_only_native_exact_names() {
-        let home = tempfile::tempdir().unwrap();
-        let pp = home.path().join("mcp.json");
-        let entries = json!({
-            "legacy":{"command":"x"},
-            "local":{"command":"x","read_only_tools":["read:raw","查找"]},
-            "remote":{"type":"http","url":"https://example.com/mcp","read_only_tools":["echo"]},
-            "blank":{"command":"x","read_only_tools":[" "]},
-            "duplicate":{"command":"x","read_only_tools":["echo","echo"]},
-            "wildcard":{"command":"x","read_only_tools":["echo*"]}
-        });
-        put(&pp, json!({"mcpServers":entries}));
-        put(
-            &home.path().join(".claude.json"),
-            json!({
-                "mcpServers":{"external":{"command":"x","read_only_tools":["echo"]}}
-            }),
-        );
-        let directory = Directory::load_at(&pp, Some(home.path())).unwrap();
-        let config = |name: &str| directory.entries[name].config.as_ref();
-        assert!(config("legacy").unwrap().read_only_tools.is_empty());
-        assert!(
-            config("local")
-                .unwrap()
-                .read_only_tools
-                .contains("read:raw")
-        );
-        assert!(config("remote").unwrap().read_only_tools.contains("echo"));
-        for invalid in ["blank", "duplicate", "wildcard", "external"] {
-            assert!(config(invalid).is_none(), "{invalid}");
+        {
+            let home = tempfile::tempdir().unwrap();
+            let pp = home.path().join("mcp.json");
+            let entries = json!({
+                "legacy":{"command":"x"},
+                "local":{"command":"x","read_only_tools":["read:raw","查找"]},
+                "remote":{"type":"http","url":"https://example.com/mcp","read_only_tools":["echo"]},
+                "blank":{"command":"x","read_only_tools":[" "]},
+                "duplicate":{"command":"x","read_only_tools":["echo","echo"]},
+                "wildcard":{"command":"x","read_only_tools":["echo*"]}
+            });
+            put(&pp, json!({"mcpServers":entries}));
+            put(
+                &home.path().join(".claude.json"),
+                json!({
+                    "mcpServers":{"external":{"command":"x","read_only_tools":["echo"]}}
+                }),
+            );
+            let directory = Directory::load_at(&pp, Some(home.path())).unwrap();
+            let config = |name: &str| directory.entries[name].config.as_ref();
+            assert!(config("legacy").unwrap().read_only_tools.is_empty());
+            assert!(
+                config("local")
+                    .unwrap()
+                    .read_only_tools
+                    .contains("read:raw")
+            );
+            assert!(config("remote").unwrap().read_only_tools.contains("echo"));
+            for invalid in ["blank", "duplicate", "wildcard", "external"] {
+                assert!(config(invalid).is_none(), "{invalid}");
+            }
         }
     }
 
     #[test]
-    fn mcp_config_strict_json_and_redacted_invalid_entries() {
-        let home = tempfile::tempdir().unwrap();
-        let pp = home.path().join("mcp.json");
-        for text in [
-            "{mcpServers:{}}",
-            r#"{"mcpServers":{"a":{"command":"x","command":"secret-value"}}}"#,
-            r#"{"enabledServers":null}"#,
-        ] {
-            fs::write(&pp, text).unwrap();
-            let error = Directory::load_at(&pp, None).err().unwrap();
-            assert!(!error.to_string().contains("secret-value"));
+    fn mcp_config_strict_json_atomic_save_and_foreign_isolation() {
+        {
+            let home = tempfile::tempdir().unwrap();
+            let pp = home.path().join("mcp.json");
+            for text in [
+                "{mcpServers:{}}",
+                r#"{"mcpServers":{"a":{"command":"x","command":"secret-value"}}}"#,
+                r#"{"enabledServers":null}"#,
+            ] {
+                fs::write(&pp, text).unwrap();
+                let error = Directory::load_at(&pp, None).err().unwrap();
+                assert!(!error.to_string().contains("secret-value"));
+            }
+            put(
+                &pp,
+                json!({"mcpServers":{"good":{"command":"x","timeout":1,"extra":{"unused":true}},"bad":{"command":"x","timeout":0},"remote":{"type":"http","url":"secret-value"}}}),
+            );
+            let dir = Directory::load_at(&pp, None).unwrap();
+            assert!(dir.entries["good"].config.is_some());
+            for name in ["bad", "remote"] {
+                assert!(dir.entries[name].config.is_none());
+            }
+            assert!(dir.diagnostics.is_empty());
         }
-        put(
-            &pp,
-            json!({"mcpServers":{"good":{"command":"x","timeout":1,"extra":{"unused":true}},"bad":{"command":"x","timeout":0},"remote":{"type":"http","url":"secret-value"}}}),
-        );
-        let dir = Directory::load_at(&pp, None).unwrap();
-        assert!(dir.entries["good"].config.is_some());
-        for name in ["bad", "remote"] {
-            assert!(dir.entries[name].config.is_none());
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let home = tempfile::tempdir().unwrap();
+            let pp = home.path().join("mcp.json");
+            put(
+                &pp,
+                json!({"mcpServers":{"a":{"command":"a"},"b":{"command":"b","enabled":false}}}),
+            );
+            let dir = Directory::load_at(&pp, None).unwrap();
+            let another = dir.clone();
+            let first = std::thread::spawn(move || {
+                dir.save_enabled("a", false, &CancellationToken::new())
+                    .unwrap()
+            });
+            let second = std::thread::spawn(move || {
+                another
+                    .save_enabled("b", true, &CancellationToken::new())
+                    .unwrap()
+            });
+            first.join().unwrap();
+            second.join().unwrap();
+            let config = read_native(&pp).unwrap();
+            assert_eq!(config.disabled_servers, ["a"]);
+            assert_eq!(config.enabled_servers, ["b"]);
+            assert_eq!(config.mcp_servers["a"]["command"], "a");
+            assert_eq!(
+                fs::metadata(&pp).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let dir = Directory::load_at(&pp, None).unwrap();
+            fs::write(&pp, "broken secret-value").unwrap();
+            assert!(
+                dir.save_enabled("a", true, &CancellationToken::new())
+                    .is_err()
+            );
+            assert_eq!(fs::read_to_string(&pp).unwrap(), "broken secret-value");
         }
-        assert!(dir.diagnostics.is_empty());
-    }
-    #[test]
-    fn mcp_save_enabled_locks_rereads_preserves_definitions_and_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let home = tempfile::tempdir().unwrap();
-        let pp = home.path().join("mcp.json");
-        put(
-            &pp,
-            json!({"mcpServers":{"a":{"command":"a"},"b":{"command":"b","enabled":false}}}),
-        );
-        let dir = Directory::load_at(&pp, None).unwrap();
-        let another = dir.clone();
-        let first = std::thread::spawn(move || {
-            dir.save_enabled("a", false, &CancellationToken::new())
-                .unwrap()
-        });
-        let second = std::thread::spawn(move || {
-            another
-                .save_enabled("b", true, &CancellationToken::new())
-                .unwrap()
-        });
-        first.join().unwrap();
-        second.join().unwrap();
-        let config = read_native(&pp).unwrap();
-        assert_eq!(config.disabled_servers, ["a"]);
-        assert_eq!(config.enabled_servers, ["b"]);
-        assert_eq!(config.mcp_servers["a"]["command"], "a");
-        assert_eq!(
-            fs::metadata(&pp).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let dir = Directory::load_at(&pp, None).unwrap();
-        fs::write(&pp, "broken secret-value").unwrap();
-        assert!(
-            dir.save_enabled("a", true, &CancellationToken::new())
-                .is_err()
-        );
-        assert_eq!(fs::read_to_string(&pp).unwrap(), "broken secret-value");
-    }
-    #[test]
-    fn mcp_foreign_unsupported_and_malformed_sources_stay_isolated() {
-        let home = tempfile::tempdir().unwrap();
-        let pp = home.path().join("mcp.json");
-        put(
-            &home.path().join(".claude.json"),
-            json!({"mcpServers":{"remote":{"type":"http","url":"secret-url"}}}),
-        );
-        fs::create_dir_all(home.path().join(".codex")).unwrap();
-        fs::write(home.path().join(".codex/config.toml"), "secret-broken").unwrap();
-        let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
-        assert!(dir.entries["remote"].config.is_none());
-        assert_eq!(dir.diagnostics.len(), 1);
-        assert!(!dir.diagnostics[0].contains("secret"));
+        {
+            let home = tempfile::tempdir().unwrap();
+            let pp = home.path().join("mcp.json");
+            put(
+                &home.path().join(".claude.json"),
+                json!({"mcpServers":{"remote":{"type":"http","url":"secret-url"}}}),
+            );
+            fs::create_dir_all(home.path().join(".codex")).unwrap();
+            fs::write(home.path().join(".codex/config.toml"), "secret-broken").unwrap();
+            let dir = Directory::load_at(&pp, Some(home.path())).unwrap();
+            assert!(dir.entries["remote"].config.is_none());
+            assert_eq!(dir.diagnostics.len(), 1);
+            assert!(!dir.diagnostics[0].contains("secret"));
+        }
     }
 }
 

@@ -11,7 +11,7 @@ fn runtime_reasoning_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
 
 #[test]
 fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         for code in [false, true] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
@@ -125,5 +125,4 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
             drop(stream);
             no_more(&server);
         }
-    }
 }

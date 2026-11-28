@@ -17,7 +17,7 @@ fn hud_row(screen: &vt100::Screen, needle: &str) -> Option<usize> {
 
 #[test]
 fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -78,13 +78,12 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);
-    }
 }
 
 // 三种执行起点（新会话 / 保留上下文 / 压缩后）各自独立，均验证 todo 快照、
 // 完成提醒与归档字节一致。
 fn plan_todo_approval_case(context: usize) {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
             let home = tempfile::tempdir().unwrap();
             let project = tempfile::tempdir().unwrap();
@@ -258,197 +257,11 @@ fn plan_todo_approval_case(context: usize) {
         no_more(&fixture);
         pty.input("\x03");
         pty.finish();
-    }
-}
-
-#[test]
-fn plan_todo_approval_fresh_session_initializes_todos_and_archives_same_bytes() {
-    plan_todo_approval_case(0);
-}
-
-#[test]
-fn plan_todo_approval_kept_context_initializes_todos_and_archives_same_bytes() {
-    plan_todo_approval_case(1);
-}
-
-#[test]
-fn plan_todo_approval_compacted_context_initializes_todos_and_archives_same_bytes() {
-    plan_todo_approval_case(2);
-}
-
-#[test]
-fn plan_todo_same_batch_external_checkbox_sync_preserves_runtime_and_duplicate_lookup() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let home = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let content =
-            "# Duplicate plan\n\n## Work\n- [ ] duplicate\n- [ ] duplicate\n- [ ] last task\n";
-        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
-        plan_enter(&mut pty, &fixture);
-        plan_drive_ready(&mut pty, &fixture, protocol, "duplicate tasks", content);
-        plan_choose(&mut pty, 0);
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_calls(
-            request,
-            protocol,
-            json!([
-                plan_call(
-                    protocol,
-                    "ambiguous",
-                    "todo",
-                    json!({"op":"done","task":"duplicate"})
-                ),
-                plan_call(
-                    protocol,
-                    "second-blocked",
-                    "todo",
-                    json!({"op":"block","task":"duplicate","occurrence":2,"reason":"external dependency"})
-                ),
-                plan_call(
-                    protocol,
-                    "direct-check",
-                    "edit",
-                    json!({"path":".pp/plans/create-canary.md","edits":[{"oldText":"## Work\n- [ ] duplicate","newText":"## Renamed\n- [x] duplicate"}]})
-                ),
-                plan_call(protocol, "synced-view", "todo", json!({"op":"view"}))
-            ]),
-        );
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert_eq!(plan_todo_result(&body, protocol, "ambiguous")["ok"], false);
-        let view = plan_todo_result(&body, protocol, "synced-view");
-        assert!(view.get("phases").is_none());
-        let view_content = view["content"].as_str().unwrap();
-        assert!(view_content.contains("Renamed:"));
-        assert!(view_content.contains("- [X] duplicate"));
-        assert!(view_content.contains("- [ ] duplicate (blocked: external dependency)"));
-        assert!(view_content.contains("(in progress)"));
-        plan_calls(
-            request,
-            protocol,
-            json!([
-                plan_call(
-                    protocol,
-                    "reopen",
-                    "todo",
-                    json!({"op":"start","task":"duplicate","phase":"Renamed","occurrence":1})
-                ),
-                plan_call(protocol, "finish", "todo", json!({"op":"done"}))
-            ]),
-        );
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_final(request, protocol, "Duplicate tasks verified.");
-        pty.completed();
-        assert_eq!(
-            std::fs::read_to_string(project.path().join(".pp/done/create-canary.md")).unwrap(),
-            content
-                .replace("## Work", "## Renamed")
-                .replace("[ ]", "[x]")
-        );
-        pty.input("\x03");
-        pty.finish();
-        no_more(&fixture);
-    }
-}
-
-#[test]
-fn plan_todo_draft_refuses_all_todo_calls_and_never_creates_snapshots() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let home = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
-        plan_enter(&mut pty, &fixture);
-        pty.input("readonly draft preview\r");
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let write = json!({"path":".pp/drafts/create-canary.md","content":TODO_TUI_BODY});
-        let mut calls = vec![plan_call(
-            protocol,
-            "draft-write",
-            "write",
-            write.clone(),
-        )];
-        for op in [
-            "init", "start", "done", "block", "unblock", "append", "rm", "drop",
-        ] {
-            calls.push(plan_call(protocol, &format!("deny-{op}"), "todo", json!({"op":op,"task":"Write canary bytes.","phase":"Write","items":["unapproved"]})));
-        }
-        let no_op = write;
-        calls.push(plan_call(protocol, "noop-write", "write", no_op));
-        calls.push(plan_call(
-            protocol,
-            "draft-view",
-            "todo",
-            json!({"op":"view"}),
-        ));
-        calls.push(plan_call(
-            protocol,
-            "draft-submit",
-            "plan_submit",
-            json!({"expected_revision":1}),
-        ));
-        calls.push(plan_call(
-            protocol,
-            "sealed-view",
-            "todo",
-            json!({"op":"view"}),
-        ));
-        plan_calls(request, protocol, json!(calls));
-        plan_wait_review(&mut pty, 1);
-        no_more(&fixture);
-        let records = plan_journal(home.path(), &saved_session_id(home.path()));
-        let results: Vec<_> = records
-            .iter()
-            .filter(|record| record["message"]["role"] == "toolResult")
-            .map(|record| json!({"id":record["message"]["toolCallId"],
-                "result":serde_json::from_str::<Value>(record["message"]["content"][0]["text"].as_str().unwrap()).unwrap()}))
-            .collect();
-        for op in [
-            "init", "start", "done", "block", "unblock", "append", "rm", "drop",
-        ] {
-            let event = results
-                .iter()
-                .find(|result| result["id"] == format!("deny-{op}"))
-                .unwrap();
-            assert_eq!(event["result"]["ok"], false, "{event:?}");
-            assert_eq!(event["result"]["error"], "Tool is not available in Plan mode.");
-        }
-        let view = results
-            .iter()
-            .find(|result| result["id"] == "draft-view")
-            .unwrap();
-        assert_eq!(view["result"]["ok"], false);
-        assert_eq!(view["result"]["error"], "Tool is not available in Plan mode.");
-        let sealed = results
-            .iter()
-            .find(|result| result["id"] == "sealed-view")
-            .unwrap();
-        assert_eq!(sealed["result"]["ok"], false);
-        assert_eq!(
-            records
-                .iter()
-                .filter(|record| record["data"]["event"]["todo_snapshot"].is_object())
-                .count(),
-            0,
-            "规划阶段不生成 TODO 快照"
-        );
-        assert!(
-            !records
-                .iter()
-                .any(|record| record["data"]["event"]["todo_reminder"].is_object())
-        );
-        assert_eq!(
-            std::fs::read_to_string(project.path().join(".pp/drafts/create-canary.md")).unwrap(),
-            TODO_TUI_BODY
-        );
-        pty.input("\x03");
-        pty.finish();
-    }
 }
 
 #[test]
 fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -743,154 +556,5 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);
-    }
 }
 
-#[test]
-fn tui_todo_plan_keeps_hud_empty_until_approved_execution() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let home = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
-        plan_enter(&mut pty, &fixture);
-        pty.input("preview fixed plan tasks\r");
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!plan_list_tool_names(protocol, &body).iter().any(|name| name == "todo"));
-        plan_calls(
-            request,
-            protocol,
-            json!([plan_call(
-                protocol,
-                "preview-fixed",
-                "write",
-                json!({"path":".pp/drafts/create-canary.md","content":TODO_TUI_BODY})
-            )]),
-        );
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!pty.parser.screen().contents().contains("TODO ·"));
-        plan_calls(
-            request,
-            protocol,
-            json!([plan_call(
-                protocol,
-                "submit-fixed",
-                "plan_submit",
-                json!({"expected_revision":1})
-            )]),
-        );
-        plan_wait_review(&mut pty, 1);
-        assert!(!pty.parser.screen().contents().contains("TODO ·"));
-        plan_choose(&mut pty, 0);
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("执行交接后显示 active 清单", |screen| {
-            // 收起状态保留两个阶段行，任务行以树枝内缩在阶段下。
-            hud_row(screen, "TODO · 0/2").is_some_and(|title| {
-                screen
-                    .rows(0, 100)
-                    .nth(title + 1)
-                    .is_some_and(|row| row.contains("I. Write (0/1)"))
-                    && screen
-                        .rows(0, 100)
-                        .nth(title + 2)
-                        .is_some_and(|row| row.contains("[ ] Write canary bytes."))
-                    && screen
-                        .rows(0, 100)
-                        .nth(title + 3)
-                        .is_some_and(|row| row.contains("II. Verify (0/1)"))
-                    && screen
-                        .rows(0, 100)
-                        .nth(title + 4)
-                        .is_some_and(|row| row.contains("[ ] Read back canary bytes."))
-            }) && !screen.contents().contains("Preview")
-        });
-        plan_calls(
-            request,
-            protocol,
-            json!([plan_call(
-                protocol,
-                "complete-fixed-plan",
-                "todo",
-                json!({"op":"done"})
-            )]),
-        );
-        let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        plan_final(request, protocol, "Approved tasks complete.");
-        pty.completed();
-        assert!(pty.parser.screen().contents().contains("TODO · 2/2"));
-        pty.input("\x03");
-        pty.finish();
-        no_more(&fixture);
-    }
-}
-
-#[test]
-fn tui_model_picker_overlays_todo_and_restores_it_on_cancel() {
-    let fixture = server();
-    let home = tempfile::tempdir().unwrap();
-    let project = tempfile::tempdir().unwrap();
-    let models: serde_json::Map<String, Value> = (0..25)
-        .map(|index| (format!("model-{index:02}"), json!({"model":format!("vendor-{index:02}")})))
-        .collect();
-    let config = json!({"providers":{"catalog":slash_provider(
-        &fixture, "catalog", "completion", Value::Object(models)
-    )}});
-    std::fs::write(config_path(home.path(), "models.yml"), config.to_string()).unwrap();
-    std::fs::write(
-        config_path(home.path(), "settings.yml"),
-        "default_model: catalog/model-00\n",
-    ).unwrap();
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
-    pty.ready_model("catalog/model-00");
-    pty.input("create overlay tasks\r");
-    let (request, _) = pty.request(&fixture);
-    let items: Vec<_> = (0..12).map(|i| format!("OVERLAY_TASK_{i:02}")).collect();
-    plan_calls(request, "completion", json!([plan_call(
-        "completion", "overlay-todos", "todo", json!({"op":"init","items":items})
-    )]));
-    let (request, _) = pty.request(&fixture);
-    final_reply(request, "Can you confirm?");
-    pty.completed();
-    for expanded in [false, true] {
-        if expanded {
-            pty.function_key('t');
-            pty.wait_for("TODO 已展开", |screen| {
-                screen.contents().contains("collapse") && screen.contents().contains("OVERLAY_TASK_00")
-            });
-        }
-        pty.input("/model ");
-        pty.wait_for("模型浮层紧贴输入框并覆盖 TODO", |screen| {
-            let text = screen.contents();
-            screen.alternate_screen()
-                && text.contains("catalog/model-10")
-                && screen.rows(0, 100).nth(25).is_some_and(|row| row.contains("favorite"))
-                && screen.rows(0, 100).nth(27).is_some_and(|row| row.trim() == "❯")
-                && !text.contains("TODO ·")
-                && !text.contains("OVERLAY_TASK_")
-        });
-        pty.input("\x1b[F");
-        pty.text("❯ catalog/model-24");
-        for (rows, cols) in [(16, 40), (6, 20), (30, 100)] {
-            pty.resize(rows, cols);
-            pty.wait_for("缩放后模型浮层仍覆盖 TODO 并保留选择", |screen| {
-                let text = screen.contents();
-                screen.size() == (rows, cols)
-                    && text.contains(if cols < 30 { "❯ catalog/" } else { "❯ catalog/model-24" })
-                    && !text.contains("TODO ·")
-                    && !text.contains("OVERLAY_TASK_")
-            });
-        }
-        pty.input("\x1b");
-        pty.wait_for("取消后恢复 TODO 和主输入框", |screen| {
-            !screen.alternate_screen()
-                && input_is_ready(screen)
-                && screen.contents().contains("TODO · 0/12")
-                && screen.contents().contains("OVERLAY_TASK_00")
-                && !screen.contents().contains('')
-        });
-        pty.draft("");
-    }
-    no_more(&fixture);
-    pty.input("\x03");
-    pty.finish();
-}

@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn context_abbreviation_uses_thousands_and_millions_with_one_decimal() {
+    fn metric_fields_units_colors_missing_usage_and_live_estimate() {
         for (tokens, expected) in [
             (0, "0"),
             (999, "999"),
@@ -315,107 +315,67 @@ mod tests {
         ] {
             assert_eq!(abbreviate_tokens(tokens), expected);
         }
-    }
 
-    #[test]
-    fn metric_fields_order_units_and_independent_pair_colors() {
-        let icons = themes::current_icons();
-        let usage = status_usage();
-        let task = pp_config::task_status::Snapshot {
-            title: Some("修复会话历史".into()),
-            cost: 0.0123,
-            ..Default::default()
-        };
-        let line = metric_fields(
-            metrics(&usage),
-            Some((30.2, true)),
-            0,
-            None,
-            Some((&task, &Default::default())),
-            Some("1m 25s"),
-            240,
-        );
-        assert_eq!(
-            line_text(&line),
-            format!(
-                " {} 30.2 tok/s · {} 修复会话历史 · {} 81.6%/500K · {} 12.3K/45.7K · {} 8K/0 · {} 0.012 · {} 1m25s ",
-                speed_slow_icon(icons),
-                title_icon(icons),
-                context_icon(icons),
-                io_icon(icons),
-                cache_icon(icons),
-                cost_icon(icons),
-                timer_icon(icons),
-            )
-        );
-        for (text, color) in [
-            ("30.2 tok/s", speed_color()),
-            ("修复会话历史", plan_mode()),
-            ("81.6%/500K", context_color()),
-            ("12.3K", input_color()),
-            ("45.7K", output_color()),
-            ("8K", cache_read_color()),
-            ("0", cache_write_color()),
-            ("0.012", cost_color()),
-            ("1m25s", context_color()),
-        ] {
-            assert_eq!(
-                line.spans
-                    .iter()
-                    .find(|span| span.content == text)
-                    .unwrap()
-                    .style
-                    .fg,
-                Some(color),
-                "{text}"
-            );
-        }
-    }
-
-    #[test]
-    fn metric_fields_distinguish_missing_usage_and_independent_zero_cache() {
         let icons = themes::current_icons();
         let io = io_icon(icons);
         let cache = cache_icon(icons);
-        let mut usage = status_usage();
-        usage.last_request = None;
-        usage.session_output_tokens = 0;
-        let text = line_text(&metric_fields(
-            metrics(&usage),
-            None,
-            0,
-            None,
-            None,
-            None,
-            240,
-        ));
-        assert!(text.contains(&format!("{io} —/—")));
-        assert!(text.contains(&format!("{cache} —/—")));
-        // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
-        usage.session_output_tokens = 45_678;
-        let text = line_text(&metric_fields(
-            metrics(&usage),
-            None,
-            0,
-            None,
-            None,
-            None,
-            240,
-        ));
-        assert!(text.contains(&format!("{io} —/45.7K")), "{text}");
-        usage.session_output_tokens = 0;
-        for (read, write, expected) in [
-            (None, Some(0), "—/0"),
-            (Some(0), None, "0/—"),
-            (Some(0), Some(0), "0/0"),
-        ] {
-            usage.last_request = Some(TokenUsage {
-                input_tokens: 0,
-                output_tokens: 0,
-                cached_tokens: read,
-                cache_write_tokens: write,
-                reasoning_tokens: None,
-            });
+        {
+            let usage = status_usage();
+            let task = pp_config::task_status::Snapshot {
+                title: Some("修复会话历史".into()),
+                cost: 0.0123,
+                ..Default::default()
+            };
+            let line = metric_fields(
+                metrics(&usage),
+                Some((30.2, true)),
+                0,
+                None,
+                Some((&task, &Default::default())),
+                Some("1m 25s"),
+                240,
+            );
+            assert_eq!(
+                line_text(&line),
+                format!(
+                    " {} 30.2 tok/s · {} 修复会话历史 · {} 81.6%/500K · {} 12.3K/45.7K · {} 8K/0 · {} 0.012 · {} 1m25s ",
+                    speed_slow_icon(icons),
+                    title_icon(icons),
+                    context_icon(icons),
+                    io,
+                    cache,
+                    cost_icon(icons),
+                    timer_icon(icons),
+                )
+            );
+            for (text, color) in [
+                ("30.2 tok/s", speed_color()),
+                ("修复会话历史", plan_mode()),
+                ("81.6%/500K", context_color()),
+                ("12.3K", input_color()),
+                ("45.7K", output_color()),
+                ("8K", cache_read_color()),
+                ("0", cache_write_color()),
+                ("0.012", cost_color()),
+                ("1m25s", context_color()),
+            ] {
+                assert_eq!(
+                    line.spans
+                        .iter()
+                        .find(|span| span.content == text)
+                        .unwrap()
+                        .style
+                        .fg,
+                    Some(color),
+                    "{text}"
+                );
+            }
+        }
+
+        {
+            let mut usage = status_usage();
+            usage.last_request = None;
+            usage.session_output_tokens = 0;
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
@@ -425,60 +385,93 @@ mod tests {
                 None,
                 240,
             ));
-            assert!(text.contains(&format!("{io} 0/0")));
-            assert!(text.contains(&format!("{cache} {expected}")));
+            assert!(text.contains(&format!("{io} —/—")));
+            assert!(text.contains(&format!("{cache} —/—")));
+            // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
+            usage.session_output_tokens = 45_678;
+            let text = line_text(&metric_fields(
+                metrics(&usage),
+                None,
+                0,
+                None,
+                None,
+                None,
+                240,
+            ));
+            assert!(text.contains(&format!("{io} —/45.7K")), "{text}");
+            usage.session_output_tokens = 0;
+            for (read, write, expected) in [
+                (None, Some(0), "—/0"),
+                (Some(0), None, "0/—"),
+                (Some(0), Some(0), "0/0"),
+            ] {
+                usage.last_request = Some(TokenUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cached_tokens: read,
+                    cache_write_tokens: write,
+                    reasoning_tokens: None,
+                });
+                let text = line_text(&metric_fields(
+                    metrics(&usage),
+                    None,
+                    0,
+                    None,
+                    None,
+                    None,
+                    240,
+                ));
+                assert!(text.contains(&format!("{io} 0/0")));
+                assert!(text.contains(&format!("{cache} {expected}")));
+            }
+        }
+
+        {
+            let usage = status_usage();
+            // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
+            let text = line_text(&metric_fields(
+                metrics(&usage),
+                None,
+                0,
+                Some(4200),
+                None,
+                None,
+                240,
+            ));
+            assert!(text.contains(&format!("{io} 12.3K/49.9K")), "{text}");
+            assert!(text.contains(&format!("{cache} 8K/0")), "{text}");
+            // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
+            let text = line_text(&metric_fields(
+                metrics(&usage),
+                None,
+                0,
+                None,
+                None,
+                None,
+                240,
+            ));
+            assert!(text.contains(&format!("{io} 12.3K/45.7K")), "{text}");
+            // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
+            let first = ContextUsage {
+                last_request: None,
+                session_output_tokens: 0,
+                ..usage
+            };
+            let text = line_text(&metric_fields(
+                metrics(&first),
+                None,
+                0,
+                Some(260),
+                None,
+                None,
+                240,
+            ));
+            assert!(text.contains(&format!("{io} —/260")), "{text}");
         }
     }
 
     #[test]
-    fn metric_fields_out_accumulates_session_usage_and_adds_live_estimate() {
-        let icons = themes::current_icons();
-        let io = io_icon(icons);
-        let cache = cache_icon(icons);
-        let usage = status_usage();
-        // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
-        let text = line_text(&metric_fields(
-            metrics(&usage),
-            None,
-            0,
-            Some(4200),
-            None,
-            None,
-            240,
-        ));
-        assert!(text.contains(&format!("{io} 12.3K/49.9K")), "{text}");
-        assert!(text.contains(&format!("{cache} 8K/0")), "{text}");
-        // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
-        let text = line_text(&metric_fields(
-            metrics(&usage),
-            None,
-            0,
-            None,
-            None,
-            None,
-            240,
-        ));
-        assert!(text.contains(&format!("{io} 12.3K/45.7K")), "{text}");
-        // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
-        let first = ContextUsage {
-            last_request: None,
-            session_output_tokens: 0,
-            ..usage
-        };
-        let text = line_text(&metric_fields(
-            metrics(&first),
-            None,
-            0,
-            Some(260),
-            None,
-            None,
-            240,
-        ));
-        assert!(text.contains(&format!("{io} —/260")), "{text}");
-    }
-
-    #[test]
-    fn speed_icon_follows_rate_tiers() {
+    fn speed_context_and_cost_fields_formatting() {
         let icons = themes::current_icons();
         let slow = speed_slow_icon(icons);
         let medium = speed_medium_icon(icons);
@@ -494,7 +487,6 @@ mod tests {
         ] {
             assert_eq!(speed_icon(rate), icon, "{rate:?}");
         }
-        // 三档图标都是单列字形，状态栏按固定图标列排版。
         for icon in [slow, medium, fast] {
             assert_eq!(Line::from(icon).width(), 1, "{icon}");
         }
@@ -508,11 +500,8 @@ mod tests {
             240,
         ));
         assert!(text.contains(&format!("{medium} 61.5 tok/s")), "{text}");
-    }
 
-    #[test]
-    fn metric_fields_speed_preserves_decimal_and_title_graphemes() {
-        let title = title_icon(themes::current_icons());
+        let title = title_icon(icons);
         let usage = status_usage();
         for (rate, expected) in [
             (999.0, "999.0 tok/s"),
@@ -536,10 +525,7 @@ mod tests {
             line_text(&title_field("🙂👩‍💻标题", 5)),
             format!("{title} 🙂👩‍💻…")
         );
-    }
 
-    #[test]
-    fn context_field_is_white_with_only_a_leading_icon() {
         let mut usage = status_usage();
         for (window, tokens, expected) in [
             (Some(500_000), 250_000, "50.0%/500K"),
@@ -558,10 +544,7 @@ mod tests {
                     .all(|span| span.style.fg == Some(context_color()))
             );
         }
-    }
 
-    #[test]
-    fn cost_field_rounds_amount_and_displays_partial_subtotal() {
         let cost = cost_icon(themes::current_icons());
         let mut task = pp_config::task_status::Snapshot::default();
         for amount in [0.0, -1.0, f64::NAN, f64::INFINITY] {
@@ -578,11 +561,8 @@ mod tests {
         let line = cost_field(&task, &Default::default()).unwrap();
         assert_eq!(line_text(&line), format!("{cost} 0.000"));
         assert_eq!(line.spans[1].style.fg, Some(cost_color()));
-    }
 
-    #[test]
-    fn cost_field_shows_currency_icon_and_converted_amount() {
-        let task = pp_config::task_status::Snapshot {
+        let converted = pp_config::task_status::Snapshot {
             cost: 0.012,
             ..Default::default()
         };
@@ -596,44 +576,38 @@ mod tests {
                 exchange_rate,
             };
             assert_eq!(
-                cost_field(&task, &display).map(|line| line_text(&line)),
+                cost_field(&converted, &display).map(|line| line_text(&line)),
                 Some(format!("{icon} {expected}")),
                 "{currency}"
             );
         }
-        // 校验拒绝的币种没有对应图标，费用字段整体隐藏。
         let unsupported = pp_config::config::CostDisplay {
             currency: "GBP".into(),
             exchange_rate: 1.0,
         };
-        assert!(cost_field(&task, &unsupported).is_none());
-    }
+        assert!(cost_field(&converted, &unsupported).is_none());
 
-    #[test]
-    fn cost_field_displays_only_settled_session_subtotal() {
-        let cost = cost_icon(themes::current_icons());
-        let render = |task: &pp_config::task_status::Snapshot| {
-            cost_field(task, &Default::default()).map(|line| line_text(&line))
+        let render = |snap: &pp_config::task_status::Snapshot| {
+            cost_field(snap, &Default::default()).map(|line| line_text(&line))
         };
-        let mut task = pp_config::task_status::Snapshot {
+        let mut subtotal = pp_config::task_status::Snapshot {
             live: 0.0023,
             ..Default::default()
         };
-        assert!(render(&task).is_none());
-        task.incomplete = true;
-        assert!(render(&task).is_none());
-
-        task.history = Some(pp_config::task_status::HistoricalCost {
+        assert!(render(&subtotal).is_none());
+        subtotal.incomplete = true;
+        assert!(render(&subtotal).is_none());
+        subtotal.history = Some(pp_config::task_status::HistoricalCost {
             usd: Some(0.01),
             incomplete: false,
         });
-        task.cost = 0.01;
-        task.incomplete = false;
-        task.live = 0.003;
-        assert_eq!(render(&task).unwrap(), format!("{cost} 0.020"));
-        task.cost += 0.001;
-        task.live = 0.0;
-        assert_eq!(render(&task).unwrap(), format!("{cost} 0.021"));
+        subtotal.cost = 0.01;
+        subtotal.incomplete = false;
+        subtotal.live = 0.003;
+        assert_eq!(render(&subtotal).unwrap(), format!("{cost} 0.020"));
+        subtotal.cost += 0.001;
+        subtotal.live = 0.0;
+        assert_eq!(render(&subtotal).unwrap(), format!("{cost} 0.021"));
     }
 
     #[test]

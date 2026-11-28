@@ -11,77 +11,76 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 #[test]
-fn detail_speed_replays_event_timing_and_settles_with_server_usage() {
-    let mut detail = Detail::new("a1", 1, Transcript::new());
-    let runs = [run("r1", "running")];
-    let timed = |offset, timestamp, value| {
-        let mut entry = event(offset, "r1", value);
-        entry.record.timestamp_ms = Some(timestamp);
-        entry
-    };
-    let first = page(
-        vec![
-            timed(0, 1_000, AgentEvent::ModelRequestStarted),
-            timed(
-                1,
-                2_000,
-                AgentEvent::ModelOutputProgress { output_bytes: 300 },
+fn detail_speed_timing_ticks_and_clears_on_termination() {
+    {
+        let mut detail = Detail::new("a1", 1, Transcript::new());
+        let runs = [run("r1", "running")];
+        let timed = |offset, timestamp, value| {
+            let mut entry = event(offset, "r1", value);
+            entry.record.timestamp_ms = Some(timestamp);
+            entry
+        };
+        let first = page(
+            vec![
+                timed(0, 1_000, AgentEvent::ModelRequestStarted),
+                timed(
+                    1,
+                    2_000,
+                    AgentEvent::ModelOutputProgress { output_bytes: 300 },
+                ),
+                timed(
+                    2,
+                    3_000,
+                    AgentEvent::ModelOutputProgress { output_bytes: 600 },
+                ),
+            ],
+            true,
+        );
+        detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
+        let (rate, estimated) = detail.token_speed.value().unwrap();
+        assert!(
+            (rate - 200.0).abs() < 0.01,
+            "按日志中的一秒输出窗口估速: {rate}"
+        );
+        assert!(estimated);
+        // 重复页不能重复累计或重置采样。
+        detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
+        assert_eq!(detail.token_speed.value(), Some((rate, true)));
+        detail.ingest(
+            &page(
+                vec![timed(
+                    3,
+                    5_000,
+                    AgentEvent::ModelRequestFinished {
+                        elapsed_ms: 4_000,
+                        usage: Some(pp_core::context::TokenUsage {
+                            input_tokens: 100,
+                            output_tokens: 200,
+                            cached_tokens: None,
+                            cache_write_tokens: None,
+                            reasoning_tokens: None,
+                        }),
+                        success: true,
+                    },
+                )],
+                false,
             ),
-            timed(
-                2,
-                3_000,
-                AgentEvent::ModelOutputProgress { output_bytes: 600 },
-            ),
-        ],
-        true,
-    );
-    detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
-    let (rate, estimated) = detail.token_speed.value().unwrap();
-    assert!(
-        (rate - 200.0).abs() < 0.01,
-        "按日志中的一秒输出窗口估速: {rate}"
-    );
-    assert!(estimated);
-    // 重复页不能重复累计或重置采样。
-    detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
-    assert_eq!(detail.token_speed.value(), Some((rate, true)));
-    detail.ingest(
-        &page(
-            vec![timed(
-                3,
-                5_000,
-                AgentEvent::ModelRequestFinished {
-                    elapsed_ms: 4_000,
-                    usage: Some(pp_core::context::TokenUsage {
-                        input_tokens: 100,
-                        output_tokens: 200,
-                        cached_tokens: None,
-                        cache_write_tokens: None,
-                        reasoning_tokens: None,
-                    }),
-                    success: true,
-                },
-            )],
-            false,
-        ),
-        &runs,
-        &BTreeSet::new(),
-        10_000,
-    );
-    assert_eq!(detail.token_speed.value(), Some((50.0, false)));
-    detail.ingest(
-        &page(vec![state(4, "r1", "completed", Some(5_000))], false),
-        &[run("r1", "completed")],
-        &BTreeSet::new(),
-        10_000,
-    );
-    assert_eq!(detail.token_speed.value(), Some((50.0, false)));
-    detail.rebuild();
-    assert!(detail.token_speed.value().is_none());
-}
+            &runs,
+            &BTreeSet::new(),
+            10_000,
+        );
+        assert_eq!(detail.token_speed.value(), Some((50.0, false)));
+        detail.ingest(
+            &page(vec![state(4, "r1", "completed", Some(5_000))], false),
+            &[run("r1", "completed")],
+            &BTreeSet::new(),
+            10_000,
+        );
+        assert_eq!(detail.token_speed.value(), Some((50.0, false)));
+        detail.rebuild();
+        assert!(detail.token_speed.value().is_none());
+    }
 
-#[test]
-fn detail_speed_ticks_live_output_and_clears_on_failed_or_cancelled_requests() {
     for status in ["cancelled", "failed", "interrupted"] {
         let mut detail = Detail::new("a1", 1, Transcript::new());
         detail.ingest(
@@ -119,203 +118,203 @@ fn detail_speed_ticks_live_output_and_clears_on_failed_or_cancelled_requests() {
 }
 
 #[test]
-fn detail_bash_task_poll_anchors_reuse_the_original_card_across_pages() {
-    let mut detail = Detail::new("a1", 1, Transcript::new());
-    let runs = [run("r1", "running")];
-    detail.ingest(&page(vec![
-        event(0, "r1", tool("start", "bash", json!({"command":"service","mode":"background"}))),
-        event(1, "r1", AgentEvent::ToolFinished {
-            id: "start".into(), result: json!({"ok":true,"task_id":"bg-1","status":"running","output":"before"}),
-        }),
-    ], true), &runs, &BTreeSet::new(), 10_000);
-    let original = detail.by_tool[&("r1".into(), "start".into())];
-    detail.ingest(&page(vec![
-        event(2, "r1", tool("poll", "bash_task", json!({"action":"status","task_id":"bg-1"}))),
-        event(3, "r1", AgentEvent::ToolFinished {
-            id: "poll".into(), result: json!({"ok":true,"task_id":"bg-1","status":"exited","output":"after"}),
-        }),
-    ], false), &runs, &BTreeSet::new(), 10_000);
-    assert_eq!(detail.by_tool[&("r1".into(), "poll".into())], original);
-    assert_eq!(detail.by_offset[&2], original);
-    assert_eq!(detail.transcript.entry_count(), original + 1);
-    let screen = text(&mut detail.transcript);
-    assert!(
-        screen.contains("after") && !screen.contains("before"),
-        "{screen}"
-    );
-}
+fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
+    {
+        let mut detail = Detail::new("a1", 1, Transcript::new());
+        let runs = [run("r1", "running")];
+        detail.ingest(&page(vec![
+            event(0, "r1", tool("start", "bash", json!({"command":"service","mode":"background"}))),
+            event(1, "r1", AgentEvent::ToolFinished {
+                id: "start".into(), result: json!({"ok":true,"task_id":"bg-1","status":"running","output":"before"}),
+            }),
+        ], true), &runs, &BTreeSet::new(), 10_000);
+        let original = detail.by_tool[&("r1".into(), "start".into())];
+        detail.ingest(&page(vec![
+            event(2, "r1", tool("poll", "bash_task", json!({"action":"status","task_id":"bg-1"}))),
+            event(3, "r1", AgentEvent::ToolFinished {
+                id: "poll".into(), result: json!({"ok":true,"task_id":"bg-1","status":"exited","output":"after"}),
+            }),
+        ], false), &runs, &BTreeSet::new(), 10_000);
+        assert_eq!(detail.by_tool[&("r1".into(), "poll".into())], original);
+        assert_eq!(detail.by_offset[&2], original);
+        assert_eq!(detail.transcript.entry_count(), original + 1);
+        let screen = text(&mut detail.transcript);
+        assert!(
+            screen.contains("after") && !screen.contains("before"),
+            "{screen}"
+        );
+    }
 
-#[test]
-fn artifact_live_output_preview_replaces_body_after_history_catches_up() {
-    let mut detail = Detail::new("a1", 1, Transcript::new());
-    let running = run("r1", "running");
-    let start = page(
-        vec![
-            state(0, "r1", "running", None),
-            event(1, "r1", tool("b", "bash", json!({"command":"work"}))),
-        ],
-        true,
-    );
-    detail.ingest(
-        &start,
-        std::slice::from_ref(&running),
-        &BTreeSet::new(),
-        10000,
-    );
-    let preview = event(
-        2,
-        "r1",
-        AgentEvent::ToolOutputSnapshot {
-            id: "b".into(),
-            output: "old-preview".into(),
-        },
-    )
-    .record;
-    detail.output_preview(&preview);
-    assert!(!text(&mut detail.transcript).contains("old-preview"));
-    detail.ingest(
-        &page(vec![], false),
-        std::slice::from_ref(&running),
-        &BTreeSet::new(),
-        10000,
-    );
-    detail.output_preview(&preview);
-    assert!(text(&mut detail.transcript).contains("old-preview"));
-    let next = event(
-        3,
-        "r1",
-        AgentEvent::ToolOutputSnapshot {
-            id: "b".into(),
-            output: "latest-preview".into(),
-        },
-    )
-    .record;
-    detail.output_preview(&next);
-    let screen = text(&mut detail.transcript);
-    assert!(screen.contains("latest-preview") && !screen.contains("old-preview"));
-    detail.ingest(
-        &page(
-            vec![event(
-                4,
-                "r1",
-                AgentEvent::ToolFinished {
-                    id: "b".into(),
-                    result: json!({"ok":true,"output":"final-output"}),
-                },
-            )],
-            false,
-        ),
-        &[running],
-        &BTreeSet::new(),
-        10000,
-    );
-    detail.output_preview(&preview);
-    let screen = text(&mut detail.transcript);
-    assert!(screen.contains("final-output") && !screen.contains("old-preview"));
-}
-
-#[test]
-fn detail_pipeline_preview_adds_badge_without_replacing_main_preview() {
-    const RUN: &str = "0123456789abcdef0123456789abcdef";
-    let mut detail = Detail::new("a1", 1, Transcript::new());
-    let running = run("r1", "running");
-    detail.ingest(
-        &page(
+    {
+        let mut detail = Detail::new("a1", 1, Transcript::new());
+        let running = run("r1", "running");
+        let start = page(
             vec![
-                state(0, "r1", "running", Some(1_000)),
+                state(0, "r1", "running", None),
                 event(1, "r1", tool("b", "bash", json!({"command":"work"}))),
             ],
             true,
-        ),
-        std::slice::from_ref(&running),
-        &BTreeSet::new(),
-        10_000,
-    );
-    let pipeline = |nonzero: u64, revision: u64| {
-        event(
-            2 + revision,
+        );
+        detail.ingest(
+            &start,
+            std::slice::from_ref(&running),
+            &BTreeSet::new(),
+            10000,
+        );
+        let preview = event(
+            2,
             "r1",
-            AgentEvent::ToolPipelineSnapshot {
+            AgentEvent::ToolOutputSnapshot {
                 id: "b".into(),
-                preview: None,
-                pipes: json!({
-                    "run_id": RUN,
-                    "uri": format!("pipe://{RUN}"),
-                    "pipelines": [{"id": 1, "stages": []}],
-                    "streams": [],
-                    "nonzero_stages": nonzero,
-                    "incomplete": false,
-                    "revision": revision,
-                    "leak": "pipeline-secret",
-                }),
+                output: "old-preview".into(),
             },
         )
-        .record
-    };
-    // 页未读完时预览被丢弃，不能提前改变卡片。
-    detail.pipeline_preview(&pipeline(1, 1));
-    assert!(!text(&mut detail.transcript).contains("Pipes: /pipes"));
-    detail.ingest(
-        &page(vec![], false),
-        std::slice::from_ref(&running),
-        &BTreeSet::new(),
-        10_000,
-    );
-    let main = event(
-        5,
-        "r1",
-        AgentEvent::ToolOutputSnapshot {
-            id: "b".into(),
-            output: "main-preview".into(),
-        },
-    )
-    .record;
-    detail.output_preview(&main);
-    detail.pipeline_preview(&pipeline(1, 1));
-    let screen = text(&mut detail.transcript);
-    // 阶段快照只更新底部警示/入口，主输出预览仍是唯一正文。
-    assert!(screen.contains("main-preview"), "{screen}");
-    assert!(screen.contains("Pipes: /pipes (F8)"), "{screen}");
-    assert!(screen.contains("Non-zero stage results: 1"), "{screen}");
-    assert!(!screen.contains("pipeline-secret"), "{screen}");
-    let latest = event(
-        6,
-        "r1",
-        AgentEvent::ToolOutputSnapshot {
-            id: "b".into(),
-            output: "latest-preview".into(),
-        },
-    )
-    .record;
-    detail.output_preview(&latest);
-    detail.pipeline_preview(&pipeline(2, 2));
-    let screen = text(&mut detail.transcript);
-    assert!(
-        screen.contains("latest-preview") && !screen.contains("main-preview"),
-        "{screen}"
-    );
-    assert!(screen.contains("Non-zero stage results: 2"), "{screen}");
-    // 最终结果没有 pipes 时，瞬时入口与警示不得残留。
-    detail.ingest(
-        &page(
-            vec![event(
-                7,
+        .record;
+        detail.output_preview(&preview);
+        assert!(!text(&mut detail.transcript).contains("old-preview"));
+        detail.ingest(
+            &page(vec![], false),
+            std::slice::from_ref(&running),
+            &BTreeSet::new(),
+            10000,
+        );
+        detail.output_preview(&preview);
+        assert!(text(&mut detail.transcript).contains("old-preview"));
+        let next = event(
+            3,
+            "r1",
+            AgentEvent::ToolOutputSnapshot {
+                id: "b".into(),
+                output: "latest-preview".into(),
+            },
+        )
+        .record;
+        detail.output_preview(&next);
+        let screen = text(&mut detail.transcript);
+        assert!(screen.contains("latest-preview") && !screen.contains("old-preview"));
+        detail.ingest(
+            &page(
+                vec![event(
+                    4,
+                    "r1",
+                    AgentEvent::ToolFinished {
+                        id: "b".into(),
+                        result: json!({"ok":true,"output":"final-output"}),
+                    },
+                )],
+                false,
+            ),
+            &[running],
+            &BTreeSet::new(),
+            10000,
+        );
+        detail.output_preview(&preview);
+        let screen = text(&mut detail.transcript);
+        assert!(screen.contains("final-output") && !screen.contains("old-preview"));
+    }
+
+    {
+        const RUN: &str = "0123456789abcdef0123456789abcdef";
+        let mut detail = Detail::new("a1", 1, Transcript::new());
+        let running = run("r1", "running");
+        detail.ingest(
+            &page(
+                vec![
+                    state(0, "r1", "running", Some(1_000)),
+                    event(1, "r1", tool("b", "bash", json!({"command":"work"}))),
+                ],
+                true,
+            ),
+            std::slice::from_ref(&running),
+            &BTreeSet::new(),
+            10_000,
+        );
+        let pipeline = |nonzero: u64, revision: u64| {
+            event(
+                2 + revision,
                 "r1",
-                AgentEvent::ToolFinished {
+                AgentEvent::ToolPipelineSnapshot {
                     id: "b".into(),
-                    result: json!({"ok":true,"stdout":"final-output"}),
+                    preview: None,
+                    pipes: json!({
+                        "run_id": RUN,
+                        "uri": format!("pipe://{RUN}"),
+                        "pipelines": [{"id": 1, "stages": []}],
+                        "streams": [],
+                        "nonzero_stages": nonzero,
+                        "incomplete": false,
+                        "revision": revision,
+                        "leak": "pipeline-secret",
+                    }),
                 },
-            )],
-            false,
-        ),
-        std::slice::from_ref(&running),
-        &BTreeSet::new(),
-        10_000,
-    );
-    let screen = text(&mut detail.transcript);
-    assert!(screen.contains("final-output"), "{screen}");
-    assert!(!screen.contains("Pipes: /pipes"), "{screen}");
-    assert!(!screen.contains("Non-zero stage results"), "{screen}");
+            )
+            .record
+        };
+        // 页未读完时预览被丢弃，不能提前改变卡片。
+        detail.pipeline_preview(&pipeline(1, 1));
+        assert!(!text(&mut detail.transcript).contains("Pipes: /pipes"));
+        detail.ingest(
+            &page(vec![], false),
+            std::slice::from_ref(&running),
+            &BTreeSet::new(),
+            10_000,
+        );
+        let main = event(
+            5,
+            "r1",
+            AgentEvent::ToolOutputSnapshot {
+                id: "b".into(),
+                output: "main-preview".into(),
+            },
+        )
+        .record;
+        detail.output_preview(&main);
+        detail.pipeline_preview(&pipeline(1, 1));
+        let screen = text(&mut detail.transcript);
+        // 阶段快照只更新底部警示/入口，主输出预览仍是唯一正文。
+        assert!(screen.contains("main-preview"), "{screen}");
+        assert!(screen.contains("Pipes: /pipes (F8)"), "{screen}");
+        assert!(screen.contains("Non-zero stage results: 1"), "{screen}");
+        assert!(!screen.contains("pipeline-secret"), "{screen}");
+        let latest = event(
+            6,
+            "r1",
+            AgentEvent::ToolOutputSnapshot {
+                id: "b".into(),
+                output: "latest-preview".into(),
+            },
+        )
+        .record;
+        detail.output_preview(&latest);
+        detail.pipeline_preview(&pipeline(2, 2));
+        let screen = text(&mut detail.transcript);
+        assert!(
+            screen.contains("latest-preview") && !screen.contains("main-preview"),
+            "{screen}"
+        );
+        assert!(screen.contains("Non-zero stage results: 2"), "{screen}");
+        // 最终结果没有 pipes 时，瞬时入口与警示不得残留。
+        detail.ingest(
+            &page(
+                vec![event(
+                    7,
+                    "r1",
+                    AgentEvent::ToolFinished {
+                        id: "b".into(),
+                        result: json!({"ok":true,"stdout":"final-output"}),
+                    },
+                )],
+                false,
+            ),
+            std::slice::from_ref(&running),
+            &BTreeSet::new(),
+            10_000,
+        );
+        let screen = text(&mut detail.transcript);
+        assert!(screen.contains("final-output"), "{screen}");
+        assert!(!screen.contains("Pipes: /pipes"), "{screen}");
+        assert!(!screen.contains("Non-zero stage results"), "{screen}");
+    }
 }
 
 fn run(id: &str, status: &str) -> Run {
@@ -553,7 +552,7 @@ fn detail_messages_match_main_transcript_cells_and_folding() {
 }
 
 #[test]
-fn detail_pages_wait_for_output_before_snapshot_terminal() {
+fn detail_lifecycle_pages_queue_and_late_metadata() {
     let mut detail = Detail::new("a1", 1, Transcript::new());
     let runs = [run("r1", "completed"), run("r2", "cancelled")];
     let settled = BTreeSet::from(["r1".into(), "r2".into()]);
@@ -609,18 +608,15 @@ fn detail_pages_wait_for_output_before_snapshot_terminal() {
     assert_eq!(screen.matches("task-r1").count(), 1);
     assert!(screen.contains("Completed · —"));
     assert!(!screen.contains("task-r2") && !screen.contains("Cancelled"));
-}
 
-#[test]
-fn detail_queue_to_live_ignores_a_snapshot_beyond_the_read_boundary() {
-    let mut detail = Detail::new("a1", 1, Transcript::new());
-    detail.ingest(
+    let mut queued = Detail::new("a1", 1, Transcript::new());
+    queued.ingest(
         &page(vec![state(0, "r1", "queued", None)], false),
         &[run("r1", "queued")],
         &BTreeSet::new(),
         10_000,
     );
-    detail.ingest(
+    queued.ingest(
         &page(
             vec![
                 state(1, "r1", "running", Some(1_000)),
@@ -639,8 +635,8 @@ fn detail_queue_to_live_ignores_a_snapshot_beyond_the_read_boundary() {
         &BTreeSet::new(),
         10_000,
     );
-    assert!(detail.terminal.is_empty());
-    detail.ingest(
+    assert!(queued.terminal.is_empty());
+    queued.ingest(
         &page(
             vec![
                 event(
@@ -658,13 +654,10 @@ fn detail_queue_to_live_ignores_a_snapshot_beyond_the_read_boundary() {
         &BTreeSet::new(),
         10_000,
     );
-    assert!(text(&mut detail.transcript).contains("Completed · —"));
-}
+    assert!(text(&mut queued.transcript).contains("Completed · —"));
 
-#[test]
-fn detail_terminal_metadata_can_arrive_after_lifecycle() {
-    let mut detail = Detail::new("a1", 1, Transcript::new());
-    detail.ingest(
+    let mut late = Detail::new("a1", 1, Transcript::new());
+    late.ingest(
         &page(
             vec![
                 event(0, "r1", AgentEvent::AssistantStarted),
@@ -684,21 +677,21 @@ fn detail_terminal_metadata_can_arrive_after_lifecycle() {
         &BTreeSet::new(),
         10_000,
     );
-    assert!(text(&mut detail.transcript).contains("Failed ·"));
-    assert_eq!(detail.transcript.task_duration(), None);
+    assert!(text(&mut late.transcript).contains("Failed ·"));
+    assert_eq!(late.transcript.task_duration(), None);
     let mut failed = run("r1", "failed");
     failed.result = Some(json!({"error":"failure explanation"}));
-    detail.ingest(
+    late.ingest(
         &page(vec![], false),
         &[failed],
         &BTreeSet::from(["r1".into()]),
         10_000,
     );
-    let screen = text(&mut detail.transcript);
+    let screen = text(&mut late.transcript);
     assert!(screen.contains("partial answer") && screen.contains("Failed ·"));
-    assert_eq!(detail.transcript.task_duration().as_deref(), Some("12s"));
+    assert_eq!(late.transcript.task_duration().as_deref(), Some("12s"));
     assert!(!screen.contains("failure explanation"));
-    assert_eq!(detail.notice.as_deref(), Some("failure explanation"));
+    assert_eq!(late.notice.as_deref(), Some("failure explanation"));
 }
 
 #[test]
@@ -817,7 +810,7 @@ fn detail_run_scoped_anchors_wait_for_the_target_page_and_inputs_are_unique() {
 }
 
 #[test]
-fn detail_rebuild_keeps_configuration_and_discards_old_indexes() {
+fn detail_rebuild_and_editor_input_config() {
     let mut main = Transcript::with_read_preview(true);
     main.set_bash_timeout(37);
     let mut detail = Detail::new("a1", 1, main.fresh());
@@ -857,11 +850,7 @@ fn detail_rebuild_keeps_configuration_and_discards_old_indexes() {
     assert!(
         screen.contains("Timeout: 37s") && screen.contains("after") && !screen.contains("before")
     );
-}
 
-#[test]
-fn detail_shift_enter_only_inserts_a_newline() {
-    let mut detail = Detail::new("a1", 1, Transcript::new());
     let mut drafts = Drafts::default();
     drafts.draft("a1").editor.insert_str("first");
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
@@ -876,8 +865,7 @@ fn detail_shift_enter_only_inserts_a_newline() {
     }
     let draft = drafts.draft("a1");
     assert_eq!(draft.editor.lines().join("\n"), "first\n\n");
-    assert!(draft.revision > 0, "本地编辑必须 touch 草稿");
-    // 普通 Enter 仍提交草稿全文；Ctrl + J 仍只换行。
+    assert!(draft.revision > 0);
     let submitted = detail.key(
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut drafts,
@@ -889,12 +877,9 @@ fn detail_shift_enter_only_inserts_a_newline() {
     );
     assert!(result.is_none());
     assert_eq!(drafts.draft("a1").editor.lines().join("\n"), "first\n\n\n");
-}
 
-#[test]
-fn detail_editor_uses_main_editor_configuration() {
     let child = editor();
-    let main = crate::tui::editor();
-    assert_eq!(child.style(), main.style());
-    assert_eq!(child.wrap_mode(), main.wrap_mode());
+    let main_ed = crate::tui::editor();
+    assert_eq!(child.style(), main_ed.style());
+    assert_eq!(child.wrap_mode(), main_ed.wrap_mode());
 }

@@ -535,4 +535,5 @@ fn project_aware(definition: &ServerDefinition) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+#[path = "tool/tests.rs"]
+mod integration;

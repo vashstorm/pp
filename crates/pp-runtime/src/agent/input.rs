@@ -323,26 +323,69 @@ mod tests {
     }
 
     #[test]
-    fn runtime_input_priority_and_restore_preserve_type_fifo() {
-        let queue = InputQueue::default();
-        queue.begin_run().unwrap();
-        enqueue(&queue, PendingKind::FollowUp, "Q1");
-        let s1 = enqueue(&queue, PendingKind::Steering, "S1");
-        enqueue(&queue, PendingKind::FollowUp, "Q2");
-        let s2 = enqueue(&queue, PendingKind::Steering, "S2");
-        let mut batch = queue.claim_steering(false).unwrap();
-        assert_eq!(
-            batch.iter().map(|input| input.id).collect::<Vec<_>>(),
-            [s1, s2]
-        );
-        assert!(queue.recall(s1).unwrap().is_none());
-        batch.pop_front(); // The first item was successfully applied.
-        enqueue(&queue, PendingKind::Steering, "S3");
-        queue.restore_front(batch).unwrap();
-        for expected in ["S2", "S3", "Q1", "Q2"] {
-            assert_eq!(queue.claim_next().unwrap().unwrap().source, expected);
+    fn runtime_input_priority_restore_recall_and_expansion() {
+        {
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            enqueue(&queue, PendingKind::FollowUp, "Q1");
+            let s1 = enqueue(&queue, PendingKind::Steering, "S1");
+            enqueue(&queue, PendingKind::FollowUp, "Q2");
+            let s2 = enqueue(&queue, PendingKind::Steering, "S2");
+            let mut batch = queue.claim_steering(false).unwrap();
+            assert_eq!(
+                batch.iter().map(|input| input.id).collect::<Vec<_>>(),
+                [s1, s2]
+            );
+            assert!(queue.recall(s1).unwrap().is_none());
+            batch.pop_front(); // The first item was successfully applied.
+            enqueue(&queue, PendingKind::Steering, "S3");
+            queue.restore_front(batch).unwrap();
+            for expected in ["S2", "S3", "Q1", "Q2"] {
+                assert_eq!(queue.claim_next().unwrap().unwrap().source, expected);
+            }
+            assert!(queue.claim_next().unwrap().is_none());
         }
-        assert!(queue.claim_next().unwrap().is_none());
+
+        {
+            let queue = InputQueue::default();
+            queue.begin_run().unwrap();
+            let source = format!("{}\nsecond", "界".repeat(121));
+            let id = enqueue(&queue, PendingKind::Steering, &source);
+            let snapshot = queue.snapshot_since(None).unwrap().unwrap();
+            assert_eq!(snapshot.items[0].preview, format!("{}…", "界".repeat(120)));
+            assert_eq!((snapshot.steering(), snapshot.follow_up()), (1, 0));
+            assert!(
+                queue
+                    .snapshot_since(Some(snapshot.revision))
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(queue.recall(id).unwrap().unwrap().source, source);
+            assert!(queue.claim_steering(true).unwrap().is_empty());
+        }
+
+        {
+            let queue = InputQueue::default();
+            let id = queue
+                .enqueue(
+                    PendingKind::Steering,
+                    "/init".into(),
+                    Some("expanded".into()),
+                    true,
+                )
+                .unwrap();
+            let input = queue.recall(id).unwrap().unwrap();
+            assert_eq!(input.prompt(), "expanded");
+            assert_eq!(input.into_display(), "/init");
+            enqueue(&queue, PendingKind::FollowUp, "retained");
+            queue.state.lock().unwrap().last_id = u64::MAX;
+            assert!(
+                queue
+                    .enqueue(PendingKind::Steering, "lost".into(), None, false)
+                    .is_err()
+            );
+            assert_eq!(queue.claim_next().unwrap().unwrap().source, "retained");
+        }
     }
 
     #[test]
@@ -384,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_review_seal_arbitrates_both_arrival_orders() {
+    fn plan_review_seal_races_and_follow_up() {
         for enqueue_first in [false, true] {
             let queue = InputQueue::default();
             queue.begin_run().unwrap();
@@ -454,10 +497,7 @@ mod tests {
             }
             assert!(queue.is_empty().unwrap());
         }
-    }
 
-    #[test]
-    fn plan_review_seal_keeps_follow_up_pending_without_steering() {
         let queue = InputQueue::default();
         queue.begin_run().unwrap();
         enqueue(&queue, PendingKind::FollowUp, "Q");
@@ -466,48 +506,5 @@ mod tests {
         assert!(queue.claim_steering(false).unwrap().is_empty());
         assert_eq!(queue.claim_next().unwrap().unwrap().source, "Q");
         assert!(queue.is_empty().unwrap());
-    }
-
-    #[test]
-    fn runtime_input_recall_wins_and_snapshot_is_bounded() {
-        let queue = InputQueue::default();
-        queue.begin_run().unwrap();
-        let source = format!("{}\nsecond", "界".repeat(121));
-        let id = enqueue(&queue, PendingKind::Steering, &source);
-        let snapshot = queue.snapshot_since(None).unwrap().unwrap();
-        assert_eq!(snapshot.items[0].preview, format!("{}…", "界".repeat(120)));
-        assert_eq!((snapshot.steering(), snapshot.follow_up()), (1, 0));
-        assert!(
-            queue
-                .snapshot_since(Some(snapshot.revision))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(queue.recall(id).unwrap().unwrap().source, source);
-        assert!(queue.claim_steering(true).unwrap().is_empty());
-    }
-
-    #[test]
-    fn runtime_input_expansion_display_and_id_exhaustion() {
-        let queue = InputQueue::default();
-        let id = queue
-            .enqueue(
-                PendingKind::Steering,
-                "/init".into(),
-                Some("expanded".into()),
-                true,
-            )
-            .unwrap();
-        let input = queue.recall(id).unwrap().unwrap();
-        assert_eq!(input.prompt(), "expanded");
-        assert_eq!(input.into_display(), "/init");
-        enqueue(&queue, PendingKind::FollowUp, "retained");
-        queue.state.lock().unwrap().last_id = u64::MAX;
-        assert!(
-            queue
-                .enqueue(PendingKind::Steering, "lost".into(), None, false)
-                .is_err()
-        );
-        assert_eq!(queue.claim_next().unwrap().unwrap().source, "retained");
     }
 }

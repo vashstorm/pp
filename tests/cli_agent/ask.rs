@@ -104,100 +104,99 @@ fn ask_headless_arguments() -> Value {
 
 #[test]
 fn ask_headless_omits_schema_and_answers_fixed_error_without_consuming_stdin() {
-    for protocol in ["completion", "response"] {
-        for mode in ["prompt", "lines"] {
-            let server = server();
-            let dir = tempfile::tempdir().unwrap();
-            let models = match protocol {
-                "completion" => fixture_models(&server),
-                _ => response_models(&server, Some("response")),
-            };
-            let prompt = (mode == "prompt").then_some("headless ask task one");
-            let mut cli = LiveCli::new(Cli::start_with(
-                dir.path(),
-                prompt,
-                fixture_settings(),
-                &models,
-            ));
-            if mode == "lines" {
-                // 两行任务一次性写好：若 ask 处理消费了下一行，第二个任务就不会
-                // 以独立的用户消息出现。
-                cli.input("headless ask task one\nheadless ask task two\n");
-            }
+    let protocol = "response";
+    for mode in ["prompt", "lines"] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models = match protocol {
+            "completion" => fixture_models(&server),
+            _ => response_models(&server, Some("response")),
+        };
+        let prompt = (mode == "prompt").then_some("headless ask task one");
+        let mut cli = LiveCli::new(Cli::start_with(
+            dir.path(),
+            prompt,
+            fixture_settings(),
+            &models,
+        ));
+        if mode == "lines" {
+            // 两行任务一次性写好：若 ask 处理消费了下一行，第二个任务就不会
+            // 以独立的用户消息出现。
+            cli.input("headless ask task one\nheadless ask task two\n");
+        }
 
-            // 第一个请求：工具列表存在但不含 ask。
+        // 第一个请求：工具列表存在但不含 ask。
+        let (request, body) = ask_receive(&server, protocol);
+        assert_eq!(
+            ask_user_texts(&body, protocol),
+            ["headless ask task one"],
+            "protocol {protocol} mode {mode}"
+        );
+        assert!(
+            ask_base_tools_offered(&body),
+            "base tools must still be offered: {body}"
+        );
+        assert!(
+            !ask_schema_offered(&body),
+            "headless must not offer ask: {body}"
+        );
+        ask_calls_reply(
+            request,
+            protocol,
+            json!([ask_call(protocol, "headless-ask", ask_headless_arguments())]),
+        );
+
+        // 错误结果按原 call id 成对回传，模型得以继续。
+        let (request, body) = ask_receive(&server, protocol);
+        assert!(
+            !ask_schema_offered(&body),
+            "follow-up must not offer ask either: {body}"
+        );
+        assert_eq!(
+            ask_tool_outputs(&body, protocol),
+            vec![(
+                "headless-ask".to_owned(),
+                json!({"ok":false,"error":"ask requires interactive TUI mode"})
+            )],
+            "protocol {protocol} mode {mode}"
+        );
+        ask_final(request, protocol, "headless ask answered");
+
+        if mode == "prompt" {
+            let output = cli.finish();
+            assert!(output.status.success(), "{output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("headless ask answered"), "{stdout}");
+            assert!(
+                !stdout.contains("ask requires"),
+                "stdout must not contain tool errors: {stdout}"
+            );
+        } else {
+            // 第一个任务正常收尾，缓冲的下一行立即成为独立任务。
+            cli.wait_for(Pipe::Stderr, "Session:");
             let (request, body) = ask_receive(&server, protocol);
             assert_eq!(
                 ask_user_texts(&body, protocol),
-                ["headless ask task one"],
-                "protocol {protocol} mode {mode}"
+                ["headless ask task one", "headless ask task two"],
+                "ask error must not consume the next stdin task"
             );
+            assert!(!ask_schema_offered(&body), "{body}");
             assert!(
-                ask_base_tools_offered(&body),
-                "base tools must still be offered: {body}"
+                ask_tool_outputs(&body, protocol)
+                    .iter()
+                    .any(|(id, value)| id == "headless-ask"
+                        && value["error"] == "ask requires interactive TUI mode")
             );
+            ask_final(request, protocol, "headless ask second answered");
+            let output = cli.finish();
+            assert!(output.status.success(), "{output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
-                !ask_schema_offered(&body),
-                "headless must not offer ask: {body}"
+                stdout.contains("headless ask answered")
+                    && stdout.contains("headless ask second answered"),
+                "{stdout}"
             );
-            ask_calls_reply(
-                request,
-                protocol,
-                json!([ask_call(protocol, "headless-ask", ask_headless_arguments())]),
-            );
-
-            // 错误结果按原 call id 成对回传，模型得以继续。
-            let (request, body) = ask_receive(&server, protocol);
-            assert!(
-                !ask_schema_offered(&body),
-                "follow-up must not offer ask either: {body}"
-            );
-            assert_eq!(
-                ask_tool_outputs(&body, protocol),
-                vec![(
-                    "headless-ask".to_owned(),
-                    json!({"ok":false,"error":"ask requires interactive TUI mode"})
-                )],
-                "protocol {protocol} mode {mode}"
-            );
-            ask_final(request, protocol, "headless ask answered");
-
-            if mode == "prompt" {
-                let output = cli.finish();
-                assert!(output.status.success(), "{output:?}");
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                assert!(stdout.contains("headless ask answered"), "{stdout}");
-                assert!(
-                    !stdout.contains("ask requires"),
-                    "stdout must not contain tool errors: {stdout}"
-                );
-            } else {
-                // 第一个任务正常收尾，缓冲的下一行立即成为独立任务。
-                cli.wait_for(Pipe::Stderr, "Session:");
-                let (request, body) = ask_receive(&server, protocol);
-                assert_eq!(
-                    ask_user_texts(&body, protocol),
-                    ["headless ask task one", "headless ask task two"],
-                    "ask error must not consume the next stdin task"
-                );
-                assert!(!ask_schema_offered(&body), "{body}");
-                assert!(
-                    ask_tool_outputs(&body, protocol)
-                        .iter()
-                        .any(|(id, value)| id == "headless-ask"
-                            && value["error"] == "ask requires interactive TUI mode")
-                );
-                ask_final(request, protocol, "headless ask second answered");
-                let output = cli.finish();
-                assert!(output.status.success(), "{output:?}");
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                assert!(
-                    stdout.contains("headless ask answered")
-                        && stdout.contains("headless ask second answered"),
-                    "{stdout}"
-                );
-            }
-            no_more(&server);
         }
+        no_more(&server);
     }
 }

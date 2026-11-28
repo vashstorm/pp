@@ -433,9 +433,8 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_input_history_unavailable_reply_notifies_once_and_keeps_input() {
+    fn sqlite_history_unavailable_and_first_page() {
         let directory = tempfile::tempdir().unwrap();
-        // 父路径是普通文件：`history.db` 的目录无法创建，`Store::open` 必然失败。
         let blocker = directory.path().join("blocked");
         std::fs::write(&blocker, b"not a directory").unwrap();
         let mut app = App::new_with_skills(
@@ -447,8 +446,6 @@ mod tests {
         )
         .unwrap();
         let before = app.conversation.entry_count();
-
-        // 构造不再阻塞握手：打开失败由 worker 线程经回复通道告知。
         let reply = app
             .history_worker
             .as_ref()
@@ -458,38 +455,30 @@ mod tests {
             .unwrap();
         assert!(matches!(reply, Reply::Unavailable));
         app.handle_history_reply(reply);
-        assert!(app.history_failure_notified);
-        assert!(app.history_worker.is_none());
-        assert!(app.history_page_pending.is_none());
-        assert!(!app.history_waiting_up);
-        // 启动提示只生成一条错误卡片，重复的不可用回复不再提示。
+        assert!(app.history_failure_notified && app.history_worker.is_none());
+        assert!(app.history_page_pending.is_none() && !app.history_waiting_up);
         assert_eq!(app.conversation.entry_count(), before + 1);
         app.handle_history_reply(Reply::Unavailable);
         assert_eq!(app.conversation.entry_count(), before + 1);
 
-        // 历史库不可用不影响输入：仍可接受新输入并从进程内历史回填。
         app.input = editor();
         app.insert_input("still accepted".into());
         app.remember_input();
         assert_eq!(app.input_history, ["still accepted"]);
-        // 提交后输入框已清空：Up 从进程内历史回填，Down 回到空草稿。
         app.input = editor();
         app.navigate_history(true);
         assert_eq!(app.input.lines(), &["still accepted"]);
         app.navigate_history(false);
         assert_eq!(app.input.lines(), &[""]);
-    }
 
-    #[test]
-    fn sqlite_input_history_first_page_arrives_through_reply_after_construction() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("history.db");
+        let dir_ok = tempfile::tempdir().unwrap();
+        let path = dir_ok.path().join("history.db");
         let cwd = std::path::Path::new(".");
         pp_runtime::history::Store::open(&path)
             .unwrap()
             .append_input_images(cwd, "previous process", &[], 0)
             .unwrap();
-        let mut app = App::new_with_skills(
+        let mut ok_app = App::new_with_skills(
             Err(anyhow::anyhow!("fixture")),
             pp_config::skills::Skills::default().shared(),
             crate::commands::FileCommands::default(),
@@ -497,22 +486,20 @@ mod tests {
             Some(path),
         )
         .unwrap();
-        // 构造期已排队第一页：打开成功后回复经同一条通道回到主线程。
-        let reply = app
+        let reply = ok_app
             .history_worker
             .as_ref()
             .unwrap()
             .replies
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
-        app.handle_history_reply(reply);
-        assert_eq!(app.input_history, ["previous process"]);
-        assert!(app.history_page_pending.is_none());
-        assert!(!app.history_failure_notified);
+        ok_app.handle_history_reply(reply);
+        assert_eq!(ok_app.input_history, ["previous process"]);
+        assert!(ok_app.history_page_pending.is_none() && !ok_app.history_failure_notified);
     }
 
     #[test]
-    fn sqlite_input_history_page_prepend_finishes_waiting_up() {
+    fn sqlite_history_prepend_pending_up_and_stale() {
         let mut app = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
         app.input_history = vec!["local oldest".into()];
         app.input = editor();
@@ -524,92 +511,70 @@ mod tests {
         app.history_waiting_up = true;
 
         app.apply_history_page(4, Some(500), Ok(page(400, 100)));
-        assert_eq!(app.input_history.len(), 101);
+        assert_eq!(
+            (app.input_history.len(), app.history_index),
+            (101, Some(99))
+        );
         assert_eq!(app.input_history[100], "local oldest");
-        assert_eq!(app.history_index, Some(99));
         assert_eq!(app.input.lines(), &["prompt-499"]);
-        assert!(!app.history_waiting_up);
-        assert!(app.history_page_pending.is_none());
-        assert_eq!(app.history_oldest_id, Some(400));
-        assert!(app.history_has_more);
-
-        // Down 回到此前显示的最老本地条目；再 Down 恢复空草稿。
+        assert!(!app.history_waiting_up && app.history_page_pending.is_none());
+        assert_eq!(
+            (app.history_oldest_id, app.history_has_more),
+            (Some(400), true)
+        );
         app.navigate_history(false);
         assert_eq!(app.input.lines(), &["local oldest"]);
         app.navigate_history(false);
         assert_eq!(app.input.lines(), &[""]);
+
+        let mut pend = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
+        pend.input = editor();
+        pend.insert_input("draft".into());
+        assert_eq!(pend.history_page_pending, Some(1));
+        pend.navigate_history(true);
+        assert!(pend.history_waiting_up && pend.input_history.is_empty());
+        assert_eq!(pend.history_request_id, 1);
+        pend.apply_history_page(1, None, Ok(page(0, 3)));
+        assert_eq!(
+            (pend.history_index, pend.history_oldest_id),
+            (Some(2), Some(0))
+        );
+        assert_eq!(pend.input.lines(), &["prompt-2"]);
+        assert!(!pend.history_waiting_up);
+        pend.navigate_history(false);
+        assert_eq!(pend.input.lines(), &["draft"]);
+        assert_eq!(pend.history_index, None);
+
+        let mut stale = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
+        stale.history_page_pending = Some(9);
+        stale.history_waiting_up = true;
+        stale.apply_history_page(8, None, Ok(page(0, 100)));
+        assert!(stale.input_history.is_empty() && stale.history_page_pending == Some(9));
+        stale.apply_history_page(9, None, Ok(Vec::new()));
+        assert!(!stale.history_has_more && !stale.history_waiting_up);
+        assert!(stale.history_page_pending.is_none() && stale.input_history.is_empty());
     }
 
     #[test]
-    fn sqlite_input_history_initial_pending_up_completes_after_first_page() {
-        let mut app = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
-        app.input = editor();
-        app.insert_input("draft".into());
-        assert_eq!(app.history_page_pending, Some(1));
-
-        // 初始页仍在路上时 Up 挂起一次导航，不为同一页重复发请求。
-        app.navigate_history(true);
-        assert!(app.history_waiting_up);
-        assert!(app.input_history.is_empty());
-        assert_eq!(app.history_request_id, 1);
-
-        app.apply_history_page(1, None, Ok(page(0, 3)));
-        assert_eq!(app.history_index, Some(2));
-        assert_eq!(app.history_oldest_id, Some(0));
-        assert_eq!(app.input.lines(), &["prompt-2"]);
-        assert!(!app.history_waiting_up);
-
-        // 已到最新一条：Down 还原 Up 前的草稿。
-        app.navigate_history(false);
-        assert_eq!(app.input.lines(), &["draft"]);
-        assert!(app.history_index.is_none());
-    }
-
-    #[test]
-    fn sqlite_input_history_ignores_stale_pages_and_ends_on_empty_page() {
-        let mut app = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
-        app.history_page_pending = Some(9);
-        app.history_waiting_up = true;
-        // 非当前请求的迟到页不得重复安装。
-        app.apply_history_page(8, None, Ok(page(0, 100)));
-        assert!(app.input_history.is_empty());
-        assert_eq!(app.history_page_pending, Some(9));
-
-        // 空页把 has_more 收尾并结束等待导航。
-        app.apply_history_page(9, None, Ok(Vec::new()));
-        assert!(!app.history_has_more);
-        assert!(!app.history_waiting_up);
-        assert!(app.history_page_pending.is_none());
-        assert!(app.input_history.is_empty());
-    }
-
-    #[test]
-    fn sqlite_input_history_load_failure_notifies_once_and_keeps_loaded_pages() {
+    fn sqlite_history_errors_duplicates_and_generations() {
         let mut app = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
         app.input_history = vec!["kept".into()];
         app.history_page_pending = Some(3);
         app.history_waiting_up = true;
         app.apply_history_page(3, None, Err(anyhow::anyhow!("fixture unavailable")));
-        assert!(app.history_failure_notified);
-        assert!(!app.history_waiting_up);
+        assert!(app.history_failure_notified && !app.history_waiting_up);
         assert_eq!(app.input_history, ["kept"]);
-
         app.history_page_pending = Some(4);
         app.apply_history_page(4, None, Err(anyhow::anyhow!("fixture unavailable")));
         assert_eq!(app.input_history, ["kept"]);
-    }
 
-    #[test]
-    fn sqlite_input_history_remembers_duplicates_and_advances_generations() {
-        let mut app = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
-        app.remember_text("repeat".into());
-        app.remember_text("repeat".into());
-        app.remember_text("  ".into());
-        assert_eq!(app.input_history, ["repeat", "repeat"]);
-
-        let first = app.next_session_generation();
-        let second = app.next_session_generation();
+        let mut dup = App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
+        dup.remember_text("repeat".into());
+        dup.remember_text("repeat".into());
+        dup.remember_text("  ".into());
+        assert_eq!(dup.input_history, ["repeat", "repeat"]);
+        let first = dup.next_session_generation();
+        let second = dup.next_session_generation();
         assert_eq!(second, first + 1);
-        assert!(second > first);
     }
 }

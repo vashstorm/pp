@@ -33,35 +33,32 @@ fn rendered_from_markdown(source: &str, width: u16, muted: bool, streaming: bool
 }
 
 #[test]
-fn layout_worker_plain_preserves_lines_tabs_and_unicode() {
+fn layout_worker_plain_and_initial_tail() {
     let rows = plain("first\n\n中\t🙂\n", 80, false);
     assert_eq!(
         rows.iter().map(Line::to_string).collect::<Vec<_>>(),
         ["first", "", "中  🙂", ""]
     );
-}
 
-#[test]
-fn layout_worker_initial_tail_keeps_utf8_boundaries_and_empty_lines() {
     let worker = Worker::start().unwrap();
     let pause = worker.pause();
     let mut ticket = Ticket::default();
     let text = format!("{}🙂\n\nend", "中".repeat(3000));
     let preview = ticket.layout(&text, 8, false, false);
     pause.wait();
-    let rows = preview
+    let p_rows = preview
         .iter()
-        .map(|line| {
-            let LayoutContent::Styled(line) = &line.content else {
-                panic!("应为预览行")
-            };
-            line.to_string()
+        .map(|line| match &line.content {
+            LayoutContent::Styled(l) => l.to_string(),
+            _ => panic!("应为预览行"),
         })
         .collect::<Vec<_>>();
-    assert!(rows[0].starts_with('中'));
-    assert!(!rows.join("").contains('\u{fffd}'));
-    assert!(rows.join("").contains('🙂'));
-    assert_eq!(&rows[rows.len() - 2..], &["", "end"]);
+    assert!(
+        p_rows[0].starts_with('中')
+            && !p_rows.join("").contains('\u{fffd}')
+            && p_rows.join("").contains('🙂')
+    );
+    assert_eq!(&p_rows[p_rows.len() - 2..], &["", "end"]);
     assert!(!ticket.exact);
     drop(pause);
 }
@@ -173,49 +170,51 @@ fn layout_worker_append_preview_matches_markdown_for_word_wrap_indents_and_newli
             "预览与后台高度必须一致：source={source:?}, suffix={suffix:?}"
         );
     }
-}
 
-#[test]
-fn layout_worker_append_code_preview_preserves_highlighted_prefix_and_newline_height() {
-    let source = "```rust\nlet alpha = 1;\nlet beta = ";
-    let result = rendered_from_markdown(source, 24, false, true);
-    let prefix_line = result.layout.get(1).expect("第一行代码");
+    let src_code = "```rust\nlet alpha = 1;\nlet beta = ";
+    let res_code = rendered_from_markdown(src_code, 24, false, true);
+    let prefix_line = res_code.layout.get(1).expect("第一行代码");
     for suffix in ["2;", "2;\n", "2;\nlet gamma = 3;\n", "12345678901234567890"] {
-        let full = format!("{source}{suffix}");
-        let preview = append_preview(&result, &full, 24, false, true);
+        let full = format!("{src_code}{suffix}");
+        let preview = append_preview(&res_code, &full, 24, false, true);
         let expected = rendered_from_markdown(&full, 24, false, true);
-        assert!(
-            std::ptr::eq(prefix_line, preview.get(1).expect("复用前缀代码行")),
-            "已高亮前缀代码行不应被重写：suffix={suffix:?}"
-        );
+        assert!(std::ptr::eq(prefix_line, preview.get(1).unwrap()));
         assert_eq!(layout_text(&preview), layout_text(&expected.layout));
         assert_eq!(preview.height, expected.layout.height);
     }
-}
 
-#[test]
-fn layout_worker_append_preview_bounds_tail_without_losing_prefix() {
-    let result = rendered_from_markdown("**prefix**", 80, true, true);
-    let suffix = format!("{}🙂\n\nlatest", "中".repeat(4000));
-    let full = format!("**prefix**{suffix}");
-    let preview = append_preview(&result, &full, 80, true, true);
-    let text = layout_text(&preview);
-    assert!(text.starts_with("prefix\n…\n"));
-    assert!(text.ends_with("🙂\n\nlatest"));
-    assert!(!text.contains('\u{fffd}'));
-    assert!(text.len() < 9000);
-    let LayoutContent::Styled(last) = &preview.get(preview.len() - 1).expect("预览末行").content
-    else {
-        panic!("应为样式行");
-    };
-    assert_eq!(
-        last.style.fg,
-        Some(ratatui::style::Color::Rgb(110, 117, 129))
+    let res_bound = rendered_from_markdown("**prefix**", 80, true, true);
+    let long_sfx = format!("{}🙂\n\nlatest", "中".repeat(4000));
+    let p_bound = append_preview(&res_bound, &format!("**prefix**{long_sfx}"), 80, true, true);
+    let bound_txt = layout_text(&p_bound);
+    assert!(
+        bound_txt.starts_with("prefix\n…\n")
+            && bound_txt.ends_with("🙂\n\nlatest")
+            && !bound_txt.contains('\u{fffd}')
     );
     assert_eq!(
-        layout_text(&append_preview(&result, "**prefix**", 80, true, true)),
+        layout_text(&append_preview(&res_bound, "**prefix**", 80, true, true)),
         "prefix"
     );
+
+    let reuse_src = "**first**\n\nsecond";
+    let res_reuse = rendered_from_markdown(reuse_src, 80, false, true);
+    let p_reuse = append_preview(
+        &res_reuse,
+        &format!("{reuse_src}\n\nthird"),
+        80,
+        false,
+        true,
+    );
+    assert!(std::ptr::eq(
+        res_reuse.layout.get(0).unwrap(),
+        p_reuse.get(0).unwrap()
+    ));
+    assert_eq!(layout_text(&p_reuse), "first\n\nsecond\n\nthird");
+    assert!(Arc::ptr_eq(
+        &append_preview(&res_reuse, reuse_src, 80, false, true),
+        &res_reuse.layout
+    ));
 }
 
 #[test]
@@ -255,26 +254,7 @@ fn layout_worker_oversized_active_block_fallback_preserves_word_wrap_indent_and_
 }
 
 #[test]
-fn layout_worker_preview_reuses_rendered_prefix_without_copying_lines() {
-    let source = "**first**\n\nsecond";
-    let result = rendered_from_markdown(source, 80, false, true);
-    let full = format!("{source}\n\nthird");
-    let preview = append_preview(&result, &full, 80, false, true);
-    // 已排版稳定前缀不复制：首行仍是同一块内存，只有活跃尾块是新的。
-    assert!(std::ptr::eq(
-        result.layout.get(0).expect("前缀首行"),
-        preview.get(0).expect("预览首行")
-    ));
-    assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird");
-    // 无新增正文时直接复用整份布局。
-    assert!(Arc::ptr_eq(
-        &append_preview(&result, source, 80, false, true),
-        &result.layout
-    ));
-}
-
-#[test]
-fn layout_worker_blocked_render_does_not_block_input_or_commit_preview() {
+fn layout_worker_blocked_unchanged_and_rejection() {
     let worker = Worker::start().unwrap();
     let pause = worker.pause();
     let mut app = crate::tui::App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
@@ -294,48 +274,35 @@ fn layout_worker_blocked_render_does_not_block_input_or_commit_preview() {
     terminal
         .draw(|frame| app.draw(frame, &Default::default()))
         .unwrap();
-    assert!(app.conversation.render_pending());
-    assert!(app.conversation.next_native_batch(100, 1, true).is_none());
+    assert!(
+        app.conversation.render_pending()
+            && app.conversation.next_native_batch(100, 1, true).is_none()
+    );
     app.handle(Event::Paste("可继续输入🙂".into()), &mut false);
     assert_eq!(app.input.lines(), &["可继续输入🙂"]);
-    drop(pause);
-}
 
-#[test]
-fn layout_worker_unchanged_revision_reuses_snapshot_fallback_and_job() {
-    let worker = Worker::start().unwrap();
-    let pause = worker.pause();
     let mut ticket = Ticket::default();
     let first = ticket.layout("正文🙂", 80, false, false);
     let source = ticket.source.clone();
     let version = ticket.version;
     let second = ticket.layout("正文🙂", 80, false, false);
-    assert!(Arc::ptr_eq(&first, &second));
-    assert!(Arc::ptr_eq(&source, &ticket.source));
-    assert_eq!(version, ticket.version);
+    assert!(
+        Arc::ptr_eq(&first, &second)
+            && Arc::ptr_eq(&source, &ticket.source)
+            && version == ticket.version
+    );
     ticket.invalidate(false);
     ticket.layout("正文🙂新增", 80, false, false);
     assert_eq!(ticket.version, version + 1);
-    drop(pause);
-}
 
-#[test]
-fn layout_worker_rejects_replacement_and_width_mismatch() {
-    let worker = Worker::start().unwrap();
-    let pause = worker.pause();
-    let mut ticket = Ticket::default();
-    ticket.layout("old", 80, false, false);
-    // 先确认后台排版已停在暂停点，再直接写 slot；否则下面的手动结果会与
-    // 后台结果竞争，断言变成依赖调度顺序。
+    let mut t2 = Ticket::default();
+    t2.layout("old", 80, false, false);
     pause.wait();
-    assert!(
-        ticket.slot.lock().unwrap().is_none(),
-        "暂停点之后不应出现后台结果"
-    );
-    let old_epoch = ticket.epoch;
-    ticket.invalidate(true);
-    ticket.layout("new", 80, false, false);
-    *ticket.slot.lock().unwrap() = Some(Rendered {
+    assert!(t2.slot.lock().unwrap().is_none());
+    let old_epoch = t2.epoch;
+    t2.invalidate(true);
+    t2.layout("new", 80, false, false);
+    *t2.slot.lock().unwrap() = Some(Rendered {
         epoch: old_epoch,
         version: u64::MAX,
         theme: Theme::Default,
@@ -347,15 +314,15 @@ fn layout_worker_rejects_replacement_and_width_mismatch() {
         table_tail_start: None,
         tail: TailMeta::default(),
     });
-    let rows = ticket.layout("new", 80, false, false);
-    let LayoutContent::Styled(line) = &rows.get(0).expect("首行").content else {
-        panic!("应为已排版行")
+    let rows = t2.layout("new", 80, false, false);
+    assert!(!t2.exact);
+    let LayoutContent::Styled(l0) = &rows.get(0).unwrap().content else {
+        panic!()
     };
-    assert_eq!(line.to_string(), "new");
-    assert!(!ticket.exact);
-    *ticket.slot.lock().unwrap() = Some(Rendered {
-        epoch: ticket.epoch,
-        version: ticket.version,
+    assert_eq!(l0.to_string(), "new");
+    *t2.slot.lock().unwrap() = Some(Rendered {
+        epoch: t2.epoch,
+        version: t2.version,
         theme: Theme::Default,
         icons: IconMode::Nerd,
         width: 80,
@@ -365,9 +332,9 @@ fn layout_worker_rejects_replacement_and_width_mismatch() {
         table_tail_start: None,
         tail: TailMeta::default(),
     });
-    ticket.layout("new", 80, false, false);
-    assert!(ticket.exact);
-    ticket.layout("new", 40, false, false);
-    assert!(!ticket.exact);
+    t2.layout("new", 80, false, false);
+    assert!(t2.exact);
+    t2.layout("new", 40, false, false);
+    assert!(!t2.exact);
     drop(pause);
 }

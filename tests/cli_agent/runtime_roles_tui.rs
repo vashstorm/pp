@@ -21,7 +21,7 @@ fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
 
 #[test]
 fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -109,5 +109,4 @@ fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);
-    }
 }

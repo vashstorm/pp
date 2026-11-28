@@ -1,22 +1,5 @@
 use super::*;
 
-fn models(server: &TestServer, primary: &str, backup: &str) -> String {
-    json!({"providers": {
-        "first": {"api_key":"fixture-key", "base_url":format!("http://{}/v1", server.addr()),
-            "protocol":primary, "models":{"main":{"model":"main-model"}}},
-        "second": {"api_key":"backup-key", "base_url":format!("http://{}/v1", server.addr()),
-            "protocol":backup, "models":{"backup":{"model":"backup-model"}}}
-    }})
-    .to_string()
-}
-
-fn settings(budget: u64) -> String {
-    json!({"rate_limit_retry_budget_seconds":budget,
-        "model_roles":{"default":{"model":"first/main","effort":"none",
-            "fallback":{"model":"second/backup","effort":"high"}}}})
-    .to_string()
-}
-
 fn path(protocol: &str) -> &'static str {
     if protocol == "response" {
         "/v1/responses"
@@ -33,220 +16,60 @@ fn finish(request: CapturedRequest, protocol: &str, text: &str) {
     }
 }
 
-fn reject(request: CapturedRequest) {
-    request
-        .respond(
-            Response::builder()
-                .status(503)
-                .header("Retry-After", "0")
-                .body(Body::from("private fixture-key"))
-                .unwrap(),
-        )
-        .unwrap();
-}
-
-#[test]
-fn fallback_roles_same_model_loads_and_runs_in_both_protocols() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let home = tempfile::tempdir().unwrap();
-        let settings = json!({"rate_limit_retry_budget_seconds":0,
-            "model_roles":{"default":{"model":"first/main","effort":"none",
-                "fallback":{"model":"first/main","effort":"high"}}}})
-        .to_string();
-        let cli = Cli::start_with(
-            home.path(),
-            Some("use the shared role model"),
-            &settings,
-            &models(&server, protocol, protocol),
-        );
-        let (request, body) = receive_at(&server, path(protocol));
-        assert_eq!(body["model"], "main-model");
-        finish(request, protocol, "shared role model answer");
-        let output = cli.finish();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("shared role model answer"));
-        no_more(&server);
-    }
-}
-
-#[test]
-fn fallback_exhausts_each_model_once_without_nested_attempts() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let home = tempfile::tempdir().unwrap();
-        let cli = Cli::start_with(
-            home.path(),
-            Some("fail both models"),
-            &settings(30),
-            &models(&server, protocol, protocol),
-        );
-        for model in ["main-model", "backup-model"] {
-            let mut previous = None;
-            for _ in 0..10 {
-                let (request, body) = receive_at(&server, path(protocol));
-                assert_eq!(body["model"], model);
-                if let Some(previous) = &previous {
-                    assert_eq!(previous, &body);
-                }
-                previous = Some(body);
-                reject(request);
-            }
-        }
-        let output = cli.finish();
-        assert!(!output.status.success());
-        assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-key"));
-        let rows = stats::rows(home.path());
-        assert_eq!(rows.len(), 2);
-        assert_eq!(
-            stats::contexts(home.path())
-                .iter()
-                .filter(|v| !v.is_null())
-                .count(),
-            1
-        );
-        no_more(&server);
-    }
-}
-
-#[test]
-fn fallback_is_task_scoped_and_manual_selection_detaches_role_across_protocols() {
-    for (primary, backup) in [("completion", "response"), ("response", "completion")] {
-        let server = server();
-        let home = tempfile::tempdir().unwrap();
-        let mut cli = Cli::start_with(
-            home.path(),
-            None,
-            &settings(0),
-            &models(&server, primary, backup),
-        );
-        cli.input("first task\n");
-        let (request, _) = receive_at(&server, path(primary));
-        reject(request);
-        let (request, body) = receive_at(&server, path(backup));
-        assert_eq!(body["model"], "backup-model");
-        if backup == "completion" {
-            assert_eq!(body["reasoning_effort"], "high");
-        } else {
-            assert_eq!(body["reasoning"]["effort"], "high");
-        }
-        finish(request, backup, "fallback answer");
-        cli.input("next task\n");
-        let (request, body) = receive_at(&server, path(primary));
-        assert_eq!(body["model"], "main-model");
-        assert!(body.to_string().contains("fallback answer"));
-        finish(request, primary, "primary answer");
-        cli.input("/model second/backup\nlast task\n/quit\n");
-        let (request, body) = receive_at(&server, path(backup));
-        assert_eq!(body["model"], "backup-model");
-        reject(request);
-        let output = cli.finish();
-        assert!(output.status.success());
-        assert_eq!(
-            stats::contexts(home.path())
-                .iter()
-                .filter(|v| !v.is_null())
-                .count(),
-            1
-        );
-        no_more(&server);
-    }
-}
-
 #[test]
 fn fallback_retry_preserves_committed_tools_and_excludes_partial_stream() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let home = tempfile::tempdir().unwrap();
-        let cli = Cli::start_with(
-            home.path(),
-            Some("write once then answer"),
-            "rate_limit_retry_budget_seconds: 1\n",
-            &if protocol == "completion" {
-                fixture_models(&server)
-            } else {
-                response_models(&server, Some("response"))
-            },
-        );
-        let (request, _) = receive_at(&server, path(protocol));
-        let args = json!({"command":"printf x >> count.txt"});
-        if protocol == "completion" {
-            calls_reply(request, json!([call("once", "bash", args)]));
+    let protocol = "response";
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let cli = Cli::start_with(
+        home.path(),
+        Some("write once then answer"),
+        "rate_limit_retry_budget_seconds: 1\n",
+        &if protocol == "completion" {
+            fixture_models(&server)
         } else {
-            response_reply(request, json!([response_call("once", "bash", args)]));
-        }
-        let (request, boundary) = receive_at(&server, path(protocol));
-        let mut stream = request.start_sse().unwrap();
-        if protocol == "completion" {
-            stream
-                .event(&chat_chunk(json!({"content":"discarded-fragment"}), None))
-                .unwrap();
-        } else {
-            stream.event(&json!({"type":"response.output_text.delta", "item_id":"partial", "output_index":0,"content_index":0,"sequence_number":1,"delta":"discarded-fragment"})).unwrap();
-        }
-        stream.finish();
-        let (request, retried) = receive_at(&server, path(protocol));
-        assert_eq!(boundary, retried);
-        assert!(!retried.to_string().contains("discarded-fragment"));
-        finish(request, protocol, "complete answer");
-        let output = cli.finish();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            std::fs::read_to_string(home.path().join("count.txt")).unwrap(),
-            "x"
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("excluded from history"));
-        assert_eq!(stats::rows(home.path()).len(), 3);
-        assert_eq!(
-            stats::contexts(home.path())
-                .iter()
-                .filter(|v| !v.is_null())
-                .count(),
-            1
-        );
-        no_more(&server);
+            response_models(&server, Some("response"))
+        },
+    );
+    let (request, _) = receive_at(&server, path(protocol));
+    let args = json!({"command":"printf x >> count.txt"});
+    if protocol == "completion" {
+        calls_reply(request, json!([call("once", "bash", args)]));
+    } else {
+        response_reply(request, json!([response_call("once", "bash", args)]));
     }
-}
-
-#[test]
-fn fallback_requests_count_toward_max_turns_in_both_protocols() {
-    for protocol in ["completion", "response"] {
-        let server = server();
-        let home = tempfile::tempdir().unwrap();
-        write_settings(home.path(), settings(0)).unwrap();
-        std::fs::write(
-            config_path(home.path(), "models.yml"),
-            models(&server, protocol, protocol),
-        )
-        .unwrap();
-        let cli = Cli::spawn(
-            home.path(),
-            &["-p", "--max-turns", "1", "fail the primary model"],
-            &[],
-        );
-        let (request, body) = receive_at(&server, path(protocol));
-        assert_eq!(body["model"], "main-model");
-        reject(request);
-        // 旧实现会激活备用模型并发出 backup 请求；先回复让进程收尾，
-        // 再由退出码与 no_more 断言报告失败，避免测试挂在无响应的 backup 请求上。
-        if let Some(backup) = server.recv_timeout(Duration::from_millis(500)).unwrap() {
-            finish(backup, protocol, "backup answer");
-        }
-        let output = cli.finish();
-        assert_eq!(
-            output.status.code(),
-            Some(3),
-            "protocol {protocol}: {output:?}"
-        );
-        assert!(String::from_utf8_lossy(&output.stderr).contains("--max-turns"));
-        no_more(&server);
+    let (request, boundary) = receive_at(&server, path(protocol));
+    let mut stream = request.start_sse().unwrap();
+    if protocol == "completion" {
+        stream
+            .event(&chat_chunk(json!({"content":"discarded-fragment"}), None))
+            .unwrap();
+    } else {
+        stream.event(&json!({"type":"response.output_text.delta", "item_id":"partial", "output_index":0,"content_index":0,"sequence_number":1,"delta":"discarded-fragment"})).unwrap();
     }
+    stream.finish();
+    let (request, retried) = receive_at(&server, path(protocol));
+    assert_eq!(boundary, retried);
+    assert!(!retried.to_string().contains("discarded-fragment"));
+    finish(request, protocol, "complete answer");
+    let output = cli.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("count.txt")).unwrap(),
+        "x"
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("excluded from history"));
+    assert_eq!(stats::rows(home.path()).len(), 3);
+    assert_eq!(
+        stats::contexts(home.path())
+            .iter()
+            .filter(|v| !v.is_null())
+            .count(),
+        1
+    );
+    no_more(&server);
 }

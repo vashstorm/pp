@@ -119,29 +119,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diagnostics_redact_credentials_and_bound_utf8() {
-        register_secret("diagnostic-test-key-42");
-        let text = diagnostic_text(
-            r#"{"message":"diagnostic-test-key-42", "access_token":"other-token", "password":"hidden", "header":"Bearer abc.def"}"#,
-        );
-        for secret in ["diagnostic-test-key-42", "other-token", "hidden", "abc.def"] {
-            assert!(!text.contains(secret), "{text}");
+    fn diagnostics_redaction_bounds_and_lazy_failure_context() {
+        {
+            register_secret("diagnostic-test-key-42");
+            let text = diagnostic_text(
+                r#"{"message":"diagnostic-test-key-42", "access_token":"other-token", "password":"hidden", "header":"Bearer abc.def"}"#,
+            );
+            for secret in ["diagnostic-test-key-42", "other-token", "hidden", "abc.def"] {
+                assert!(!text.contains(secret), "{text}");
+            }
+            let text = diagnostic_text(&"中".repeat(MAX_DETAIL_BYTES));
+            assert!(text.ends_with("[truncated]"));
+            assert!(text.len() <= MAX_DETAIL_BYTES + 12);
         }
-        let text = diagnostic_text(&"中".repeat(MAX_DETAIL_BYTES));
-        assert!(text.ends_with("[truncated]"));
-        assert!(text.len() <= MAX_DETAIL_BYTES + 12);
-    }
-
-    #[test]
-    fn diagnostics_recent_events_are_bounded_and_count_drops() {
-        let mut context = FailureContext::default();
-        for _ in 0..100 {
-            context.push("x".repeat(20 * 1024));
+        {
+            let mut context = FailureContext::default();
+            for _ in 0..100 {
+                context.push("x".repeat(20 * 1024));
+            }
+            assert_eq!(context.count, 100);
+            assert!(context.dropped > 0);
+            assert!(context.bytes <= MAX_DETAIL_BYTES);
+            assert_eq!(context.dropped + context.events.len() as u64, context.count);
         }
-        assert_eq!(context.count, 100);
-        assert!(context.dropped > 0);
-        assert!(context.bytes <= MAX_DETAIL_BYTES);
-        assert_eq!(context.dropped + context.events.len() as u64, context.count);
+        {
+            register_secret("lazy-secret-xyz");
+            let mut context = FailureContext::default();
+            context.push(
+                r#"{"token":"lazy-secret-xyz","authorization":"Bearer secret.tok"}"#.to_owned(),
+            );
+            context.push(format!(
+                "{}access_token\":\"inline-tok\"",
+                "a".repeat(20 * 1024)
+            ));
+            let redacted = context.redacted_events();
+            assert_eq!(redacted.len(), 2);
+            for entry in &redacted {
+                assert!(!entry.contains("lazy-secret-xyz"), "{entry}");
+                assert!(!entry.contains("secret.tok"), "{entry}");
+            }
+            assert!(redacted[0].contains("[REDACTED]"));
+        }
     }
 
     #[test]
@@ -184,24 +202,5 @@ mod tests {
                 .unwrap()
                 .contains("diagnostics_panic_hook_records_context")
         );
-    }
-
-    #[test]
-    fn failure_context_lazy_redaction_masks_all_recent_events() {
-        register_secret("lazy-secret-xyz");
-        let mut context = FailureContext::default();
-        context
-            .push(r#"{"token":"lazy-secret-xyz","authorization":"Bearer secret.tok"}"#.to_owned());
-        context.push(format!(
-            "{}access_token\":\"inline-tok\"",
-            "a".repeat(20 * 1024)
-        ));
-        let redacted = context.redacted_events();
-        assert_eq!(redacted.len(), 2);
-        for entry in &redacted {
-            assert!(!entry.contains("lazy-secret-xyz"), "{entry}");
-            assert!(!entry.contains("secret.tok"), "{entry}");
-        }
-        assert!(redacted[0].contains("[REDACTED]"));
     }
 }

@@ -262,169 +262,169 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn stats_creation_reopen_dedup_and_snapshot_are_transactional() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats/stats.db");
-        let mut store = open_store(&path).unwrap();
-        let record = fixture("one", 1000);
-        let snapshot = RequestSnapshot {
-            request: json!({"instructions":"hello"}),
-            skills: Vec::new(),
-        };
-        store
-            .insert_with_context(
-                &record,
-                &json!({"tool_calls":[{"function":{"name":"read","arguments":"abc"}}]}),
-                Some(&snapshot),
-            )
-            .unwrap();
-        store
-            .insert_with_context(
-                &record,
-                &json!({"tool_calls":[{"function":{"name":"bash","arguments":"x"}}]}),
-                None,
-            )
-            .unwrap();
-        store.link("one", Path::new("/tmp/session.jsonl")).unwrap();
-        drop(store);
-        let store = open_store(&path).unwrap();
-        assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 1);
-        let detail = store.detail(1).unwrap().unwrap();
-        assert_eq!(
-            detail["request_context"],
-            serde_json::to_value(&snapshot).unwrap()
-        );
-        assert!(detail.get("output_message").is_none());
-        assert!(detail.get("session_entry").is_none());
-        // 重复键不再补写工具行；entry_id 不再由 link 写入。
-        assert_eq!(
+    fn stats_store_transactions_connections_and_read_only_probe() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats/stats.db");
+            let mut store = open_store(&path).unwrap();
+            let record = fixture("one", 1000);
+            let snapshot = RequestSnapshot {
+                request: json!({"instructions":"hello"}),
+                skills: Vec::new(),
+            };
             store
-                .conn
-                .query_row("SELECT tool FROM request_tools", [], |row| row
-                    .get::<_, String>(0))
-                .unwrap(),
-            "read"
-        );
-        assert!(detail["request"]["entry_id"].is_null());
-        assert_eq!(detail["request"]["session_file"], "/tmp/session.jsonl");
-        assert_eq!(
-            fs::metadata(path.parent().unwrap())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        assert_eq!(
+                .insert_with_context(
+                    &record,
+                    &json!({"tool_calls":[{"function":{"name":"read","arguments":"abc"}}]}),
+                    Some(&snapshot),
+                )
+                .unwrap();
             store
+                .insert_with_context(
+                    &record,
+                    &json!({"tool_calls":[{"function":{"name":"bash","arguments":"x"}}]}),
+                    None,
+                )
+                .unwrap();
+            store.link("one", Path::new("/tmp/session.jsonl")).unwrap();
+            drop(store);
+            let store = open_store(&path).unwrap();
+            assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 1);
+            let detail = store.detail(1).unwrap().unwrap();
+            assert_eq!(
+                detail["request_context"],
+                serde_json::to_value(&snapshot).unwrap()
+            );
+            assert!(detail.get("output_message").is_none());
+            assert!(detail.get("session_entry").is_none());
+            // 重复键不再补写工具行；entry_id 不再由 link 写入。
+            assert_eq!(
+                store
+                    .conn
+                    .query_row("SELECT tool FROM request_tools", [], |row| row
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "read"
+            );
+            assert!(detail["request"]["entry_id"].is_null());
+            assert_eq!(detail["request"]["session_file"], "/tmp/session.jsonl");
+            assert_eq!(
+                fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                store
+                    .conn
+                    .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+                    .unwrap(),
+                "wal"
+            );
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats.db");
+            open_store(&path).unwrap();
+            std::thread::scope(|scope| {
+                for i in 0..4 {
+                    let path = &path;
+                    scope.spawn(move || {
+                        let mut store = open_store(path).unwrap();
+                        for j in 0..15 {
+                            store
+                                .insert(&fixture(&format!("{i}-{j}"), 1000), &Value::Null)
+                                .unwrap();
+                        }
+                    });
+                }
+            });
+            let mut writer = open_store(&path).unwrap();
+            let mut reader = open_store(&path).unwrap();
+            assert_eq!(reader.latest(0, 2000, 500).unwrap().len(), 60);
+            let tx = writer
                 .conn
-                .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
-                .unwrap(),
-            "wal"
-        );
-    }
-    #[test]
-    fn stats_multiple_connections_read_during_write_and_bound_lock_wait() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats.db");
-        open_store(&path).unwrap();
-        std::thread::scope(|scope| {
-            for i in 0..4 {
-                let path = &path;
-                scope.spawn(move || {
-                    let mut store = open_store(path).unwrap();
-                    for j in 0..15 {
-                        store
-                            .insert(&fixture(&format!("{i}-{j}"), 1000), &Value::Null)
-                            .unwrap();
-                    }
-                });
-            }
-        });
-        let mut writer = open_store(&path).unwrap();
-        let mut reader = open_store(&path).unwrap();
-        assert_eq!(reader.latest(0, 2000, 500).unwrap().len(), 60);
-        let tx = writer
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        tx.execute("UPDATE requests SET project='pending'", [])
-            .unwrap();
-        assert_eq!(reader.latest(0, 2000, 500).unwrap()[0].project, "project");
-        let started = Instant::now();
-        assert!(
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            tx.execute("UPDATE requests SET project='pending'", [])
+                .unwrap();
+            assert_eq!(reader.latest(0, 2000, 500).unwrap()[0].project, "project");
+            let started = Instant::now();
+            assert!(
+                reader
+                    .insert(&fixture("locked", 1000), &Value::Null)
+                    .is_err()
+            );
+            assert!(started.elapsed() < Duration::from_secs(2));
+            drop(tx);
             reader
-                .insert(&fixture("locked", 1000), &Value::Null)
-                .is_err()
-        );
-        assert!(started.elapsed() < Duration::from_secs(2));
-        drop(tx);
-        reader
-            .insert(&fixture("unlocked", 1000), &Value::Null)
-            .unwrap();
-    }
-    #[test]
-    fn stats_open_uses_ready_schema_without_a_writer_lock() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats.db");
-        let mut writer = open_store(&path).unwrap();
-        let tx = writer
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        tx.execute("UPDATE requests SET project='pending'", [])
-            .unwrap();
-        // 结构齐全时打开只做只读探测：不会进入 `BEGIN IMMEDIATE`，因此不会
-        // 因为别人的写事务而 busy_timeout 失败。
-        open_store(&path).unwrap();
-        drop(tx);
-        // 写锁仍然只能有一个：同一时刻的写入照旧受限。
-        let tx = writer
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        assert!(
-            open_store(&path)
-                .unwrap()
-                .insert(&fixture("locked", 1000), &Value::Null)
-                .is_err()
-        );
-        drop(tx);
-        writer
-            .insert(&fixture("unlocked", 1000), &Value::Null)
-            .unwrap();
+                .insert(&fixture("unlocked", 1000), &Value::Null)
+                .unwrap();
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats.db");
+            let mut writer = open_store(&path).unwrap();
+            let tx = writer
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            tx.execute("UPDATE requests SET project='pending'", [])
+                .unwrap();
+            // 结构齐全时打开只做只读探测：不会进入 `BEGIN IMMEDIATE`，因此不会
+            // 因为别人的写事务而 busy_timeout 失败。
+            open_store(&path).unwrap();
+            drop(tx);
+            // 写锁仍然只能有一个：同一时刻的写入照旧受限。
+            let tx = writer
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .unwrap();
+            assert!(
+                open_store(&path)
+                    .unwrap()
+                    .insert(&fixture("locked", 1000), &Value::Null)
+                    .is_err()
+            );
+            drop(tx);
+            writer
+                .insert(&fixture("unlocked", 1000), &Value::Null)
+                .unwrap();
+        }
     }
 
     #[test]
-    fn stats_open_repairs_directory_and_file_permissions() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats/stats.db");
-        drop(open_store(&path).unwrap());
-        let stats_dir = path.parent().unwrap();
-        fs::set_permissions(stats_dir, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        drop(open_store(&path).unwrap());
-        assert_eq!(
-            fs::metadata(stats_dir).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn stats_symlinks_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats.db");
-        open_store(&path).unwrap();
-        let link = dir.path().join("link.db");
-        std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(open_store(&link).is_err());
+    fn stats_store_permissions_and_symlink_rejection() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats/stats.db");
+            drop(open_store(&path).unwrap());
+            let stats_dir = path.parent().unwrap();
+            fs::set_permissions(stats_dir, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            drop(open_store(&path).unwrap());
+            assert_eq!(
+                fs::metadata(stats_dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats.db");
+            open_store(&path).unwrap();
+            let link = dir.path().join("link.db");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(open_store(&link).is_err());
+        }
     }
 }

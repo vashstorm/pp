@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn mcp_preview_renders_content_and_structured_results_and_expands_details() {
+fn mcp_preview_title_colors_and_global_tool_folding() {
     for structured in [false, true] {
         let mut transcript = Transcript::new();
         tool(
@@ -41,184 +41,183 @@ fn mcp_preview_renders_content_and_structured_results_and_expands_details() {
         transcript.toggle_tool_output();
         assert_eq!(screen(&render(&mut transcript, 110, 30)), collapsed);
     }
-}
 
-#[test]
-fn mcp_title_splits_prefix_server_and_tool_with_distinct_colors() {
-    let mut transcript = Transcript::new();
-    tool(
-        &mut transcript,
-        "graph",
-        "mcp__codebase-memory-mcp__search_graph",
-        json!({}),
-    );
-    let buffer = render(&mut transcript, 90, 6);
-    let text = screen(&buffer);
-    assert!(
-        text.contains("MCP codebase-memory-mcp Search_graph"),
-        "{text}"
-    );
-    assert!(!text.contains("mcp__"), "{text}");
-    let row = (0..buffer.area.height)
-        .find(|row| {
+    {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "graph",
+            "mcp__codebase-memory-mcp__search_graph",
+            json!({}),
+        );
+        let buffer = render(&mut transcript, 90, 6);
+        let text = screen(&buffer);
+        assert!(
+            text.contains("MCP codebase-memory-mcp Search_graph"),
+            "{text}"
+        );
+        assert!(!text.contains("mcp__"), "{text}");
+        let row = (0..buffer.area.height)
+            .find(|row| {
+                let line: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, *row)].symbol())
+                    .collect();
+                line.contains("codebase-memory-mcp")
+            })
+            .expect("标题行可见");
+        let color_at = |needle: &str| {
             let line: String = (0..buffer.area.width)
-                .map(|x| buffer[(x, *row)].symbol())
+                .map(|x| buffer[(x, row)].symbol())
                 .collect();
-            line.contains("codebase-memory-mcp")
-        })
-        .expect("标题行可见");
-    let color_at = |needle: &str| {
-        let line: String = (0..buffer.area.width)
-            .map(|x| buffer[(x, row)].symbol())
-            .collect();
-        let start = line.find(needle).expect(needle);
-        let column = u16::try_from(line[..start].chars().count()).expect("标题行宽度有限");
-        buffer[(column, row)].fg
-    };
-    assert_eq!(color_at("MCP codebase"), palette::mcp_title());
-    assert_eq!(color_at("codebase-memory-mcp"), palette::mcp_server());
-    assert_eq!(color_at("Search_graph"), palette::mcp_tool());
+            let start = line.find(needle).expect(needle);
+            let column = u16::try_from(line[..start].chars().count()).expect("标题行宽度有限");
+            buffer[(column, row)].fg
+        };
+        assert_eq!(color_at("MCP codebase"), palette::mcp_title());
+        assert_eq!(color_at("codebase-memory-mcp"), palette::mcp_server());
+        assert_eq!(color_at("Search_graph"), palette::mcp_tool());
+    }
+
+    {
+        let mut transcript = Transcript::with_read_preview(true);
+        for name in [
+            "bash",
+            "bash_task",
+            "read",
+            "rg",
+            "find",
+            "mcp__server__tool",
+        ] {
+            tool(&mut transcript, name, name, json!({}));
+            transcript.entries.last_mut().unwrap().text = (0..20)
+                .map(|i| format!("{name}-{i:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        transcript.toggle_tool_output();
+        for entry in &mut transcript.entries {
+            let name = entry.tool.clone().unwrap();
+            assert_eq!(entry.expanded, name != "read");
+            let text = entry_text(entry, 100);
+            if name == "read" {
+                assert!(!text.contains("read-00") && !text.contains("read-19"));
+                continue;
+            }
+            assert!(text.contains(&format!("{name}-00")));
+            assert_eq!(
+                text.contains(&format!("{name}-19")),
+                !name.starts_with("mcp__")
+            );
+        }
+        tool(&mut transcript, "live", "bash", json!({"command":"live"}));
+        transcript.progress(AgentEvent::ToolOutput {
+            id: "live".into(),
+            stream: OutputStream::Stdout,
+            text: (0..20).map(|i| format!("live-{i:02}\n")).collect(),
+        });
+        assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("live-00"));
+        transcript.toggle_tool_output();
+        assert!(transcript.entries.iter().all(|entry| !entry.expanded));
+        let text = entry_text(transcript.entries.last_mut().unwrap(), 100);
+        assert!(!text.contains("live-00"));
+        assert!(text.contains("10 earlier lines") && text.contains("live-19"));
+        transcript.progress(AgentEvent::ToolOutput {
+            id: "live".into(),
+            stream: OutputStream::Stdout,
+            text: "live-20\n".into(),
+        });
+        assert!(
+            entry_text(transcript.entries.last_mut().unwrap(), 100).contains("11 earlier lines")
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "live".into(),
+            result: json!({"ok":false,"error":"failed\n".repeat(20)}),
+        });
+        assert_eq!(
+            transcript.entries.last().unwrap().status,
+            EntryStatus::Failed
+        );
+        assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("to expand"));
+    }
 }
 
 #[test]
-fn tool_folding_is_global_without_layout_and_future_output_inherits_it() {
-    let mut transcript = Transcript::with_read_preview(true);
-    for name in [
-        "bash",
-        "bash_task",
-        "read",
-        "rg",
-        "find",
-        "mcp__server__tool",
-    ] {
-        tool(&mut transcript, name, name, json!({}));
-        transcript.entries.last_mut().unwrap().text = (0..20)
-            .map(|i| format!("{name}-{i:02}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-    transcript.toggle_tool_output();
-    for entry in &mut transcript.entries {
-        let name = entry.tool.clone().unwrap();
-        assert_eq!(entry.expanded, name != "read");
-        let text = entry_text(entry, 100);
-        if name == "read" {
-            assert!(!text.contains("read-00") && !text.contains("read-19"));
-            continue;
+fn read_group_cache_and_status_clock_animation() {
+    {
+        let mut transcript = Transcript::new();
+        for id in ["one", "two", "three"] {
+            tool(&mut transcript, id, "read", json!({"path":id,"offset":20}));
         }
-        assert!(text.contains(&format!("{name}-00")));
-        assert_eq!(
-            text.contains(&format!("{name}-19")),
-            !name.starts_with("mcp__")
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(
+            text.contains("Read (3)") && text.contains("three:20 · running"),
+            "{text}"
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "one".into(),
+            result: json!({"ok":true,"content":"one-body","lines_read":2}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        assert!(
+            text.contains("Read (3)") && text.contains("one:20-21") && !text.contains(" · ok"),
+            "{text}"
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "two".into(),
+            result: json!({"ok":false,"error":"second read failure"}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        for expected in [
+            "one:20-21",
+            "two:20 · failed",
+            "second read failure",
+            "three:20 · running",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(
+            !text.contains("Read (3)") && !text.contains("Read (2)"),
+            "{text}"
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "three".into(),
+            result: json!({"ok":true,"content":"three-body","lines_read":3,"truncated":true}),
+        });
+        let text = screen(&render(&mut transcript, 100, 30));
+        for expected in [
+            "one:20-21",
+            "second read failure",
+            "three:20-22 · truncated",
+        ] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(
+            !text.contains("Read (3)") && !text.contains("Read (2)"),
+            "{text}"
+        );
+
+        let mut transcript = Transcript::new();
+        for id in ["first", "second"] {
+            tool(&mut transcript, id, "read", json!({"path":id}));
+            transcript.progress(AgentEvent::ToolOutput {
+                id: id.into(),
+                stream: OutputStream::Stdout,
+                text: format!("{id}-partial-output"),
+            });
+        }
+        assert!(screen(&render(&mut transcript, 100, 30)).contains("Read (2)"));
+        transcript.fail();
+        let text = screen(&render(&mut transcript, 100, 30));
+        for expected in ["first · failed", "second · failed"] {
+            assert!(text.contains(expected), "{expected}: {text}");
+        }
+        assert!(!text.contains("partial-output"), "{text}");
+        assert!(
+            !text.contains("Read (3)") && !text.contains("Read (2)"),
+            "{text}"
         );
     }
-    tool(&mut transcript, "live", "bash", json!({"command":"live"}));
-    transcript.progress(AgentEvent::ToolOutput {
-        id: "live".into(),
-        stream: OutputStream::Stdout,
-        text: (0..20).map(|i| format!("live-{i:02}\n")).collect(),
-    });
-    assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("live-00"));
-    transcript.toggle_tool_output();
-    assert!(transcript.entries.iter().all(|entry| !entry.expanded));
-    let text = entry_text(transcript.entries.last_mut().unwrap(), 100);
-    assert!(!text.contains("live-00"));
-    assert!(text.contains("10 earlier lines") && text.contains("live-19"));
-    transcript.progress(AgentEvent::ToolOutput {
-        id: "live".into(),
-        stream: OutputStream::Stdout,
-        text: "live-20\n".into(),
-    });
-    assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("11 earlier lines"));
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "live".into(),
-        result: json!({"ok":false,"error":"failed\n".repeat(20)}),
-    });
-    assert_eq!(
-        transcript.entries.last().unwrap().status,
-        EntryStatus::Failed
-    );
-    assert!(entry_text(transcript.entries.last_mut().unwrap(), 100).contains("to expand"));
-}
 
-#[test]
-fn read_group_cache_refreshes_status_and_failure_boundaries() {
-    let mut transcript = Transcript::new();
-    for id in ["one", "two", "three"] {
-        tool(&mut transcript, id, "read", json!({"path":id,"offset":20}));
-    }
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert!(
-        text.contains("Read (3)") && text.contains("three:20 · running"),
-        "{text}"
-    );
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "one".into(),
-        result: json!({"ok":true,"content":"one-body","lines_read":2}),
-    });
-    let text = screen(&render(&mut transcript, 100, 30));
-    assert!(
-        text.contains("Read (3)") && text.contains("one:20-21") && !text.contains(" · ok"),
-        "{text}"
-    );
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "two".into(),
-        result: json!({"ok":false,"error":"second read failure"}),
-    });
-    let text = screen(&render(&mut transcript, 100, 30));
-    for expected in [
-        "one:20-21",
-        "two:20 · failed",
-        "second read failure",
-        "three:20 · running",
-    ] {
-        assert!(text.contains(expected), "{expected}: {text}");
-    }
-    assert!(
-        !text.contains("Read (3)") && !text.contains("Read (2)"),
-        "{text}"
-    );
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "three".into(),
-        result: json!({"ok":true,"content":"three-body","lines_read":3,"truncated":true}),
-    });
-    let text = screen(&render(&mut transcript, 100, 30));
-    for expected in [
-        "one:20-21",
-        "second read failure",
-        "three:20-22 · truncated",
-    ] {
-        assert!(text.contains(expected), "{expected}: {text}");
-    }
-    assert!(
-        !text.contains("Read (3)") && !text.contains("Read (2)"),
-        "{text}"
-    );
-
-    let mut transcript = Transcript::new();
-    for id in ["first", "second"] {
-        tool(&mut transcript, id, "read", json!({"path":id}));
-        transcript.progress(AgentEvent::ToolOutput {
-            id: id.into(),
-            stream: OutputStream::Stdout,
-            text: format!("{id}-partial-output"),
-        });
-    }
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("Read (2)"));
-    transcript.fail();
-    let text = screen(&render(&mut transcript, 100, 30));
-    for expected in ["first · failed", "second · failed"] {
-        assert!(text.contains(expected), "{expected}: {text}");
-    }
-    assert!(!text.contains("partial-output"), "{text}");
-    assert!(
-        !text.contains("Read (3)") && !text.contains("Read (2)"),
-        "{text}"
-    );
-}
-
-#[test]
-fn read_status_clock_animates_groups_and_stops_after_completion() {
     for paths in [vec!["one"], vec!["one", "two"], vec!["skill://rust"]] {
         let mut transcript = Transcript::new();
         let started = Instant::now();
@@ -267,7 +266,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
 }
 
 #[test]
-fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
+fn read_summary_colors_wrapping_and_replay() {
     let mut transcript = Transcript::new();
     let path = "dir/a:2 file.rs";
     tool(
@@ -299,27 +298,24 @@ fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
         buffer[((start + path.len()) as u16, 0)].fg,
         palette::activity()
     );
-}
 
-#[test]
-fn read_summary_matches_reference_layout_colors_and_wrapping() {
-    let mut transcript = Transcript::new();
-    transcript.append("Assistant", "before");
+    let mut grouped = Transcript::new();
+    grouped.append("Assistant", "before");
     let files = [
         ("src/tools.rs", 184, 707),
         ("src/agent/plan_workflow.rs", 1, 315),
         ("src/events.rs", 1, 170),
         ("src/agent.rs", 1430, 1600),
     ];
-    for (path, start, end) in files {
-        tool(&mut transcript, path, "read", json!({"path":path}));
-        transcript.progress(AgentEvent::ToolFinished {
-                id: path.into(),
-                result: json!({"ok":true,"source":path,"ranges":[{"start":start,"end":end}],"content":"retained body"}),
-            });
+    for (p, s, e) in files {
+        tool(&mut grouped, p, "read", json!({"path":p}));
+        grouped.progress(AgentEvent::ToolFinished {
+            id: p.into(),
+            result: json!({"ok":true,"source":p,"ranges":[{"start":s,"end":e}],"content":"retained body"}),
+        });
     }
-    transcript.append("Assistant", "after");
-    let buffer = render(&mut transcript, 80, 10);
+    grouped.append("Assistant", "after");
+    let buffer = render(&mut grouped, 80, 10);
     let text = screen(&buffer);
     assert_eq!(
         text.lines().take(9).map(str::trim_end).collect::<Vec<_>>(),
@@ -335,7 +331,7 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
             "  after",
         ]
     );
-    assert_eq!(transcript.entries[1].layout.as_ref().unwrap().height, 5);
+    assert_eq!(grouped.entries[1].layout.as_ref().unwrap().height, 5);
     assert_eq!(buffer[(2, 2)].fg, palette::added());
     assert_eq!(buffer[(9, 2)].fg, palette::read_summary_meta());
     for row in 1..8 {
@@ -349,51 +345,48 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
         }
     }
     assert_eq!(buffer[(19, 3)].fg, palette::activity());
-    let narrow = screen(&render(&mut transcript, 20, 20));
+    let narrow = screen(&render(&mut grouped, 20, 20));
     assert!(narrow.contains("    │  n_workflow.rs"), "{narrow}");
     assert!(narrow.contains("    └─ src/agent.rs:"), "{narrow}");
-    assert_eq!(transcript.entries.len(), 6);
+    assert_eq!(grouped.entries.len(), 6);
     assert!(
-        transcript
+        grouped
             .entries
             .iter()
             .filter(|entry| entry.tool.as_deref() == Some("read"))
             .all(|entry| entry.text == "retained body")
     );
-}
 
-#[test]
-fn read_summary_groups_preserve_entries_results_and_full_replay() {
-    let mut transcript = Transcript::new();
+    let mut replayed = Transcript::new();
     for (id, offset) in [("one", 1), ("two", 20)] {
         tool(
-            &mut transcript,
+            &mut replayed,
             id,
             "read",
             json!({"path":id,"offset":offset}),
         );
-        transcript.progress(AgentEvent::ToolFinished {
+        replayed.progress(AgentEvent::ToolFinished {
             id: id.into(),
             result: json!({"ok":true,"content":format!("{id}-body\n"),"lines_read":1}),
         });
     }
-    let text = screen(&render(&mut transcript, 100, 15));
+    let text = screen(&render(&mut replayed, 100, 15));
     assert!(
         text.contains("Read (2)") && text.contains("one:1-1") && text.contains("two:20-20"),
         "{text}"
     );
     assert!(!text.contains("one-body") && !text.contains("two-body"));
-    assert_eq!(transcript.entries.len(), 2);
-    transcript.append("Assistant", "read group boundary");
-    tool(&mut transcript, "failed", "read", json!({"path":"missing"}));
-    transcript.progress(AgentEvent::ToolFinished {
+    assert_eq!(replayed.entries.len(), 2);
+    replayed.append("Assistant", "read group boundary");
+    tool(&mut replayed, "failed", "read", json!({"path":"missing"}));
+    replayed.progress(AgentEvent::ToolFinished {
         id: "failed".into(),
         result: json!({"ok":false,"error":"read failure is visible"}),
     });
-    let snapshot = render(&mut transcript, 100, 20);
+    let snapshot = render(&mut replayed, 100, 20);
     assert!(screen(&snapshot).contains("read failure is visible"));
     let mut output = Vec::new();
-    transcript
+    replayed
         .write_full_for_test(&mut output, &snapshot)
         .unwrap();
     let mut parser = vt100::Parser::new(80, 100, 0);
@@ -409,11 +402,14 @@ fn read_summary_groups_preserve_entries_results_and_full_replay() {
 }
 
 #[test]
-fn tool_preview_counts_logical_lines_and_keeps_other_messages_complete() {
+fn tool_preview_and_toggle_anchors_history() {
     for count in [3, 4] {
         let mut transcript = Transcript::with_read_preview(true);
         tool(&mut transcript, "read", "read", json!({"path":"file"}));
-        transcript.progress(AgentEvent::ToolFinished { id:"read".into(), result:json!({"ok":true,"content":(0..count).map(|i|format!("line-{i:02}")).collect::<Vec<_>>().join("\n")}) });
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "read".into(),
+            result: json!({"ok":true,"content":(0..count).map(|i|format!("line-{i:02}")).collect::<Vec<_>>().join("\n")}),
+        });
         let text = entry_text(&mut transcript.entries[0], 80);
         assert!(!text.contains("to expand") && !text.contains("line-"));
     }
@@ -447,40 +443,36 @@ fn tool_preview_counts_logical_lines_and_keeps_other_messages_complete() {
         transcript.entries.last().unwrap().body,
         EntryBody::Ask(_)
     ));
-}
 
-#[test]
-fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
-    let mut transcript = Transcript::with_read_preview(true);
+    let mut anchored = Transcript::with_read_preview(true);
     for i in 0..3 {
         tool(
-            &mut transcript,
+            &mut anchored,
             &format!("r{i}"),
             "custom",
             json!({"path":format!("file{i}")}),
         );
-        transcript.progress(AgentEvent::ToolFinished {
-                id: format!("r{i}"),
-                result: json!({"ok":true,"content":(0..40).map(|j| format!("file{i}-{j:02}")).collect::<Vec<_>>().join("\n")}),
-            });
+        anchored.progress(AgentEvent::ToolFinished {
+            id: format!("r{i}"),
+            result: json!({"ok":true,"content":(0..40).map(|j| format!("file{i}-{j:02}")).collect::<Vec<_>>().join("\n")}),
+        });
     }
-    render(&mut transcript, 100, 10);
-    let first_height = transcript.entries[0].layout.as_ref().unwrap().height;
-    transcript.follow_bottom = false;
-    transcript.offset = first_height + 1;
-    assert!(screen(&render(&mut transcript, 100, 10)).contains("Custom · file1"));
-    transcript.toggle_tool_output();
-    assert!(!transcript.follow_bottom);
-    assert!(screen(&render(&mut transcript, 100, 10)).contains("Custom · file1"));
-    // 收起时锚点位于隐藏内容内，也必须留在同一卡片。
-    transcript.offset += 30;
-    transcript.toggle_tool_output();
-    let start = transcript.entries[0].layout.as_ref().unwrap().height + 1;
-    let end = start + transcript.entries[1].layout.as_ref().unwrap().height;
-    assert!((start..=end).contains(&transcript.offset));
-    let snapshot = render(&mut transcript, 100, 10);
+    render(&mut anchored, 100, 10);
+    let first_height = anchored.entries[0].layout.as_ref().unwrap().height;
+    anchored.follow_bottom = false;
+    anchored.offset = first_height + 1;
+    assert!(screen(&render(&mut anchored, 100, 10)).contains("Custom · file1"));
+    anchored.toggle_tool_output();
+    assert!(!anchored.follow_bottom);
+    assert!(screen(&render(&mut anchored, 100, 10)).contains("Custom · file1"));
+    anchored.offset += 30;
+    anchored.toggle_tool_output();
+    let start = anchored.entries[0].layout.as_ref().unwrap().height + 1;
+    let end = start + anchored.entries[1].layout.as_ref().unwrap().height;
+    assert!((start..=end).contains(&anchored.offset));
+    let snapshot = render(&mut anchored, 100, 10);
     let mut output = Vec::new();
-    transcript
+    anchored
         .write_full_for_test(&mut output, &snapshot)
         .unwrap();
     let mut parser = vt100::Parser::new(200, 100, 0);
@@ -494,7 +486,7 @@ fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
 }
 
 #[test]
-fn ask_card_waits_for_completion_and_preserves_native_history() {
+fn ask_card_lifecycle_and_details() {
     for outcome in ["answered", "cancelled", "interrupted", "invalid"] {
         let mut transcript = Transcript::new();
         transcript.append("Assistant", "previous-message");
@@ -548,7 +540,6 @@ fn ask_card_waits_for_completion_and_preserves_native_history() {
             "Database question?"
         };
         assert!(text.contains(expected), "结束后应保留记录：{text}");
-        // 后续消息把完整卡片推入原生历史，避免末行仍保留在可见尾部。
         transcript.append("Assistant", "after-ask");
         let native = retire_native(&mut transcript, 80, 1, true);
         assert_eq!(
@@ -558,10 +549,7 @@ fn ask_card_waits_for_completion_and_preserves_native_history() {
         );
         assert!(retire_native(&mut transcript, 80, 1, true).is_empty());
     }
-}
 
-#[test]
-fn ask_details_stay_in_messages_after_answering_and_resize() {
     let args = pp_core::interaction::AskArgs::parse(
         &json!({"questions":[{
             "id":"db", "question":"Database question?", "options":[{
@@ -612,8 +600,9 @@ fn ask_details_stay_in_messages_after_answering_and_resize() {
         }
     }
 }
+
 #[test]
-fn file_tool_paths_are_relative_inside_workspace_and_preserve_arguments() {
+fn file_tool_paths_are_shortened_and_preserve_arguments() {
     for (path, expected) in [
         ("/project/AGENTS.md", "AGENTS.md"),
         ("/project/src/中文 file.rs", "src/中文 file.rs"),
@@ -652,10 +641,7 @@ fn file_tool_paths_are_relative_inside_workspace_and_preserve_arguments() {
             }
         }
     }
-}
 
-#[test]
-fn file_tool_paths_shorten_result_sources_hashline_edits_and_previews() {
     let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
     tool(
         &mut transcript,

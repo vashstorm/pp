@@ -9,7 +9,8 @@ mod exec;
 pub(crate) mod protocol;
 
 #[cfg(test)]
-mod tests;
+#[path = "hooks/tests.rs"]
+mod integration;
 
 use anyhow::{Context as _, Result, bail};
 use pp_config::config::{HookEvent, HookFailurePolicy, HooksSettings};

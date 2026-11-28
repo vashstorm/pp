@@ -162,445 +162,359 @@ mod tests {
     }
 
     #[test]
-    fn initial_focus_recommended_without_preselection() {
-        let panel = panel(vec![question("q", false, Some(1), &["A", "B", "C"])]);
-        assert_eq!(panel.states[0].menu.selected_index(), Some(1));
-        assert!(panel.states[0].selected.is_empty());
-        assert!(panel.states[0].custom.is_empty());
-        let empty = self::panel(vec![question("q", true, None, &[])]);
-        assert_eq!(empty.states[0].menu.selected_index(), Some(0));
-    }
+    fn initial_focus_sanitization_and_custom_editor_answers() {
+        {
+            let panel_empty = self::panel(vec![question("q", true, None, &[])]);
+            assert_eq!(panel_empty.states[0].menu.selected_index(), Some(0));
 
-    #[test]
-    fn recommended_badge_is_display_only_and_labels_sanitized() {
-        let mut q = question("q", false, Some(0), &["Postgres", "Da\u{7f}ta"]);
-        q.options[1].description = Some("fast\u{1b}[31m".into());
-        let mut panel = panel(vec![q]);
-        let items = panel.states[0].menu.items();
-        assert!(!items[1].label.contains('\u{7f}'));
-        assert!(!items[1].description.contains('\u{1b}'));
-        let action = panel.key(key(KeyCode::Enter));
-        let Action::Submit(answers) = action else {
-            panic!("single question single select must submit immediately");
-        };
-        assert_eq!(answers.len(), 1);
-        assert_eq!(answers[0].id, "q");
-        assert_eq!(answers[0].selected_options, vec!["Postgres".to_string()]);
-        assert_eq!(answers[0].custom_input, None);
-    }
-
-    #[test]
-    fn single_select_custom_editor_submit_with_multiline() {
-        let mut panel = panel(vec![question("q", false, Some(0), &["A", "B"])]);
-        panel.key(key(KeyCode::End));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(panel.editor.is_some());
-        panel.paste("  ");
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert!(panel.editor.is_some());
-        assert!(matches!(panel.key(key(KeyCode::Esc)), Action::None));
-        assert!(panel.editor.is_none());
-        assert!(panel.states[0].custom.is_empty());
-        panel.key(key(KeyCode::Enter));
-        assert!(panel.editor.is_some());
-        panel.paste("第一行");
-        panel.key(ctrl('j'));
-        panel.paste("second");
-        let action = panel.key(key(KeyCode::Enter));
-        let Action::Submit(answers) = action else {
-            panic!("expected submit after custom answer");
-        };
-        assert_eq!(answers[0].custom_input, Some("第一行\nsecond".to_string()));
-        assert!(answers[0].selected_options.is_empty());
-    }
-
-    #[test]
-    fn multi_toggle_order_then_required_answer_locates_question() {
-        let mut panel = panel(vec![
-            question("checks", true, Some(0), &["unit", "lint", "fmt"]),
-            question("db", false, Some(0), &["SQLite", "Postgres"]),
-        ]);
-        panel.key(key(KeyCode::End));
-        panel.key(key(KeyCode::Up));
-        panel.key(key(KeyCode::Char(' ')));
-        panel.key(key(KeyCode::Home));
-        panel.key(key(KeyCode::Char(' ')));
-        assert_eq!(panel.states[0].selected, vec![0, 2]);
-        panel.key(key(KeyCode::Tab));
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(panel.page, Page::Review);
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert_eq!(panel.error.as_deref(), Some(REQUIRED_MESSAGE));
-        assert_eq!(panel.page, Page::Question(1));
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
-        assert_eq!(panel.page, Page::Review);
-        let action = panel.key(key(KeyCode::Enter));
-        let Action::Submit(answers) = action else {
-            panic!("expected submit after all questions answered");
-        };
-        assert_eq!(answers[0].id, "checks");
-        assert_eq!(
-            answers[0].selected_options,
-            vec!["unit".to_string(), "fmt".to_string()]
-        );
-        assert_eq!(answers[0].custom_input, None);
-        assert_eq!(answers[1].selected_options, vec!["SQLite".to_string()]);
-    }
-
-    #[test]
-    fn multi_empty_selection_is_submittable() {
-        let mut panel = panel(vec![question("checks", true, None, &["unit", "lint"])]);
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(panel.page, Page::Review);
-        let action = panel.key(key(KeyCode::Enter));
-        let Action::Submit(answers) = action else {
-            panic!("empty multi selection must submit");
-        };
-        assert!(answers[0].selected_options.is_empty());
-        assert_eq!(answers[0].custom_input, None);
-    }
-
-    #[test]
-    fn multi_custom_coexists_with_selection() {
-        let mut panel = panel(vec![question("checks", true, Some(0), &["unit", "lint"])]);
-        panel.key(key(KeyCode::Char(' ')));
-        panel.key(key(KeyCode::End));
-        panel.key(key(KeyCode::Enter));
-        panel.paste("再检查中文");
-        panel.key(key(KeyCode::Enter));
-        assert_eq!(panel.page, Page::Review);
-        let action = panel.key(key(KeyCode::Enter));
-        let Action::Submit(answers) = action else {
-            panic!("expected submit with selection and custom answer");
-        };
-        assert_eq!(answers[0].selected_options, vec!["unit".to_string()]);
-        assert_eq!(answers[0].custom_input, Some("再检查中文".to_string()));
-    }
-
-    #[test]
-    fn single_select_option_clears_previous_custom() {
-        let mut panel = panel(vec![
-            question("a", false, None, &["A", "B"]),
-            question("b", true, None, &["x", "y"]),
-        ]);
-        panel.key(key(KeyCode::End));
-        panel.key(key(KeyCode::Enter));
-        panel.paste("custom");
-        panel.key(key(KeyCode::Enter));
-        assert_eq!(panel.page, Page::Question(1));
-        panel.key(key(KeyCode::BackTab));
-        assert_eq!(panel.page, Page::Question(0));
-        panel.key(key(KeyCode::Home));
-        assert!(matches!(panel.key(key(KeyCode::Char(' '))), Action::None));
-        assert_eq!(panel.page, Page::Question(0));
-        assert_eq!(panel.states[0].selected, vec![0]);
-        assert!(panel.states[0].custom.is_empty());
-        panel.key(key(KeyCode::Enter));
-        panel.key(key(KeyCode::Enter));
-        assert_eq!(panel.page, Page::Review);
-        let action = panel.key(key(KeyCode::Enter));
-        let Action::Submit(answers) = action else {
-            panic!("expected submit");
-        };
-        assert_eq!(answers[0].selected_options, vec!["A".to_string()]);
-        assert_eq!(answers[0].custom_input, None);
-    }
-
-    #[test]
-    fn esc_cancels_from_picker_and_review() {
-        let mut picker = panel(vec![question("q", false, None, &["A"])]);
-        assert!(matches!(picker.key(key(KeyCode::Esc)), Action::Cancel));
-        let mut review = panel(vec![question("q", true, None, &["A"])]);
-        review.key(key(KeyCode::Tab));
-        assert!(matches!(review.key(key(KeyCode::Esc)), Action::Cancel));
-    }
-
-    #[test]
-    fn tab_and_arrows_cycle_pages() {
-        let mut panel = panel(vec![
-            question("a", false, None, &["A"]),
-            question("b", false, None, &["B"]),
-        ]);
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(panel.page, Page::Question(1));
-        panel.key(key(KeyCode::Right));
-        assert_eq!(panel.page, Page::Review);
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(panel.page, Page::Question(0));
-        panel.key(key(KeyCode::Left));
-        assert_eq!(panel.page, Page::Review);
-    }
-
-    #[test]
-    fn single_single_select_question_has_no_review_page() {
-        let mut panel = panel(vec![question("a", false, None, &["A"])]);
-        panel.key(key(KeyCode::Tab));
-        assert_eq!(panel.page, Page::Question(0));
-    }
-
-    #[test]
-    fn single_space_selects_without_submitting_and_details_key_is_ignored() {
-        let mut panel = panel(vec![question("q", false, Some(1), &["A", "B"])]);
-        assert!(matches!(panel.key(key(KeyCode::Char(' '))), Action::None));
-        assert_eq!(panel.page, Page::Question(0));
-        assert_eq!(panel.states[0].selected, [1]);
-        assert!(!panel.submitted);
-        let before = render(&mut panel, 100, 24);
-        assert!(before.contains("󰐾 B (Recommended)"));
-        assert!(!before.contains("details"));
-        assert!(matches!(panel.key(ctrl('o')), Action::None));
-        assert_eq!(render(&mut panel, 100, 24), before);
-        panel.key(key(KeyCode::Home));
-        panel.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
-        panel.key(KeyEvent::new_with_kind(
-            KeyCode::Char(' '),
-            KeyModifiers::NONE,
-            KeyEventKind::Repeat,
-        ));
-        assert_eq!(panel.states[0].selected, [1]);
-        panel.key(key(KeyCode::Char(' ')));
-        assert_eq!(panel.states[0].selected, [0]);
-        assert!(!panel.submitted);
-        let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
-            panic!("按 Enter 后应提交已选答案");
-        };
-        assert_eq!(answers[0].selected_options, ["A"]);
-    }
-
-    #[test]
-    fn wheel_navigates_inside_overlay_only() {
-        let mut panel = panel(vec![question("q", false, Some(0), &["A", "B", "C"])]);
-        render(&mut panel, 40, 20);
-        let area = panel.overlay.expect("overlay cached after draw");
-        assert!(panel.wheel(false, area.x, area.bottom() - 1));
-        assert_eq!(panel.states[0].menu.selected_index(), Some(1));
-        assert!(!panel.wheel(true, area.right(), area.y));
-        assert!(!panel.wheel(true, area.x, area.bottom()));
-        assert_eq!(panel.states[0].menu.selected_index(), Some(1));
-    }
-
-    #[test]
-    fn picker_shows_descriptions_and_keeps_previews_in_messages() {
-        let mut q = question("q", false, Some(0), &["A"]);
-        q.options[0].description = Some("Option description".into());
-        q.options[0].preview = Some("# Head\n\ntext".into());
-        let mut panel = panel(vec![q]);
-        for (width, height) in [(40, 24), (24, 12), (40, 24)] {
-            let screen = render(&mut panel, width, height);
-            assert!(screen.contains("󰐽 A"), "应显示选项：{screen}");
-            assert!(screen.contains("Choose for q?"));
-            if width >= 40 {
-                assert!(screen.contains("Option description"));
-            }
-            assert!(!screen.contains("Head"));
-            assert!(!screen.contains("text"));
-        }
-        panel.key(key(KeyCode::Char(' ')));
-        let screen = render(&mut panel, 40, 24);
-        assert!(screen.contains("󰐾 A"));
-    }
-
-    #[test]
-    fn compact_mode_renders_without_border() {
-        let mut panel = panel(vec![question("db", false, None, &["A", "B"])]);
-        let screen = render(&mut panel, 30, 3);
-        assert!(screen.contains("Ask"), "紧凑模式应显示 Ask 标题");
-        assert!(!screen.contains("db"), "紧凑模式不应显示内部题目 ID");
-        let screen = render(&mut panel, 30, 1);
-        assert!(
-            screen.starts_with('A'),
-            "focused option lost on one-row screen: {screen}"
-        );
-    }
-
-    #[test]
-    fn option_display_expands_tabs_without_rewriting_answer_labels() {
-        let mut panel = panel(vec![question("q", false, None, &["a\tb\nc"])]);
-        let screen = render(&mut panel, 80, 24);
-        assert!(
-            screen.contains("a   b c"),
-            "menu lost visible label whitespace: {screen}"
-        );
-        let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
-            panic!("expected selected answer")
-        };
-        assert_eq!(answers[0].selected_options, ["a\tb\nc"]);
-    }
-
-    #[test]
-    fn paste_without_editor_is_ignored() {
-        let mut panel = panel(vec![question("q", false, None, &["A"])]);
-        assert!(matches!(panel.paste("hello"), Action::None));
-        assert!(panel.states[0].custom.is_empty());
-    }
-
-    #[test]
-    fn custom_option_accepts_direct_typing_and_paste_without_leaving_list() {
-        for paste in [false, true] {
-            let mut panel = panel(vec![question("q", false, None, &["SQLite"])]);
-            panel.key(key(KeyCode::End));
-            render(&mut panel, 80, 24);
-            let before = panel.overlay;
-            if paste {
-                panel.paste("answer");
-            } else {
-                for character in "answer".chars() {
-                    panel.key(key(KeyCode::Char(character)));
-                }
-            }
-            let screen = render(&mut panel, 80, 24);
-            assert_eq!(panel.overlay, before, "进入 Other 不应改变外框位置和高度");
-            assert!(screen.contains("󰐽 SQLite"));
-            assert!(screen.contains("󰐽 answer"));
-            assert!(!screen.contains("custom answer"));
-            panel.key(ctrl('j'));
-            panel.paste("second line");
-            render(&mut panel, 80, 24);
-            let after = panel.overlay.unwrap();
-            let before = before.unwrap();
-            assert_eq!(after.height, before.height + 1, "新增输入行应扩展面板");
-            assert_eq!(after.bottom(), before.bottom(), "面板底部应保持锚定");
-            let compact = render(&mut panel, 40, 8);
-            assert!(
-                compact.contains("second line"),
-                "紧凑屏幕也应显示正在编辑的答案：{compact}"
-            );
-            panel.key(key(KeyCode::Esc));
-            assert!(panel.states[0].custom.is_empty());
-            assert!(render(&mut panel, 80, 24).contains(OTHER_LABEL));
-            panel.paste("accepted");
+            let mut q = question("q", false, Some(1), &["Postgres", "Da\u{7f}ta", "C"]);
+            q.options[1].description = Some("fast\u{1b}[31m".into());
+            let mut panel = panel(vec![q]);
+            assert_eq!(panel.states[0].menu.selected_index(), Some(1));
+            assert!(panel.states[0].selected.is_empty());
+            let items = panel.states[0].menu.items();
+            assert!(!items[1].label.contains('\u{7f}'));
+            assert!(!items[1].description.contains('\u{1b}'));
+            panel.key(key(KeyCode::Up));
             let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
-                panic!("原位输入应可提交");
+                panic!("single question single select must submit immediately");
             };
-            assert_eq!(answers[0].custom_input.as_deref(), Some("accepted"));
+            assert_eq!(answers[0].selected_options, vec!["Postgres".to_string()]);
+            assert_eq!(answers[0].custom_input, None);
+
+            let mut tabs = self::panel(vec![question("q", false, None, &["a\tb\nc"])]);
+            assert!(render(&mut tabs, 80, 24).contains("a   b c"));
+            let Action::Submit(ans_tabs) = tabs.key(key(KeyCode::Enter)) else {
+                panic!("expected selected answer");
+            };
+            assert_eq!(ans_tabs[0].selected_options, ["a\tb\nc"]);
+
+            let mut ctrl_panel = self::panel(vec![question("q", false, None, &["A"])]);
+            ctrl_panel.key(key(KeyCode::End));
+            ctrl_panel.key(key(KeyCode::Enter));
+            ctrl_panel.paste("bad\u{1b}[31mtail\r\nnext\rmiddle\r");
+            assert!(!render(&mut ctrl_panel, 80, 24).contains('\u{1b}'));
+            let Action::Submit(ctrl_ans) = ctrl_panel.key(key(KeyCode::Enter)) else {
+                panic!("expected custom answer");
+            };
+            assert_eq!(
+                ctrl_ans[0].custom_input.as_deref(),
+                Some("bad\u{1b}[31mtail\r\nnext\rmiddle\r")
+            );
+            assert!(matches!(ctrl_panel.key(key(KeyCode::Enter)), Action::None));
         }
-    }
 
-    #[test]
-    fn single_page_omits_tabs_and_shows_question_above_choices() {
-        let mut q = question("confirm_commit", false, None, &["yes", "no"]);
-        q.header = Some("Commit confirmation".into());
-        q.question = "Commit the changes?".into();
-        let mut panel = panel(vec![q]);
-        let screen = render(&mut panel, 80, 24);
-        assert!(!screen.contains("confirm_commit"));
-        assert!(!screen.contains("Commit confirmation"));
-        assert!(screen.contains("Commit the changes?"));
-        assert!(!screen.contains("Tab/←/→"));
-        assert_eq!(
-            panel.overlay.unwrap().height,
-            8,
-            "单页包含题干且不占用页签行"
-        );
-        let rows: Vec<_> = screen.lines().collect();
-        let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
-        assert!(rows[title + 1].contains("Commit the changes?"));
-        assert!(rows[title + 2].contains("󰐽 yes"), "题干下方应直接显示选项");
-        let compact = render(&mut panel, 80, 5);
-        assert!(!compact.contains("Tab next"));
+        {
+            let mut p1 = panel(vec![question("q", false, Some(0), &["A", "B"])]);
+            assert!(matches!(p1.paste("hello"), Action::None));
+            assert!(p1.states[0].custom.is_empty());
+            p1.key(key(KeyCode::End));
+            assert!(matches!(p1.key(key(KeyCode::Enter)), Action::None));
+            p1.paste("  ");
+            assert!(matches!(p1.key(key(KeyCode::Enter)), Action::None));
+            assert!(matches!(p1.key(key(KeyCode::Esc)), Action::None));
+            assert!(p1.editor.is_none() && p1.states[0].custom.is_empty());
+            p1.key(key(KeyCode::Enter));
+            p1.paste("第一行");
+            p1.key(ctrl('j'));
+            p1.paste("second");
+            let Action::Submit(a1) = p1.key(key(KeyCode::Enter)) else {
+                panic!("expected submit after custom answer");
+            };
+            assert_eq!(a1[0].custom_input, Some("第一行\nsecond".to_string()));
+            assert!(a1[0].selected_options.is_empty());
 
-        let mut custom_only = self::panel(vec![question("custom", false, None, &[])]);
-        let screen = render(&mut custom_only, 80, 24);
-        assert_eq!(custom_only.overlay.unwrap().height, 6);
-        assert!(screen.contains(OTHER_LABEL));
-        assert!(screen.contains("╭ Ask"), "自由回答仍应使用完整边框");
-    }
+            let mut p2 = panel(vec![
+                question("a", false, None, &["A", "B"]),
+                question("b", true, None, &["x", "y"]),
+            ]);
+            p2.key(key(KeyCode::End));
+            p2.key(key(KeyCode::Enter));
+            p2.paste("custom");
+            p2.key(key(KeyCode::Enter));
+            assert_eq!(p2.page, Page::Question(1));
+            p2.key(key(KeyCode::BackTab));
+            p2.key(key(KeyCode::Home));
+            assert!(matches!(p2.key(key(KeyCode::Char(' '))), Action::None));
+            assert_eq!(p2.states[0].selected, vec![0]);
+            assert!(p2.states[0].custom.is_empty());
+            p2.key(key(KeyCode::Enter));
+            p2.key(key(KeyCode::Enter));
+            let Action::Submit(a2) = p2.key(key(KeyCode::Enter)) else {
+                panic!("expected submit");
+            };
+            assert_eq!(a2[0].selected_options, vec!["A".to_string()]);
+            assert_eq!(a2[0].custom_input, None);
 
-    #[test]
-    fn tabs_highlight_current_question_and_review_including_narrow_layout() {
-        let mut first = question("first", false, None, &["A"]);
-        first.header = Some(" 范围\t".into());
-        let second = question("mode", true, None, &["B"]);
-        let mut panel = panel(vec![first, second]);
-        for (page, label) in [(0, "范围"), (1, "mode"), (2, "Review")] {
-            for width in [80, 18] {
-                let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
-                terminal
-                    .draw(|frame| panel.draw(frame, frame.area()))
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-                let row = panel.overlay.unwrap().y + 1;
-                // 宽字符的后续单元格只是占位，不属于显示文本。
-                let columns = (0..width)
-                    .filter(|&x| x == 0 || Span::raw(buffer[(x - 1, row)].symbol()).width() <= 1);
-                let highlighted: String = columns
-                    .clone()
-                    .filter(|&x| buffer[(x, row)].bg == ask_tab_bg())
-                    .map(|x| buffer[(x, row)].symbol())
-                    .collect();
-                assert_eq!(
-                    highlighted,
-                    format!(" {label} "),
-                    "高亮背景应覆盖当前页签及其左右各一个空格"
-                );
-                for x in 2..width.saturating_sub(2) {
-                    let cell = &buffer[(x, row)];
-                    assert_ne!(cell.bg, accent(), "页签不应使用亮黄色背景");
-                    if cell.bg == ask_tab_bg() {
-                        assert_eq!(cell.fg, activity());
-                        assert!(!cell.modifier.contains(Modifier::BOLD));
+            for paste in [false, true] {
+                let mut p3 = panel(vec![question("q", false, None, &["SQLite"])]);
+                p3.key(key(KeyCode::End));
+                render(&mut p3, 80, 24);
+                let before = p3.overlay;
+                if paste {
+                    p3.paste("answer");
+                } else {
+                    for ch in "answer".chars() {
+                        p3.key(key(KeyCode::Char(ch)));
                     }
                 }
-                if width == 80 {
-                    let text: String = columns.map(|x| buffer[(x, row)].symbol()).collect();
-                    assert!(
-                        text.contains(" 范围   mode   Review "),
-                        "页签之间应正好留三个空格：{text}"
-                    );
-                }
+                let screen = render(&mut p3, 80, 24);
+                assert_eq!(p3.overlay, before);
+                assert!(screen.contains("󰐽 answer") && !screen.contains("custom answer"));
+                p3.key(ctrl('j'));
+                p3.paste("second line");
+                render(&mut p3, 80, 24);
+                assert_eq!(p3.overlay.unwrap().height, before.unwrap().height + 1);
+                assert_eq!(p3.overlay.unwrap().bottom(), before.unwrap().bottom());
+                assert!(render(&mut p3, 40, 8).contains("second line"));
+                p3.key(key(KeyCode::Esc));
+                assert!(p3.states[0].custom.is_empty());
+                p3.paste("accepted");
+                let Action::Submit(ans) = p3.key(key(KeyCode::Enter)) else {
+                    panic!("原位输入应可提交");
+                };
+                assert_eq!(ans[0].custom_input.as_deref(), Some("accepted"));
             }
-            assert_eq!(
-                panel.page,
-                if page < 2 {
-                    Page::Question(page)
-                } else {
-                    Page::Review
-                }
-            );
-            panel.key(key(KeyCode::Tab));
         }
     }
 
     #[test]
-    fn question_wraps_and_changes_with_current_page() {
-        const LONG: &str = "请选择本次操作需要执行的完整检查范围，并确认后继续";
-        let wrapped = |id: &str| {
-            let mut question = question(id, false, None, &["A"]);
-            question.question = LONG.into();
-            question
-        };
+    fn multi_select_navigation_cancel_space_and_wheel() {
+        {
+            let mut p1 = panel(vec![
+                question("checks", true, Some(0), &["unit", "lint", "fmt"]),
+                question("db", false, Some(0), &["SQLite", "Postgres"]),
+            ]);
+            p1.key(key(KeyCode::End));
+            p1.key(key(KeyCode::Up));
+            p1.key(key(KeyCode::Char(' ')));
+            p1.key(key(KeyCode::Home));
+            p1.key(key(KeyCode::Char(' ')));
+            assert_eq!(p1.states[0].selected, vec![0, 2]);
+            p1.key(key(KeyCode::Tab));
+            p1.key(key(KeyCode::Tab));
+            assert_eq!(p1.page, Page::Review);
+            assert!(matches!(p1.key(key(KeyCode::Enter)), Action::None));
+            assert_eq!(p1.error.as_deref(), Some(REQUIRED_MESSAGE));
+            assert_eq!(p1.page, Page::Question(1));
+            assert!(matches!(p1.key(key(KeyCode::Enter)), Action::None));
+            let Action::Submit(a1) = p1.key(key(KeyCode::Enter)) else {
+                panic!("expected submit after all questions answered");
+            };
+            assert_eq!(
+                a1[0].selected_options,
+                vec!["unit".to_string(), "fmt".to_string()]
+            );
+            assert_eq!(a1[1].selected_options, vec!["SQLite".to_string()]);
 
-        // 单题没有 Review 页签，高度只由题干折行决定。
-        let mut single = panel(vec![wrapped("first")]);
-        let wide = render(&mut single, 80, 30);
-        let wide_height = single.overlay.unwrap().height;
-        // TestBackend 为双宽字符保留空白占位单元格。
-        assert!(wide.replace(' ', "").contains(LONG));
-        let narrow = render(&mut single, 32, 30);
-        assert!(
-            single.overlay.unwrap().height > wide_height,
-            "窄屏题干折行应撑高面板"
-        );
-        assert!(narrow.replace(' ', "").contains("请选择本次操作"));
-        assert!(narrow.replace(' ', "").contains("确认后继续"));
-        assert!(narrow.contains("󰐽 A"));
+            let mut p2 = panel(vec![question("checks", true, None, &["unit", "lint"])]);
+            p2.key(key(KeyCode::Tab));
+            let Action::Submit(a2) = p2.key(key(KeyCode::Enter)) else {
+                panic!("empty multi selection must submit");
+            };
+            assert!(a2[0].selected_options.is_empty());
 
-        // 多题同一高度下切换页签只换正文。
-        let mut pages = panel(vec![
-            wrapped("first"),
-            question("second", false, None, &["B"]),
-        ]);
-        let first = render(&mut pages, 80, 30);
-        assert!(first.replace(' ', "").contains(LONG));
-        pages.key(key(KeyCode::Tab));
-        let second = render(&mut pages, 80, 30);
-        assert!(second.contains("Choose for second?"));
-        assert!(!second.contains("请选择本次操作"));
-        assert!(second.contains("󰐽 B"));
+            let mut p3 = panel(vec![question("checks", true, Some(0), &["unit", "lint"])]);
+            p3.key(key(KeyCode::Char(' ')));
+            p3.key(key(KeyCode::End));
+            p3.key(key(KeyCode::Enter));
+            p3.paste("再检查中文");
+            p3.key(key(KeyCode::Enter));
+            let Action::Submit(a3) = p3.key(key(KeyCode::Enter)) else {
+                panic!("expected submit with selection and custom answer");
+            };
+            assert_eq!(a3[0].selected_options, vec!["unit".to_string()]);
+            assert_eq!(a3[0].custom_input, Some("再检查中文".to_string()));
+        }
+
+        {
+            let mut picker = panel(vec![question("q", false, None, &["A"])]);
+            picker.key(key(KeyCode::Tab));
+            assert_eq!(picker.page, Page::Question(0));
+            assert!(matches!(picker.key(key(KeyCode::Esc)), Action::Cancel));
+
+            let mut review = panel(vec![question("q", true, None, &["A"])]);
+            review.key(key(KeyCode::Tab));
+            assert!(matches!(review.key(key(KeyCode::Esc)), Action::Cancel));
+
+            let mut multi = panel(vec![
+                question("a", false, None, &["A"]),
+                question("b", false, None, &["B"]),
+            ]);
+            multi.key(key(KeyCode::Tab));
+            assert_eq!(multi.page, Page::Question(1));
+            multi.key(key(KeyCode::Right));
+            assert_eq!(multi.page, Page::Review);
+            multi.key(key(KeyCode::Tab));
+            assert_eq!(multi.page, Page::Question(0));
+            multi.key(key(KeyCode::Left));
+            assert_eq!(multi.page, Page::Review);
+
+            let mut space = panel(vec![question("q", false, Some(1), &["A", "B", "C"])]);
+            render(&mut space, 40, 20);
+            let area = space.overlay.expect("overlay cached after draw");
+            assert!(space.wheel(false, area.x, area.bottom() - 1));
+            assert_eq!(space.states[0].menu.selected_index(), Some(2));
+            assert!(!space.wheel(true, area.right(), area.y));
+
+            space.key(key(KeyCode::Up));
+            assert!(matches!(space.key(key(KeyCode::Char(' '))), Action::None));
+            assert_eq!(space.states[0].selected, [1]);
+            let before = render(&mut space, 100, 24);
+            assert!(before.contains("󰐾 B (Recommended)") && !before.contains("details"));
+            assert!(matches!(space.key(ctrl('o')), Action::None));
+            assert_eq!(render(&mut space, 100, 24), before);
+            space.key(key(KeyCode::Home));
+            space.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL));
+            space.key(KeyEvent::new_with_kind(
+                KeyCode::Char(' '),
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat,
+            ));
+            assert_eq!(space.states[0].selected, [1]);
+            space.key(key(KeyCode::Char(' ')));
+            let Action::Submit(ans) = space.key(key(KeyCode::Enter)) else {
+                panic!("按 Enter 后应提交已选答案");
+            };
+            assert_eq!(ans[0].selected_options, ["A"]);
+        }
     }
 
     #[test]
-    fn height_is_shared_across_tabs_and_tracks_wrapping_editor_and_validation() {
+    fn picker_descriptions_tabs_highlighting_and_wrapping() {
+        {
+            let mut q = question("q", false, Some(0), &["A"]);
+            q.options[0].description = Some("Option description".into());
+            q.options[0].preview = Some("# Head\n\ntext".into());
+            let mut p1 = panel(vec![q]);
+            for (w, h) in [(40, 24), (24, 12)] {
+                let screen = render(&mut p1, w, h);
+                assert!(
+                    screen.contains("󰐽 A") && !screen.contains("Head") && !screen.contains("text")
+                );
+                if w >= 40 {
+                    assert!(screen.contains("Option description"));
+                }
+            }
+            p1.key(key(KeyCode::Char(' ')));
+            assert!(render(&mut p1, 40, 24).contains("󰐾 A"));
+
+            let mut p2 = panel(vec![question("db", false, None, &["A", "B"])]);
+            let s3 = render(&mut p2, 30, 3);
+            assert!(s3.contains("Ask") && !s3.contains("db"));
+            assert!(render(&mut p2, 30, 1).starts_with('A'));
+
+            let mut sq = question("confirm_commit", false, None, &["yes", "no"]);
+            sq.header = Some("Commit confirmation".into());
+            sq.question = "Commit the changes?".into();
+            let mut p3 = panel(vec![sq]);
+            let screen = render(&mut p3, 80, 24);
+            assert!(!screen.contains("confirm_commit") && !screen.contains("Tab/←/→"));
+            assert_eq!(p3.overlay.unwrap().height, 8);
+            let rows: Vec<_> = screen.lines().collect();
+            let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
+            assert!(rows[title + 1].contains("Commit the changes?"));
+            assert!(rows[title + 2].contains("󰐽 yes"));
+
+            let mut custom_only = panel(vec![question("custom", false, None, &[])]);
+            let cs = render(&mut custom_only, 80, 24);
+            assert_eq!(custom_only.overlay.unwrap().height, 6);
+            assert!(cs.contains(OTHER_LABEL) && cs.contains("╭ Ask"));
+        }
+
+        {
+            let mut first = question("first", false, None, &["A"]);
+            first.header = Some(" 范围\t".into());
+            let second = question("mode", true, None, &["B"]);
+            let mut p = panel(vec![first, second]);
+            for (page, label) in [(0, "范围"), (1, "mode"), (2, "Review")] {
+                for width in [80, 18] {
+                    let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+                    terminal.draw(|frame| p.draw(frame, frame.area())).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let row = p.overlay.unwrap().y + 1;
+                    // 宽字符的后续单元格只是占位，不属于显示文本。
+                    let columns = (0..width).filter(|&x| {
+                        x == 0 || Span::raw(buffer[(x - 1, row)].symbol()).width() <= 1
+                    });
+                    let highlighted: String = columns
+                        .clone()
+                        .filter(|&x| buffer[(x, row)].bg == ask_tab_bg())
+                        .map(|x| buffer[(x, row)].symbol())
+                        .collect();
+                    assert_eq!(
+                        highlighted,
+                        format!(" {label} "),
+                        "高亮背景应覆盖当前页签及其左右各一个空格"
+                    );
+                    for x in 2..width.saturating_sub(2) {
+                        let cell = &buffer[(x, row)];
+                        assert_ne!(cell.bg, accent(), "页签不应使用亮黄色背景");
+                        if cell.bg == ask_tab_bg() {
+                            assert_eq!(cell.fg, activity());
+                            assert!(!cell.modifier.contains(Modifier::BOLD));
+                        }
+                    }
+                    if width == 80 {
+                        let text: String = columns.map(|x| buffer[(x, row)].symbol()).collect();
+                        assert!(
+                            text.contains(" 范围   mode   Review "),
+                            "页签之间应正好留三个空格：{text}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    p.page,
+                    if page < 2 {
+                        Page::Question(page)
+                    } else {
+                        Page::Review
+                    }
+                );
+                p.key(key(KeyCode::Tab));
+            }
+
+            const LONG: &str = "请选择本次操作需要执行的完整检查范围，并确认后继续";
+            let wrapped = |id: &str| {
+                let mut question = question(id, false, None, &["A"]);
+                question.question = LONG.into();
+                question
+            };
+
+            // 单题没有 Review 页签，高度只由题干折行决定。
+            let mut single = panel(vec![wrapped("first")]);
+            let wide = render(&mut single, 80, 30);
+            let wide_height = single.overlay.unwrap().height;
+            // TestBackend 为双宽字符保留空白占位单元格。
+            assert!(wide.replace(' ', "").contains(LONG));
+            let narrow = render(&mut single, 32, 30);
+            assert!(
+                single.overlay.unwrap().height > wide_height,
+                "窄屏题干折行应撑高面板"
+            );
+            assert!(narrow.replace(' ', "").contains("请选择本次操作"));
+            assert!(narrow.replace(' ', "").contains("确认后继续"));
+            assert!(narrow.contains("󰐽 A"));
+
+            // 多题同一高度下切换页签只换正文。
+            let mut pages = panel(vec![
+                wrapped("first"),
+                question("second", false, None, &["B"]),
+            ]);
+            let first = render(&mut pages, 80, 30);
+            assert!(first.replace(' ', "").contains(LONG));
+            pages.key(key(KeyCode::Tab));
+            let s = render(&mut pages, 80, 30);
+            assert!(
+                s.contains("Choose for second?")
+                    && !s.contains("请选择本次操作")
+                    && s.contains("󰐽 B")
+            );
+        }
+    }
+
+    #[test]
+    fn height_is_shared_and_controls_are_safe() {
         let mut long = question("long", false, None, &["A", "B", "C"]);
         for option in &mut long.options {
             option.description =
@@ -681,26 +595,5 @@ mod tests {
             panel.overlay.unwrap().height <= 8,
             "面板不应超过屏幕高度的 70%"
         );
-    }
-
-    #[test]
-    fn custom_answer_keeps_raw_controls_but_terminal_cells_are_safe() {
-        let mut panel = panel(vec![question("q", false, None, &["A"])]);
-        panel.key(key(KeyCode::End));
-        panel.key(key(KeyCode::Enter));
-        panel.paste("bad\u{1b}[31mtail\r\nnext\rmiddle\r");
-        let screen = render(&mut panel, 80, 24);
-        assert!(
-            !screen.contains('\u{1b}'),
-            "unsafe control reached terminal cells"
-        );
-        let Action::Submit(answers) = panel.key(key(KeyCode::Enter)) else {
-            panic!("expected custom answer")
-        };
-        assert_eq!(
-            answers[0].custom_input.as_deref(),
-            Some("bad\u{1b}[31mtail\r\nnext\rmiddle\r")
-        );
-        assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
     }
 }

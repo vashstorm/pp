@@ -25,7 +25,7 @@ fn numbered_lines(count: usize, key: &str) -> String {
 }
 
 #[test]
-fn edit_arguments_preview_is_temporary_bounded_and_never_committed_to_native_history() {
+fn edit_arguments_preview_lifecycle_folding_and_limits() {
     let mut transcript = Transcript::new();
     transcript.begin_run();
     for text in [
@@ -70,23 +70,24 @@ fn edit_arguments_preview_is_temporary_bounded_and_never_committed_to_native_his
         text: String::new(),
     });
     assert!(transcript.argument_previews.is_empty());
-}
 
-#[test]
-fn arguments_preview_folds_to_tail_only_beyond_sixteen_rows() {
-    // 正好 16 行原样显示，不加提示。
     let rows = preview_rows(&numbered_lines(16, "newText"));
     assert_eq!(rows.len(), 16);
     assert!(!rows.iter().any(|row| row.contains("preview tail")));
-    assert_eq!(rows[0], "+   │line-01");
-    assert_eq!(rows[15], "+   │line-16");
-    // 17 行保留末尾 16 行，提示另占一行，与最终 diff 一致。
+    assert_eq!(
+        (rows[0].as_str(), rows[15].as_str()),
+        ("+   │line-01", "+   │line-16")
+    );
     let rows = preview_rows(&numbered_lines(17, "newText"));
     assert_eq!(rows.len(), 17);
-    assert_eq!(rows[0], "… preview tail · Ctrl+O to expand");
-    assert_eq!(rows[1], "+   │line-02");
-    assert_eq!(rows[16], "+   │line-17");
-    // 路径进入标题，不占正文预算。
+    assert_eq!(
+        (rows[0].as_str(), rows[1].as_str(), rows[16].as_str()),
+        (
+            "… preview tail · Ctrl+O to expand",
+            "+   │line-02",
+            "+   │line-17"
+        )
+    );
     let raw = format!(
         r#"{{"path":"demo.rs",{},"#,
         numbered_lines(16, "newText")
@@ -95,38 +96,30 @@ fn arguments_preview_folds_to_tail_only_beyond_sixteen_rows() {
     );
     let rows = preview_rows(&raw);
     assert_eq!(rows.len(), 16);
-    assert_eq!(rows[0], "+   │line-01");
-    assert_eq!(rows[15], "+   │line-16");
-    // 展开时显示全部内容。
+    assert_eq!(
+        (rows[0].as_str(), rows[15].as_str()),
+        ("+   │line-01", "+   │line-16")
+    );
     let expanded =
         super::super::preview::layout(&numbered_lines(17, "newText"), "edit", 200, true, false);
     assert_eq!(expanded.len(), 17);
-}
 
-#[test]
-fn arguments_preview_layout_height_stays_folded_for_short_and_long_content() {
     for count in [2, 3, 16, 17, 5000] {
-        let mut transcript = Transcript::new();
-        transcript.begin_run();
-        arguments(
-            &mut transcript,
-            "write",
-            0,
-            &numbered_lines(count, "content"),
-        );
-        let index = transcript.argument_previews[&0];
-        let entry = &mut transcript.entries[index];
+        let mut t = Transcript::new();
+        t.begin_run();
+        arguments(&mut t, "write", 0, &numbered_lines(count, "content"));
+        let idx = t.argument_previews[&0];
+        let entry = &mut t.entries[idx];
         entry.ensure_layout(100);
         let rows = super::super::preview::layout(&entry.text, "write", 100, false, false).len();
-        // 按实际行数增长，超过 16 行时才追加一行省略提示。
         assert_eq!(rows, if count <= 16 { count } else { 17 }, "{count}");
         assert_eq!(entry.layout.as_ref().unwrap().height, rows + 1, "{count}");
     }
 }
 
 #[test]
-fn write_preview_and_result_share_visible_rows_including_wrapped_lines() {
-    use crate::tui::tool_display;
+fn write_preview_rows_wrapping_and_scroll_parity() {
+    use crate::tui::tool_display::{self, write_body};
     for width in [8, 32, 100] {
         for content in [
             String::new(),
@@ -168,19 +161,17 @@ fn write_preview_and_result_share_visible_rows_including_wrapped_lines() {
             }
         }
     }
-}
 
-#[test]
-fn write_card_grows_to_sixteen_rows_without_padding_short_content() {
-    use crate::tui::tool_display;
     for count in [0, 2, 3, 16, 17, 50] {
         let content = (0..count)
             .map(|i| format!("line-{i}\n"))
             .collect::<String>();
         let args = json!({"content":content});
         let expected = if count <= 16 { count } else { 17 };
-        let preview = super::super::preview::layout(&args.to_string(), "write", 100, false, false);
-        assert_eq!(preview.len(), expected, "preview: {count}");
+        assert_eq!(
+            super::super::preview::layout(&args.to_string(), "write", 100, false, false).len(),
+            expected
+        );
         for running in [false, true] {
             let rows = tool_display::body(
                 tool_display::View {
@@ -199,11 +190,6 @@ fn write_card_grows_to_sixteen_rows_without_padding_short_content() {
             assert_eq!(rows.len(), expected, "running={running}, count={count}");
         }
     }
-}
-
-#[test]
-fn folded_write_keeps_the_same_wrapped_rows_as_expanded_write() {
-    use crate::tui::tool_display::write_body;
 
     for content in [
         format!("first\n{}\n\nlast\n", "0123456789abcdef".repeat(1024)),
@@ -217,10 +203,7 @@ fn folded_write_keeps_the_same_wrapped_rows_as_expanded_write() {
             assert_eq!(tail[1..], expanded[expanded.len() - 16..]);
         }
     }
-}
 
-#[test]
-fn folded_write_preview_scrolls_long_lines_without_growing_the_transcript() {
     let mut transcript = Transcript::new();
     transcript.append("You", "older message");
     transcript.append("You", "earlier message");
@@ -240,7 +223,6 @@ fn folded_write_preview_scrolls_long_lines_without_growing_the_transcript() {
     let total = transcript.total;
     let offset = transcript.offset;
     assert!(offset > 0);
-
     for index in 0..3 {
         let row = format!("{index}:{}", "b".repeat(body_width - 2));
         arguments(&mut transcript, "write", 0, &row);
@@ -536,7 +518,7 @@ fn edit_card_reference_layout_colors_inline_changes_and_narrow_widths() {
 }
 
 #[test]
-fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
+fn diff_preview_folding_and_unavailable_fallback() {
     let make_line = |number, text| pp_core::events::DiffLine {
         kind: DiffLineKind::Added,
         old_line: None,
@@ -586,10 +568,7 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
             .iter()
             .any(|row| row.to_string().contains("tail"))
     );
-}
 
-#[test]
-fn write_preview_preserves_committed_diff_and_warning_without_rereading_files() {
     let mut transcript = Transcript::new();
     let content = (0..20)
         .map(|i| format!("saved-{i:02}\n"))

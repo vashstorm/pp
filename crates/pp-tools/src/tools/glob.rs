@@ -537,185 +537,166 @@ mod tests {
     }
 
     #[test]
-    fn glob_patterns_scope_and_exact_paths() {
-        let dir = fixture();
-        let root = dir.path();
-        let bare = call(root, json!({"pattern":"*.rs"}));
-        for name in ["root.rs", "a.rs", "b.rs"] {
-            assert!(text(&bare).contains(name), "{bare}");
-        }
-        let direct = call(root, json!({"pattern":"src/*.rs"}));
-        assert!(text(&direct).contains("a.rs"));
-        assert!(!text(&direct).contains("b.rs"));
-        assert!(text(&call(root, json!({"pattern":"src/**/*.rs"}))).contains("b.rs"));
-        assert!(text(&call(root, json!({"pattern":"src/nested/{b.rs,c.txt"}))).contains("c.txt"));
-        assert_eq!(text(&call(root, json!({"pattern":"root.rs"}))), "root.rs");
-        assert!(text(&call(root, json!({"pattern":"**/*","path":"src"}))).contains("# nested/"));
-        assert!(run(root, r#"{"pattern":"/*.rs"}"#, &CancellationToken::new()).is_err());
-    }
-
-    #[test]
-    fn glob_pattern_and_literal_directory_are_separate() {
-        let dir = fixture();
-        let root = dir.path();
-        let scoped = call(root, json!({"pattern":"**/*.rs","path":"src"}));
-        assert!(text(&scoped).contains("a.rs"));
-        assert!(text(&scoped).contains("b.rs"));
-        assert!(!text(&scoped).contains("root.rs"));
-        assert!(!text(&scoped).contains("c.txt"));
-        let direct = call(root, json!({"pattern":"*.rs","path":root.join("src")}));
-        assert_eq!(direct["content"], scoped["content"]);
-        fs::create_dir_all(root.join("folder with spaces;commas,[]")).unwrap();
-        fs::write(root.join("folder with spaces;commas,[]/a,b.txt"), "").unwrap();
-        let literal = call(
-            root,
-            json!({"pattern":"*.txt","path":"folder with spaces;commas,[]"}),
-        );
-        assert!(text(&literal).contains("a,b.txt"));
-        for pattern in ["missing.rs", "missing/*.rs"] {
-            assert_eq!(
-                text(&call(root, json!({"pattern":pattern}))),
-                "No files found matching pattern"
-            );
-        }
-    }
-
-    #[test]
-    fn glob_hidden_ignore_and_node_modules() {
-        let dir = fixture();
-        let root = dir.path();
-        fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
-        fs::write(root.join("ignored.rs"), "").unwrap();
-        fs::write(root.join(".hidden.rs"), "").unwrap();
-        fs::create_dir_all(root.join("node_modules/lib")).unwrap();
-        fs::write(root.join("node_modules/lib/dep.rs"), "").unwrap();
-        fs::create_dir(root.join(".git")).unwrap();
-        fs::write(root.join(".git/config"), "").unwrap();
-        let result = call(root, json!({"pattern":"*.rs"}));
-        assert!(text(&result).contains(".hidden.rs"));
-        assert!(!text(&result).contains("ignored.rs"));
-        assert!(!text(&result).contains("dep.rs"));
-        let result = call(
-            root,
-            json!({"pattern":"*.rs","hidden":false,"gitignore":false}),
-        );
-        assert!(!text(&result).contains(".hidden.rs"));
-        assert!(text(&result).contains("ignored.rs"));
-        let result = call(
-            root,
-            json!({"pattern":"node_modules/**/*.rs","gitignore":false}),
-        );
-        assert!(text(&result).contains("dep.rs"), "{result}");
-        assert!(!text(&call(root, json!({"pattern":"**/*","gitignore":false}))).contains("config"));
-    }
-
-    #[test]
-    fn glob_symlinks_are_listed_but_not_followed() {
-        let dir = fixture();
-        let root = dir.path();
-        symlink("src", root.join("link")).unwrap();
-        symlink("root.rs", root.join("file-link")).unwrap();
-        symlink("missing", root.join("broken")).unwrap();
-        let result = call(root, json!({"pattern":"**/*"}));
-        assert!(text(&result).contains("link"), "{result}");
-        assert!(text(&result).contains("broken"), "{result}");
-        assert!(!text(&result).contains("# link/"), "{result}");
-        let explicit = call(root, json!({"pattern":"link/*.rs"}));
-        assert!(text(&explicit).contains("a.rs"), "{explicit}");
-        assert_eq!(
-            text(&call(root, json!({"pattern":"file-link"}))),
-            "file-link"
-        );
-    }
-
-    #[test]
-    fn glob_limit_cancel_timeout_and_validation() {
-        let dir = fixture();
-        let root = dir.path();
-        let result = call(root, json!({"pattern":"*.rs","limit":1}));
-        assert_eq!(result["truncated"], true);
-        assert!(result["warnings"].to_string().contains("limit reached"));
-        assert!(
-            call(root, json!({"pattern":"root.rs","limit":201}))["warnings"]
-                .to_string()
-                .contains("clamped")
-        );
-        for args in [
-            json!({"pattern":""}),
-            json!({"pattern":"["}),
-            json!({"pattern":"**/*","limit":0}),
-            json!({}),
-            json!({"path":"src"}),
-            json!({"pattern":"**/*","path":"src/*.rs"}),
-            json!({"pattern":"**/*","path":"root.rs"}),
-            json!({"pattern":"**/*","path":"missing"}),
-            json!({"pattern":"**/*","path":""}),
-            json!({"pattern":"**/*","path":"\0"}),
-            json!({"pattern":"\0"}),
-            json!({"extra":1}),
-        ] {
+    fn glob_patterns_filters_and_symlinks() {
+        {
+            let dir = fixture();
+            let root = dir.path();
+            let bare = call(root, json!({"pattern":"*.rs"}));
+            for name in ["root.rs", "a.rs", "b.rs"] {
+                assert!(text(&bare).contains(name), "{bare}");
+            }
+            let direct = call(root, json!({"pattern":"src/*.rs"}));
+            assert!(text(&direct).contains("a.rs"));
+            assert!(!text(&direct).contains("b.rs"));
+            assert!(text(&call(root, json!({"pattern":"src/**/*.rs"}))).contains("b.rs"));
             assert!(
-                run(root, &args.to_string(), &CancellationToken::new()).is_err(),
-                "{args}"
+                text(&call(root, json!({"pattern":"src/nested/{b.rs,c.txt"}))).contains("c.txt")
+            );
+            assert_eq!(text(&call(root, json!({"pattern":"root.rs"}))), "root.rs");
+            assert!(
+                text(&call(root, json!({"pattern":"**/*","path":"src"}))).contains("# nested/")
+            );
+            assert!(run(root, r#"{"pattern":"/*.rs"}"#, &CancellationToken::new()).is_err());
+        }
+
+        {
+            let dir = fixture();
+            let root = dir.path();
+            let scoped = call(root, json!({"pattern":"**/*.rs","path":"src"}));
+            assert!(text(&scoped).contains("a.rs"));
+            assert!(text(&scoped).contains("b.rs"));
+            assert!(!text(&scoped).contains("root.rs"));
+            assert!(!text(&scoped).contains("c.txt"));
+            let direct = call(root, json!({"pattern":"*.rs","path":root.join("src")}));
+            assert_eq!(direct["content"], scoped["content"]);
+            fs::create_dir_all(root.join("folder with spaces;commas,[]")).unwrap();
+            fs::write(root.join("folder with spaces;commas,[]/a,b.txt"), "").unwrap();
+            let literal = call(
+                root,
+                json!({"pattern":"*.txt","path":"folder with spaces;commas,[]"}),
+            );
+            assert!(text(&literal).contains("a,b.txt"));
+            for pattern in ["missing.rs", "missing/*.rs"] {
+                assert_eq!(
+                    text(&call(root, json!({"pattern":pattern}))),
+                    "No files found matching pattern"
+                );
+            }
+        }
+
+        {
+            let dir = fixture();
+            let root = dir.path();
+            fs::write(root.join(".gitignore"), "ignored.rs\n").unwrap();
+            fs::write(root.join("ignored.rs"), "").unwrap();
+            fs::write(root.join(".hidden.rs"), "").unwrap();
+            fs::create_dir_all(root.join("node_modules/lib")).unwrap();
+            fs::write(root.join("node_modules/lib/dep.rs"), "").unwrap();
+            fs::create_dir(root.join(".git")).unwrap();
+            fs::write(root.join(".git/config"), "").unwrap();
+            let result = call(root, json!({"pattern":"*.rs"}));
+            assert!(text(&result).contains(".hidden.rs"));
+            assert!(!text(&result).contains("ignored.rs"));
+            assert!(!text(&result).contains("dep.rs"));
+            let result = call(
+                root,
+                json!({"pattern":"*.rs","hidden":false,"gitignore":false}),
+            );
+            assert!(!text(&result).contains(".hidden.rs"));
+            assert!(text(&result).contains("ignored.rs"));
+            let result = call(
+                root,
+                json!({"pattern":"node_modules/**/*.rs","gitignore":false}),
+            );
+            assert!(text(&result).contains("dep.rs"), "{result}");
+            assert!(
+                !text(&call(root, json!({"pattern":"**/*","gitignore":false}))).contains("config")
             );
         }
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        assert!(
-            run(root, "{}", &cancelled)
-                .unwrap_err()
-                .is::<pp_core::cancellation::Cancelled>()
-        );
-        let timeout = run_with_timeout(
-            root,
-            r#"{"pattern":"**/*"}"#,
-            &CancellationToken::new(),
-            Duration::ZERO,
-            None,
-        )
-        .unwrap();
-        assert_eq!(timeout["timed_out"], true);
-        assert!(!text(&timeout).contains("No files found"));
+
+        {
+            let dir = fixture();
+            let root = dir.path();
+            symlink("src", root.join("link")).unwrap();
+            symlink("root.rs", root.join("file-link")).unwrap();
+            symlink("missing", root.join("broken")).unwrap();
+            let result = call(root, json!({"pattern":"**/*"}));
+            assert!(text(&result).contains("link"), "{result}");
+            assert!(text(&result).contains("broken"), "{result}");
+            assert!(!text(&result).contains("# link/"), "{result}");
+            let explicit = call(root, json!({"pattern":"link/*.rs"}));
+            assert!(text(&explicit).contains("a.rs"), "{explicit}");
+            assert_eq!(
+                text(&call(root, json!({"pattern":"file-link"}))),
+                "file-link"
+            );
+        }
     }
 
     #[test]
-    fn glob_rank_and_partial_timeout_are_deterministic() {
-        let dir = fixture();
-        let root = dir.path();
-        for (name, seconds) in [("root.rs", 30), ("src/a.rs", 20), ("src/nested/b.rs", 10)] {
-            let file = fs::File::options()
-                .write(true)
-                .open(root.join(name))
-                .unwrap();
-            file.set_times(
-                fs::FileTimes::new()
-                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+    fn glob_limit_cancel_timeout_validation_and_utf8_cap() {
+        {
+            let dir = fixture();
+            let root = dir.path();
+            let result = call(root, json!({"pattern":"*.rs","limit":1}));
+            assert_eq!(result["truncated"], true);
+            assert!(result["warnings"].to_string().contains("limit reached"));
+            assert!(
+                call(root, json!({"pattern":"root.rs","limit":201}))["warnings"]
+                    .to_string()
+                    .contains("clamped")
+            );
+            for args in [
+                json!({"pattern":""}),
+                json!({"pattern":"["}),
+                json!({"pattern":"**/*","limit":0}),
+                json!({}),
+                json!({"path":"src"}),
+                json!({"pattern":"**/*","path":"src/*.rs"}),
+                json!({"pattern":"**/*","path":"root.rs"}),
+                json!({"pattern":"**/*","path":"missing"}),
+                json!({"pattern":"**/*","path":""}),
+                json!({"pattern":"**/*","path":"\0"}),
+                json!({"pattern":"\0"}),
+                json!({"extra":1}),
+            ] {
+                assert!(
+                    run(root, &args.to_string(), &CancellationToken::new()).is_err(),
+                    "{args}"
+                );
+            }
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            assert!(
+                run(root, "{}", &cancelled)
+                    .unwrap_err()
+                    .is::<pp_core::cancellation::Cancelled>()
+            );
+            let timeout = run_with_timeout(
+                root,
+                r#"{"pattern":"**/*"}"#,
+                &CancellationToken::new(),
+                Duration::ZERO,
+                None,
             )
             .unwrap();
+            assert_eq!(timeout["timed_out"], true);
+            assert!(!text(&timeout).contains("No files found"));
         }
-        let result = call(root, json!({"pattern":"*.rs","limit":2}));
-        assert!(text(&result).contains("root.rs"));
-        assert!(text(&result).contains("a.rs"));
-        assert!(!text(&result).contains("b.rs"));
-        let args: Args = serde_json::from_value(json!({"pattern":"**/*"})).unwrap();
-        let mut checkpoints = 0;
-        let result = search(
-            root,
-            args,
-            parse_target(root, "**/*"),
-            &CancellationToken::new(),
-            200.0,
-            200,
-            None,
-            || {
-                checkpoints += 1;
-                checkpoints > 2
-            },
-        )
-        .unwrap();
-        assert_eq!(result["timed_out"], true);
-        assert!(!text(&result).is_empty());
-        assert!(!text(&result).contains("No files found"));
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            fs::create_dir(dir.path().join("deep")).unwrap();
+            for i in 0..200 {
+                let name = format!("{i:03}{}", "界".repeat(84));
+                fs::write(dir.path().join("deep").join(name), "").unwrap();
+            }
+            let result = call(dir.path(), json!({"pattern":"deep/*"}));
+            assert!(text(&result).len() <= MAX_BYTES);
+            assert!(text(&result).contains('界'));
+            assert_eq!(result["truncated"], true);
+            assert!(result["warnings"].to_string().contains("50 KiB"));
+        }
     }
 
     /// 与被替换的逐次淘汰最差项实现逐位对照：候选集合、limit 与遍历顺序全部变化。
@@ -765,96 +746,121 @@ mod tests {
     }
 
     #[test]
-    fn glob_limit_selection_matches_legacy_eviction() {
-        // 路径互不相同，mtime 有刻意重复的平局项（按路径升序进入前列）。
-        let pool: Vec<Entry> = [30_u64, 10, 20, 20, 10, 30, 5]
-            .iter()
-            .enumerate()
-            .map(|(index, seconds)| Entry {
-                path: format!("d{}/f{index}.rs", index % 3),
-                mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(*seconds),
-            })
-            .collect();
-        assert_eq!(
-            selection(&pool, 2),
-            (vec!["d0/f0.rs".to_owned(), "d2/f5.rs".to_owned()], true)
-        );
-        assert_eq!(
-            selection(&pool, 3),
-            (
-                vec![
-                    "d0/f0.rs".to_owned(),
-                    "d2/f5.rs".to_owned(),
-                    "d0/f3.rs".to_owned()
-                ],
-                true
-            )
-        );
-        for limit in [1, 2, 3, 5, 7, 8] {
-            let expected = selection(&pool, limit);
-            assert_eq!(expected, legacy_selection(&pool, limit), "limit={limit}");
-            for seed in [1, 2, 3, 4, 7, 11, 23] {
-                let order = shuffled(&pool, seed);
-                assert_eq!(
-                    selection(&order, limit),
-                    expected,
-                    "limit={limit} seed={seed}"
-                );
-                assert_eq!(
-                    legacy_selection(&order, limit),
-                    expected,
-                    "limit={limit} seed={seed}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn glob_limit_keeps_newest_files_and_flags_truncation() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        // 创建顺序与 mtime 顺序相反，其中 c.rs/d.rs 同 mtime（平局按路径升序）。
-        for (name, seconds) in [
-            ("e.rs", 10_u64),
-            ("d.rs", 20),
-            ("c.rs", 20),
-            ("b.rs", 40),
-            ("a.rs", 50),
-        ] {
-            fs::write(root.join(name), "").unwrap();
-            fs::File::options()
-                .write(true)
-                .open(root.join(name))
-                .unwrap()
-                .set_times(
+    fn glob_ranking_matches_legacy_eviction_and_flags_truncation() {
+        {
+            let dir = fixture();
+            let root = dir.path();
+            for (name, seconds) in [("root.rs", 30), ("src/a.rs", 20), ("src/nested/b.rs", 10)] {
+                let file = fs::File::options()
+                    .write(true)
+                    .open(root.join(name))
+                    .unwrap();
+                file.set_times(
                     fs::FileTimes::new()
                         .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
                 )
                 .unwrap();
+            }
+            let result = call(root, json!({"pattern":"*.rs","limit":2}));
+            assert!(text(&result).contains("root.rs"));
+            assert!(text(&result).contains("a.rs"));
+            assert!(!text(&result).contains("b.rs"));
+            let args: Args = serde_json::from_value(json!({"pattern":"**/*"})).unwrap();
+            let mut checkpoints = 0;
+            let result = search(
+                root,
+                args,
+                parse_target(root, "**/*"),
+                &CancellationToken::new(),
+                200.0,
+                200,
+                None,
+                || {
+                    checkpoints += 1;
+                    checkpoints > 2
+                },
+            )
+            .unwrap();
+            assert_eq!(result["timed_out"], true);
+            assert!(!text(&result).is_empty());
+            assert!(!text(&result).contains("No files found"));
         }
-        let result = call(root, json!({"pattern":"*.rs","limit":3}));
-        assert_eq!(text(&result), "a.rs\nb.rs\nc.rs");
-        assert_eq!(result["truncated"], true);
-        assert_eq!(result["timed_out"], false);
-        assert!(result["warnings"].to_string().contains("limit reached"));
-        let full = call(root, json!({"pattern":"*.rs","limit":6}));
-        assert_eq!(full["truncated"], false);
-        assert_eq!(text(&full), "a.rs\nb.rs\nc.rs\nd.rs\ne.rs");
-    }
 
-    #[test]
-    fn glob_output_is_bounded_on_utf8_boundaries() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir(dir.path().join("deep")).unwrap();
-        for i in 0..200 {
-            let name = format!("{i:03}{}", "界".repeat(84));
-            fs::write(dir.path().join("deep").join(name), "").unwrap();
+        {
+            // 路径互不相同，mtime 有刻意重复的平局项（按路径升序进入前列）。
+            let pool: Vec<Entry> = [30_u64, 10, 20, 20, 10, 30, 5]
+                .iter()
+                .enumerate()
+                .map(|(index, seconds)| Entry {
+                    path: format!("d{}/f{index}.rs", index % 3),
+                    mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(*seconds),
+                })
+                .collect();
+            assert_eq!(
+                selection(&pool, 2),
+                (vec!["d0/f0.rs".to_owned(), "d2/f5.rs".to_owned()], true)
+            );
+            assert_eq!(
+                selection(&pool, 3),
+                (
+                    vec![
+                        "d0/f0.rs".to_owned(),
+                        "d2/f5.rs".to_owned(),
+                        "d0/f3.rs".to_owned()
+                    ],
+                    true
+                )
+            );
+            for limit in [1, 2, 3, 5, 7, 8] {
+                let expected = selection(&pool, limit);
+                assert_eq!(expected, legacy_selection(&pool, limit), "limit={limit}");
+                for seed in [1, 2, 3, 4, 7, 11, 23] {
+                    let order = shuffled(&pool, seed);
+                    assert_eq!(
+                        selection(&order, limit),
+                        expected,
+                        "limit={limit} seed={seed}"
+                    );
+                    assert_eq!(
+                        legacy_selection(&order, limit),
+                        expected,
+                        "limit={limit} seed={seed}"
+                    );
+                }
+            }
         }
-        let result = call(dir.path(), json!({"pattern":"deep/*"}));
-        assert!(text(&result).len() <= MAX_BYTES);
-        assert!(text(&result).contains('界'));
-        assert_eq!(result["truncated"], true);
-        assert!(result["warnings"].to_string().contains("50 KiB"));
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            // 创建顺序与 mtime 顺序相反，其中 c.rs/d.rs 同 mtime（平局按路径升序）。
+            for (name, seconds) in [
+                ("e.rs", 10_u64),
+                ("d.rs", 20),
+                ("c.rs", 20),
+                ("b.rs", 40),
+                ("a.rs", 50),
+            ] {
+                fs::write(root.join(name), "").unwrap();
+                fs::File::options()
+                    .write(true)
+                    .open(root.join(name))
+                    .unwrap()
+                    .set_times(
+                        fs::FileTimes::new()
+                            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+                    )
+                    .unwrap();
+            }
+            let result = call(root, json!({"pattern":"*.rs","limit":3}));
+            assert_eq!(text(&result), "a.rs\nb.rs\nc.rs");
+            assert_eq!(result["truncated"], true);
+            assert_eq!(result["timed_out"], false);
+            assert!(result["warnings"].to_string().contains("limit reached"));
+            let full = call(root, json!({"pattern":"*.rs","limit":6}));
+            assert_eq!(full["truncated"], false);
+            assert_eq!(text(&full), "a.rs\nb.rs\nc.rs\nd.rs\ne.rs");
+        }
     }
 
     #[test]

@@ -308,114 +308,113 @@ mod tests {
     }
 
     #[test]
-    fn tip_reports_each_server_elapsed_and_the_final_total() {
-        let mut progress = Progress::default();
-        assert_eq!(progress.snapshot().tip(), None);
-        assert!(progress.snapshot().tip_lines().is_empty());
-        progress.begin(names(&["context7", "exa"]));
-        progress.connecting("context7");
-        assert_eq!(
-            progress.snapshot().tip().as_deref(),
-            Some("MCP: context7 connecting…, exa pending")
-        );
-        assert_eq!(
-            progress.snapshot().tip_lines(),
-            vec![
-                "MCP: context7 connecting…".to_string(),
-                "MCP: exa pending".to_string(),
-            ]
-        );
-        progress.complete("context7", true, Duration::from_millis(874), None);
-        progress.connecting("exa");
-        assert_eq!(
-            progress.snapshot().tip().as_deref(),
-            Some("MCP: context7 connected (874ms) ✓, exa connecting…")
-        );
-        assert_eq!(
-            progress.snapshot().tip_lines(),
-            vec![
-                "MCP: context7 connected (874ms) ✓".to_string(),
-                "MCP: exa connecting…".to_string(),
-            ]
-        );
-        progress.complete(
-            "exa",
-            false,
-            Duration::from_millis(1200),
-            Some("starting MCP\n\x1b[31mprocess failed"),
-        );
-        progress.finish();
-        let tip = progress.snapshot().tip().expect("已配置服务必须有总状态");
-        assert!(
-            tip.starts_with("Connected to MCP servers: 1 succeeded, 1 failed (")
-                && tip.ends_with(')'),
-            "{tip}"
-        );
-        let lines = progress.snapshot().tip_lines();
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[0], "MCP: context7 connected (874ms) ✓");
-        assert_eq!(lines[1], "MCP: exa failed (1.2s) ✗");
-        assert_eq!(lines[2], "  starting MCP \u{fffd}[31mprocess failed");
-        assert_eq!(lines[3], tip);
-    }
+    fn connect_status_tip_formatting_and_unfinished_targets() {
+        {
+            let mut progress = Progress::default();
+            assert_eq!(progress.snapshot().tip(), None);
+            assert!(progress.snapshot().tip_lines().is_empty());
+            progress.begin(names(&["context7", "exa"]));
+            progress.connecting("context7");
+            assert_eq!(
+                progress.snapshot().tip().as_deref(),
+                Some("MCP: context7 connecting…, exa pending")
+            );
+            assert_eq!(
+                progress.snapshot().tip_lines(),
+                vec![
+                    "MCP: context7 connecting…".to_string(),
+                    "MCP: exa pending".to_string(),
+                ]
+            );
+            progress.complete("context7", true, Duration::from_millis(874), None);
+            progress.connecting("exa");
+            assert_eq!(
+                progress.snapshot().tip().as_deref(),
+                Some("MCP: context7 connected (874ms) ✓, exa connecting…")
+            );
+            assert_eq!(
+                progress.snapshot().tip_lines(),
+                vec![
+                    "MCP: context7 connected (874ms) ✓".to_string(),
+                    "MCP: exa connecting…".to_string(),
+                ]
+            );
+            progress.complete(
+                "exa",
+                false,
+                Duration::from_millis(1200),
+                Some("starting MCP\n\x1b[31mprocess failed"),
+            );
+            progress.finish();
+            let tip = progress.snapshot().tip().expect("已配置服务必须有总状态");
+            assert!(
+                tip.starts_with("Connected to MCP servers: 1 succeeded, 1 failed (")
+                    && tip.ends_with(')'),
+                "{tip}"
+            );
+            let lines = progress.snapshot().tip_lines();
+            assert_eq!(lines.len(), 4);
+            assert_eq!(lines[0], "MCP: context7 connected (874ms) ✓");
+            assert_eq!(lines[1], "MCP: exa failed (1.2s) ✗");
+            assert_eq!(lines[2], "  starting MCP \u{fffd}[31mprocess failed");
+            assert_eq!(lines[3], tip);
+        }
+        {
+            let mut progress = Progress::default();
+            progress.begin(names(&["context7", "exa"]));
+            progress.complete("context7", true, Duration::from_millis(20), None);
+            progress.complete("exa", true, Duration::from_millis(900), None);
+            progress.finish();
+            let tip = progress.snapshot().tip().expect("已配置服务必须有总状态");
+            assert!(
+                tip.starts_with("Connected to MCP servers: 2 succeeded (")
+                    && !tip.contains("failed"),
+                "{tip}"
+            );
 
-    #[test]
-    fn tip_omits_failed_count_when_all_servers_succeed_and_handles_all_failed() {
-        let mut progress = Progress::default();
-        progress.begin(names(&["context7", "exa"]));
-        progress.complete("context7", true, Duration::from_millis(20), None);
-        progress.complete("exa", true, Duration::from_millis(900), None);
-        progress.finish();
-        let tip = progress.snapshot().tip().expect("已配置服务必须有总状态");
-        assert!(
-            tip.starts_with("Connected to MCP servers: 2 succeeded (") && !tip.contains("failed"),
-            "{tip}"
-        );
+            progress.begin(names(&["local"]));
+            progress.connecting("local");
+            progress.complete(
+                "local",
+                false,
+                Duration::from_millis(30),
+                Some("MCP request timed out"),
+            );
+            progress.finish();
+            assert_eq!(
+                progress.snapshot().tip().as_deref(),
+                Some("Connected to MCP servers: 0 succeeded, 1 failed (0ms)")
+            );
+            assert_eq!(
+                progress.snapshot().tip_lines(),
+                vec![
+                    "MCP: local failed (30ms) ✗".to_string(),
+                    "  MCP request timed out".to_string(),
+                    "Connected to MCP servers: 0 succeeded, 1 failed (0ms)".to_string(),
+                ]
+            );
 
-        progress.begin(names(&["local"]));
-        progress.connecting("local");
-        progress.complete(
-            "local",
-            false,
-            Duration::from_millis(30),
-            Some("MCP request timed out"),
-        );
-        progress.finish();
-        assert_eq!(
-            progress.snapshot().tip().as_deref(),
-            Some("Connected to MCP servers: 0 succeeded, 1 failed (0ms)")
-        );
-        assert_eq!(
-            progress.snapshot().tip_lines(),
-            vec![
-                "MCP: local failed (30ms) ✗".to_string(),
-                "  MCP request timed out".to_string(),
-                "Connected to MCP servers: 0 succeeded, 1 failed (0ms)".to_string(),
-            ]
-        );
-
-        progress.begin(names(&["local"]));
-        progress.fail("invalid MCP config");
-        assert_eq!(
-            progress.snapshot().tip().as_deref(),
-            Some("MCP unavailable: invalid MCP config")
-        );
-        assert_eq!(
-            progress.snapshot().tip_lines(),
-            vec!["MCP unavailable: invalid MCP config".to_string()]
-        );
-        assert!(progress.is_finished());
-    }
-
-    #[test]
-    fn unfinished_targets_are_reported_for_retry() {
-        let mut progress = Progress::default();
-        progress.begin(names(&["a", "b"]));
-        progress.connecting("a");
-        progress.complete("a", true, Duration::from_millis(10), None);
-        assert_eq!(progress.unfinished(), vec!["b".to_string()]);
-        progress.finish();
-        assert!(progress.unfinished().is_empty());
+            progress.begin(names(&["local"]));
+            progress.fail("invalid MCP config");
+            assert_eq!(
+                progress.snapshot().tip().as_deref(),
+                Some("MCP unavailable: invalid MCP config")
+            );
+            assert_eq!(
+                progress.snapshot().tip_lines(),
+                vec!["MCP unavailable: invalid MCP config".to_string()]
+            );
+            assert!(progress.is_finished());
+        }
+        {
+            let mut progress = Progress::default();
+            progress.begin(names(&["a", "b"]));
+            progress.connecting("a");
+            progress.complete("a", true, Duration::from_millis(10), None);
+            assert_eq!(progress.unfinished(), vec!["b".to_string()]);
+            progress.finish();
+            assert!(progress.unfinished().is_empty());
+        }
     }
 
     #[test]

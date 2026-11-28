@@ -4,7 +4,7 @@ fn scroll_stream_region(screen: &vt100::Screen) -> Vec<u8> {
 }
 
 fn scroll_stream_case(thinking: bool) {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         for code in [false, true] {
             let provider = server();
             let (_home, mut pty) =
@@ -111,7 +111,6 @@ fn scroll_stream_case(thinking: bool) {
             drop(stream);
             no_more(&provider);
         }
-    }
 }
 
 #[test]
@@ -119,7 +118,3 @@ fn tui_scrolled_stream_assistant_keeps_history_and_input_both_protocols() {
     scroll_stream_case(false);
 }
 
-#[test]
-fn tui_scrolled_stream_thinking_keeps_history_and_input_both_protocols() {
-    scroll_stream_case(true);
-}

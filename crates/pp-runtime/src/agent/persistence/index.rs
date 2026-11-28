@@ -576,343 +576,343 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_index_incremental_appends_partials_and_completion() {
-        let mut fixture = Fixture::new();
-        let id = session(1);
-        let head = header_text(&id, "/project");
-        let first = user("首条 无关键词的介绍");
-        let needle = user("修复模型切换失败 needle_42");
-        let base = format!("{head}{first}{needle}{}", stopped());
-        fixture.write_session(1, &base);
+    fn sqlite_index_incremental_append_inode_replacement_truncation_and_rebuild() {
+        {
+            let mut fixture = Fixture::new();
+            let id = session(1);
+            let head = header_text(&id, "/project");
+            let first = user("首条 无关键词的介绍");
+            let needle = user("修复模型切换失败 needle_42");
+            let base = format!("{head}{first}{needle}{}", stopped());
+            fixture.write_session(1, &base);
 
-        let diagnostics = fixture.sync();
-        assert!(diagnostics.is_empty());
-        assert_eq!(
-            fixture.prompts(&id),
-            vec![
-                (
-                    super::super::tests::encode_log(&head).len() as i64,
-                    "首条 无关键词的介绍".into()
-                ),
-                (
-                    super::super::tests::encode_log(&format!("{head}{first}")).len() as i64,
-                    "修复模型切换失败 needle_42".into()
-                ),
-            ]
-        );
-        assert_eq!(fixture.search("needle_42"), vec![id.clone()]);
-        let summary = fixture.summary(&id);
-        assert!(summary.done);
-        assert_eq!(summary.bytes, fs::metadata(fixture.path(1)).unwrap().len());
+            let diagnostics = fixture.sync();
+            assert!(diagnostics.is_empty());
+            assert_eq!(
+                fixture.prompts(&id),
+                vec![
+                    (
+                        super::super::tests::encode_log(&head).len() as i64,
+                        "首条 无关键词的介绍".into()
+                    ),
+                    (
+                        super::super::tests::encode_log(&format!("{head}{first}")).len() as i64,
+                        "修复模型切换失败 needle_42".into()
+                    ),
+                ]
+            );
+            assert_eq!(fixture.search("needle_42"), vec![id.clone()]);
+            let summary = fixture.summary(&id);
+            assert!(summary.done);
+            assert_eq!(summary.bytes, fs::metadata(fixture.path(1)).unwrap().len());
 
-        // 追加不完整尾行（自定义事件）：不入索引，done=false，不重复。
-        let partial = "{\"type\":\"custom\",\"customType\":\"pp.event\",\"data\":{";
-        fixture.append(1, partial);
-        fixture.sync();
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
-        assert!(!fixture.summary(&id).done);
+            // 追加不完整尾行（自定义事件）：不入索引，done=false，不重复。
+            let partial = "{\"type\":\"custom\",\"customType\":\"pp.event\",\"data\":{";
+            fixture.append(1, partial);
+            fixture.sync();
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
+            assert!(!fixture.summary(&id).done);
 
-        // 尾行补齐：custom 记录不是 user prompt，末尾状态回退到 assistant stop。
-        fixture.append(1, "}}\n");
-        let complete = fs::read(fixture.path(1)).unwrap();
-        fixture.sync();
-        assert_eq!(fs::read(fixture.path(1)).unwrap(), complete);
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
-        assert!(fixture.summary(&id).done);
+            // 尾行补齐：custom 记录不是 user prompt，末尾状态回退到 assistant stop。
+            fixture.append(1, "}}\n");
+            let complete = fs::read(fixture.path(1)).unwrap();
+            fixture.sync();
+            assert_eq!(fs::read(fixture.path(1)).unwrap(), complete);
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
+            assert!(fixture.summary(&id).done);
 
-        // 不完整的 user 尾行：不入索引且 done=false。
-        let open_user =
-            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"补齐前\"}";
-        fixture.append(1, open_user);
-        fixture.sync();
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
-        assert!(fixture.search("补齐前").is_empty());
-        assert!(!fixture.summary(&id).done);
+            // 不完整的 user 尾行：不入索引且 done=false。
+            let open_user =
+                "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"补齐前\"}";
+            fixture.append(1, open_user);
+            fixture.sync();
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
+            assert!(fixture.search("补齐前").is_empty());
+            assert!(!fixture.summary(&id).done);
 
-        // user 尾行补齐：prompt 入索引，最后一条完整记录是 user → done=false。
-        fixture.append(1, "}\n");
-        fixture.sync();
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 3);
-        assert_eq!(fixture.search("补齐前"), vec![id.clone()]);
-        assert!(!fixture.summary(&id).done);
+            // user 尾行补齐：prompt 入索引，最后一条完整记录是 user → done=false。
+            fixture.append(1, "}\n");
+            fixture.sync();
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 3);
+            assert_eq!(fixture.search("补齐前"), vec![id.clone()]);
+            assert!(!fixture.summary(&id).done);
 
-        // 重复同步：fingerprint 未变化只 stat，无重复行，JSONL 字节不变。
-        let before = (
-            fixture.count("SELECT COUNT(*) FROM sessions"),
-            fixture.count("SELECT COUNT(*) FROM session_prompts"),
-        );
-        let bytes = fs::read(fixture.path(1)).unwrap();
-        fixture.sync();
-        fixture.sync();
-        assert_eq!(fs::read(fixture.path(1)).unwrap(), bytes);
-        assert_eq!(
-            before,
-            (
+            // 重复同步：fingerprint 未变化只 stat，无重复行，JSONL 字节不变。
+            let before = (
                 fixture.count("SELECT COUNT(*) FROM sessions"),
-                fixture.count("SELECT COUNT(*) FROM session_prompts")
-            )
-        );
+                fixture.count("SELECT COUNT(*) FROM session_prompts"),
+            );
+            let bytes = fs::read(fixture.path(1)).unwrap();
+            fixture.sync();
+            fixture.sync();
+            assert_eq!(fs::read(fixture.path(1)).unwrap(), bytes);
+            assert_eq!(
+                before,
+                (
+                    fixture.count("SELECT COUNT(*) FROM sessions"),
+                    fixture.count("SELECT COUNT(*) FROM session_prompts")
+                )
+            );
 
-        // bytes 记录当前文件长度。
-        assert_eq!(fixture.summary(&id).bytes, bytes.len() as u64);
-    }
+            // bytes 记录当前文件长度。
+            assert_eq!(fixture.summary(&id).bytes, bytes.len() as u64);
+        }
 
-    #[test]
-    fn sqlite_index_replaces_inode_truncation_deletion_and_missing_dir() {
-        let mut fixture = Fixture::new();
-        let id = session(2);
-        fixture.write_session(
-            2,
-            &format!(
-                "{}{}{}",
-                header_text(&id, "/project"),
-                user("旧的 needle_old 内容"),
-                stopped()
-            ),
-        );
-        fixture
-            .store
-            .append_input(Path::new("/project"), "保留的输入", 1)
-            .unwrap();
-        fixture.sync();
-        assert_eq!(fixture.search("needle_old"), vec![id.clone()]);
-        let old: (i64, i64) = fixture
-            .store
-            .conn
-            .query_row(
-                "SELECT device,inode FROM sessions WHERE session_id=?1",
-                [&id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-
-        // 同路径换 inode：完整替换投影，旧内容不残留。
-        fs::remove_file(fixture.path(2)).unwrap();
-        fixture.write_session(
-            2,
-            &format!(
-                "{}{}{}",
-                header_text(&id, "/project"),
-                user("新的 needle_new 内容"),
-                stopped()
-            ),
-        );
-        fixture.sync();
-        assert!(fixture.search("needle_old").is_empty());
-        assert_eq!(fixture.search("needle_new"), vec![id.clone()]);
-        assert_eq!(fixture.prompts(&id).len(), 1);
-        let new: (i64, i64) = fixture
-            .store
-            .conn
-            .query_row(
-                "SELECT device,inode FROM sessions WHERE session_id=?1",
-                [&id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_ne!(old, new);
-
-        // 截短：截掉的内容不再可搜。
-        fixture.write_session(
-            2,
-            &format!("{}{}", header_text(&id, "/project"), user("截短后的内容")),
-        );
-        fixture.sync();
-        assert!(fixture.search("needle_new").is_empty());
-        assert_eq!(fixture.prompts(&id).len(), 1);
-
-        // 外部删除文件：派生行移除，input_history 保留。
-        fs::remove_file(fixture.path(2)).unwrap();
-        fixture.sync();
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 0);
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM prompt_fts"), 0);
-
-        // 目录整体缺失（成功判定）：清空派生行；input_history 仍保留。
-        let other = session(3);
-        fixture.write_session(
-            3,
-            &format!(
-                "{}{}",
-                header_text(&other, "/project"),
-                user("needle_dir_gone")
-            ),
-        );
-        fixture.sync();
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 1);
-        fs::remove_dir_all(&fixture.dir).unwrap();
-        assert!(fixture.sync().is_empty());
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 0);
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
-    }
-
-    #[test]
-    fn sqlite_index_rebuild_preserves_inputs_and_bytes() {
-        let mut fixture = Fixture::new();
-        let id = session(4);
-        fixture.write_session(
-            4,
-            &format!(
-                "{}{}{}",
-                header_text(&id, "/project"),
-                user("重建 needle_rebuild"),
-                stopped()
-            ),
-        );
-        fixture
-            .store
-            .append_input(Path::new("/project"), "原始输入保留", 1)
-            .unwrap();
-        fixture.sync();
-        let bytes = fs::read(fixture.path(4)).unwrap();
-
-        fixture.store.rebuild_sessions(&fixture.dir).unwrap();
-        assert_eq!(fixture.search("needle_rebuild"), vec![id.clone()]);
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
-        assert_eq!(fs::read(fixture.path(4)).unwrap(), bytes);
-    }
-
-    #[test]
-    fn sqlite_index_reports_corrupt_sources_with_sanitized_diagnostics() {
-        let mut fixture = Fixture::new();
-        let good = session(5);
-        fixture.write_session(
-            5,
-            &format!(
-                "{}{}{}",
-                header_text(&good, "/project"),
-                user("完好的 needle_good"),
-                stopped()
-            ),
-        );
-        // 坏 header。
-        let bad = session(6);
-        fixture.write_session(6, "bad header\n");
-        // 首条 user 前损坏：整个文件无效。
-        let pre = session(7);
-        fixture.write_session(
-            7,
-            &format!(
-                "{}broken before user\n{}",
-                header_text(&pre, "/project"),
-                user("needle_pre")
-            ),
-        );
-        // 首条 user 后损坏：保留有效前缀，done=false。
-        let post = session(8);
-        fixture.write_session(
-            8,
-            &format!(
-                "{}{}broken after user\n{}{}",
-                header_text(&post, "/project"),
-                user("有效前缀 needle_post"),
-                user("第二条"),
-                stopped()
-            ),
-        );
-        // 符号链接不是普通会话文件。
-        let link = session(9);
-        std::os::unix::fs::symlink(fixture.path(5), fixture.dir.join(format!("{link}.jsonl")))
-            .unwrap();
-
-        let diagnostics = fixture.sync();
-        assert_eq!(fixture.search("needle_good"), vec![good.clone()]);
-        assert!(fixture.search("needle_pre").is_empty());
-        assert_eq!(fixture.search("needle_post"), vec![post.clone()]);
-        let summary = fixture.summary(&post);
-        assert!(!summary.done);
-        // 停止在坏行前：坏行之后的第二条 user 未入索引。
-        assert_eq!(fixture.prompts(&post).len(), 1);
-        assert_eq!(diagnostics.len(), 4);
-        assert!(
-            diagnostics
-                .iter()
-                .all(|d| d.starts_with("2026-10-17T01-02-03-"))
-        );
-        assert!(diagnostics.iter().all(|d| !d.contains("needle")
-            && !d.contains("bad header")
-            && !d.contains("broken")
-            && !d.contains("有效前缀")));
-        // 修复坏 header 后重新同步：恢复索引，诊断消失。
-        fixture.write_session(
-            6,
-            &format!(
-                "{}{}{}",
-                header_text(&bad, "/project"),
-                user("修复后 needle_fixed"),
-                stopped()
-            ),
-        );
-        assert!(
+        {
+            let mut fixture = Fixture::new();
+            let id = session(2);
+            fixture.write_session(
+                2,
+                &format!(
+                    "{}{}{}",
+                    header_text(&id, "/project"),
+                    user("旧的 needle_old 内容"),
+                    stopped()
+                ),
+            );
             fixture
-                .sync()
-                .iter()
-                .all(|diagnostic| !diagnostic.starts_with(&bad))
-        );
-        assert_eq!(fixture.search("needle_fixed"), vec![bad.clone()]);
+                .store
+                .append_input(Path::new("/project"), "保留的输入", 1)
+                .unwrap();
+            fixture.sync();
+            assert_eq!(fixture.search("needle_old"), vec![id.clone()]);
+            let old: (i64, i64) = fixture
+                .store
+                .conn
+                .query_row(
+                    "SELECT device,inode FROM sessions WHERE session_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+
+            // 同路径换 inode：完整替换投影，旧内容不残留。
+            fs::remove_file(fixture.path(2)).unwrap();
+            fixture.write_session(
+                2,
+                &format!(
+                    "{}{}{}",
+                    header_text(&id, "/project"),
+                    user("新的 needle_new 内容"),
+                    stopped()
+                ),
+            );
+            fixture.sync();
+            assert!(fixture.search("needle_old").is_empty());
+            assert_eq!(fixture.search("needle_new"), vec![id.clone()]);
+            assert_eq!(fixture.prompts(&id).len(), 1);
+            let new: (i64, i64) = fixture
+                .store
+                .conn
+                .query_row(
+                    "SELECT device,inode FROM sessions WHERE session_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_ne!(old, new);
+
+            // 截短：截掉的内容不再可搜。
+            fixture.write_session(
+                2,
+                &format!("{}{}", header_text(&id, "/project"), user("截短后的内容")),
+            );
+            fixture.sync();
+            assert!(fixture.search("needle_new").is_empty());
+            assert_eq!(fixture.prompts(&id).len(), 1);
+
+            // 外部删除文件：派生行移除，input_history 保留。
+            fs::remove_file(fixture.path(2)).unwrap();
+            fixture.sync();
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 0);
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM prompt_fts"), 0);
+
+            // 目录整体缺失（成功判定）：清空派生行；input_history 仍保留。
+            let other = session(3);
+            fixture.write_session(
+                3,
+                &format!(
+                    "{}{}",
+                    header_text(&other, "/project"),
+                    user("needle_dir_gone")
+                ),
+            );
+            fixture.sync();
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 1);
+            fs::remove_dir_all(&fixture.dir).unwrap();
+            assert!(fixture.sync().is_empty());
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 0);
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
+        }
+
+        {
+            let mut fixture = Fixture::new();
+            let id = session(4);
+            fixture.write_session(
+                4,
+                &format!(
+                    "{}{}{}",
+                    header_text(&id, "/project"),
+                    user("重建 needle_rebuild"),
+                    stopped()
+                ),
+            );
+            fixture
+                .store
+                .append_input(Path::new("/project"), "原始输入保留", 1)
+                .unwrap();
+            fixture.sync();
+            let bytes = fs::read(fixture.path(4)).unwrap();
+
+            fixture.store.rebuild_sessions(&fixture.dir).unwrap();
+            assert_eq!(fixture.search("needle_rebuild"), vec![id.clone()]);
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
+            assert_eq!(fs::read(fixture.path(4)).unwrap(), bytes);
+        }
     }
 
     #[test]
-    fn sqlite_index_searches_held_locks_and_honours_cancellation() {
-        let mut fixture = Fixture::new();
-        let id = session(10);
-        fixture.write_session(
-            10,
-            &format!(
+    fn sqlite_index_corruption_diagnostics_locks_symlinks_and_cancellation() {
+        {
+            let mut fixture = Fixture::new();
+            let good = session(5);
+            fixture.write_session(
+                5,
+                &format!(
+                    "{}{}{}",
+                    header_text(&good, "/project"),
+                    user("完好的 needle_good"),
+                    stopped()
+                ),
+            );
+            // 坏 header。
+            let bad = session(6);
+            fixture.write_session(6, "bad header\n");
+            // 首条 user 前损坏：整个文件无效。
+            let pre = session(7);
+            fixture.write_session(
+                7,
+                &format!(
+                    "{}broken before user\n{}",
+                    header_text(&pre, "/project"),
+                    user("needle_pre")
+                ),
+            );
+            // 首条 user 后损坏：保留有效前缀，done=false。
+            let post = session(8);
+            fixture.write_session(
+                8,
+                &format!(
+                    "{}{}broken after user\n{}{}",
+                    header_text(&post, "/project"),
+                    user("有效前缀 needle_post"),
+                    user("第二条"),
+                    stopped()
+                ),
+            );
+            // 符号链接不是普通会话文件。
+            let link = session(9);
+            std::os::unix::fs::symlink(fixture.path(5), fixture.dir.join(format!("{link}.jsonl")))
+                .unwrap();
+
+            let diagnostics = fixture.sync();
+            assert_eq!(fixture.search("needle_good"), vec![good.clone()]);
+            assert!(fixture.search("needle_pre").is_empty());
+            assert_eq!(fixture.search("needle_post"), vec![post.clone()]);
+            let summary = fixture.summary(&post);
+            assert!(!summary.done);
+            // 停止在坏行前：坏行之后的第二条 user 未入索引。
+            assert_eq!(fixture.prompts(&post).len(), 1);
+            assert_eq!(diagnostics.len(), 4);
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.starts_with("2026-10-17T01-02-03-"))
+            );
+            assert!(diagnostics.iter().all(|d| !d.contains("needle")
+                && !d.contains("bad header")
+                && !d.contains("broken")
+                && !d.contains("有效前缀")));
+            // 修复坏 header 后重新同步：恢复索引，诊断消失。
+            fixture.write_session(
+                6,
+                &format!(
+                    "{}{}{}",
+                    header_text(&bad, "/project"),
+                    user("修复后 needle_fixed"),
+                    stopped()
+                ),
+            );
+            assert!(
+                fixture
+                    .sync()
+                    .iter()
+                    .all(|diagnostic| !diagnostic.starts_with(&bad))
+            );
+            assert_eq!(fixture.search("needle_fixed"), vec![bad.clone()]);
+        }
+
+        {
+            let mut fixture = Fixture::new();
+            let id = session(10);
+            fixture.write_session(
+                10,
+                &format!(
+                    "{}{}{}",
+                    header_text(&id, "/project"),
+                    user("持锁 needle_locked"),
+                    stopped()
+                ),
+            );
+            // 打开中的会话只读索引：持有 session 锁仍可搜索，但不获取锁。
+            let lock = SessionLock::acquire(&fixture.dir.join(".locks"), &id).unwrap();
+            fixture.sync();
+            assert_eq!(fixture.search("needle_locked"), vec![id.clone()]);
+            drop(lock);
+
+            // 已取消的同步立即返回 Cancelled，已提交的投影保留。
+            let token = CancellationToken::new();
+            token.cancel();
+            let error = fixture
+                .store
+                .sync_sessions(&fixture.dir, &token)
+                .unwrap_err();
+            assert!(error.is::<Cancelled>());
+            assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 1);
+            assert_eq!(fixture.search("needle_locked"), vec![id.clone()]);
+        }
+
+        {
+            let mut fixture = Fixture::new();
+            let target = session(11);
+            let replaced = session(12);
+            let content = format!(
                 "{}{}{}",
-                header_text(&id, "/project"),
-                user("持锁 needle_locked"),
+                header_text(&target, "/project"),
+                user("目标 needle_target"),
                 stopped()
-            ),
-        );
-        // 打开中的会话只读索引：持有 session 锁仍可搜索，但不获取锁。
-        let lock = SessionLock::acquire(&fixture.dir.join(".locks"), &id).unwrap();
-        fixture.sync();
-        assert_eq!(fixture.search("needle_locked"), vec![id.clone()]);
-        drop(lock);
+            );
+            fixture.write_session(11, &content);
+            fixture.write_session(
+                12,
+                &format!(
+                    "{}{}{}",
+                    header_text(&replaced, "/project"),
+                    user("待替换 needle_replaced"),
+                    stopped()
+                ),
+            );
+            assert!(fixture.sync().is_empty());
+            assert_eq!(fixture.search("needle_replaced"), vec![replaced.clone()]);
 
-        // 已取消的同步立即返回 Cancelled，已提交的投影保留。
-        let token = CancellationToken::new();
-        token.cancel();
-        let error = fixture
-            .store
-            .sync_sessions(&fixture.dir, &token)
-            .unwrap_err();
-        assert!(error.is::<Cancelled>());
-        assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 1);
-        assert_eq!(fixture.search("needle_locked"), vec![id.clone()]);
-    }
+            fs::remove_file(fixture.path(12)).unwrap();
+            std::os::unix::fs::symlink(fixture.path(11), fixture.path(12)).unwrap();
 
-    #[test]
-    fn sqlite_index_rejects_indexed_session_replaced_with_symlink() {
-        let mut fixture = Fixture::new();
-        let target = session(11);
-        let replaced = session(12);
-        let content = format!(
-            "{}{}{}",
-            header_text(&target, "/project"),
-            user("目标 needle_target"),
-            stopped()
-        );
-        fixture.write_session(11, &content);
-        fixture.write_session(
-            12,
-            &format!(
-                "{}{}{}",
-                header_text(&replaced, "/project"),
-                user("待替换 needle_replaced"),
-                stopped()
-            ),
-        );
-        assert!(fixture.sync().is_empty());
-        assert_eq!(fixture.search("needle_replaced"), vec![replaced.clone()]);
-
-        fs::remove_file(fixture.path(12)).unwrap();
-        std::os::unix::fs::symlink(fixture.path(11), fixture.path(12)).unwrap();
-
-        let diagnostics = fixture.sync();
-        assert!(diagnostics.iter().any(|d| d.starts_with(&replaced)));
-        assert!(fixture.search("needle_replaced").is_empty());
-        assert_eq!(fixture.search("needle_target"), vec![target]);
+            let diagnostics = fixture.sync();
+            assert!(diagnostics.iter().any(|d| d.starts_with(&replaced)));
+            assert!(fixture.search("needle_replaced").is_empty());
+            assert_eq!(fixture.search("needle_target"), vec![target]);
+        }
     }
 }

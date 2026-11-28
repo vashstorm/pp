@@ -515,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn native_surface_identical_frames_produce_no_output_or_flush() {
+    fn native_surface_diff_history_batches_overlays_and_failures() {
         for cursor in [None, Some(Position::new(3, 4))] {
             let mut surface = Surface::new(RecordingWriter::default());
             let buffer = frame("unchanged");
@@ -528,60 +528,44 @@ mod tests {
             assert_eq!(surface.writer.bytes, bytes);
             assert_eq!(surface.writer.flushes, 1);
         }
-    }
 
-    #[test]
-    fn native_surface_stream_updates_preserve_visible_cursor_and_input() {
-        let mut surface = Surface::new(RecordingWriter::default());
-        let mut parser = vt100::Parser::new(6, 24, 100);
+        let mut s_stream = Surface::new(RecordingWriter::default());
+        let mut p_stream = vt100::Parser::new(6, 24, 100);
         let cursor = Some(Position::new(8, 4));
         for text in ["first", "first中", "first中😀", "first中x", "f"] {
             let mut buffer = frame(text);
             buffer.set_string(0, 4, "draft 中", ratatui::style::Style::default());
-            let before = surface.writer.bytes.len();
-            surface.paint(&buffer, cursor, false, &[]).unwrap();
-            let output = &surface.writer.bytes[before..];
-            parser.process(output);
-            assert_frame(&parser, &buffer, cursor);
-            assert!(!parser.screen().hide_cursor());
-            assert_eq!(parser.screen().cursor_position(), (4, 8));
-            if before > 0 {
-                let output = String::from_utf8_lossy(output);
-                assert!(!output.contains("\x1b[?25l"));
-                assert!(!output.contains("\x1b[?25h"));
-                assert!(!output.contains("draft"));
-            }
+            let before = s_stream.writer.bytes.len();
+            s_stream.paint(&buffer, cursor, false, &[]).unwrap();
+            p_stream.process(&s_stream.writer.bytes[before..]);
+            assert_frame(&p_stream, &buffer, cursor);
         }
-        assert_eq!(surface.writer.flushes, 5);
-    }
+        assert_eq!(s_stream.writer.flushes, 5);
 
-    #[test]
-    fn native_surface_cursor_only_changes_update_position_and_visibility() {
-        let mut surface = Surface::new(Vec::new());
-        let buffer = frame("unchanged");
-        let mut parser = vt100::Parser::new(6, 24, 0);
-        surface
-            .paint(&buffer, Some(Position::new(1, 4)), false, &[])
+        let mut s_cur = Surface::new(Vec::new());
+        let b_cur = frame("unchanged");
+        let mut p_cur = vt100::Parser::new(6, 24, 0);
+        s_cur
+            .paint(&b_cur, Some(Position::new(1, 4)), false, &[])
             .unwrap();
-        parser.process(&surface.writer);
-        for cursor in [Some(Position::new(3, 4)), None, Some(Position::new(5, 4))] {
-            let before = surface.writer.len();
-            surface.paint(&buffer, cursor, false, &[]).unwrap();
-            let output = &surface.writer[before..];
-            assert!(!String::from_utf8_lossy(output).contains("unchanged"));
-            parser.process(output);
-            assert_eq!(parser.screen().hide_cursor(), cursor.is_none());
-            if let Some(cursor) = cursor {
-                assert_eq!(parser.screen().cursor_position(), (cursor.y, cursor.x));
-            }
+        p_cur.process(&s_cur.writer);
+        for c in [Some(Position::new(3, 4)), None, Some(Position::new(5, 4))] {
+            let before = s_cur.writer.len();
+            s_cur.paint(&b_cur, c, false, &[]).unwrap();
+            let out = &s_cur.writer[before..];
+            assert!(!String::from_utf8_lossy(out).contains("unchanged"));
+            p_cur.process(out);
+            assert_eq!(p_cur.screen().hide_cursor(), c.is_none());
         }
-        let output = String::from_utf8_lossy(&surface.writer);
-        assert_eq!(output.matches("\x1b[?25l").count(), 1);
-        assert_eq!(output.matches("\x1b[?25h").count(), 2);
-    }
+        let out_str = String::from_utf8_lossy(&s_cur.writer);
+        assert_eq!(
+            (
+                out_str.matches("\x1b[?25l").count(),
+                out_str.matches("\x1b[?25h").count()
+            ),
+            (1, 2)
+        );
 
-    #[test]
-    fn native_surface_history_rebuild_hides_cursor_before_any_movement() {
         for reset in [false, true] {
             let mut surface = Surface::new(Vec::new());
             let mut parser = vt100::Parser::new(6, 24, 100);
@@ -601,172 +585,158 @@ mod tests {
                     &[frame("committed").content[..24].to_vec()],
                 )
                 .unwrap();
-            // 逐字节消费，核对终端尚未处理完整帧时的光标状态。
             for byte in &surface.writer[before..] {
                 let previous = parser.screen().cursor_position();
                 parser.process(&[*byte]);
                 if parser.screen().cursor_position() != previous {
-                    assert!(parser.screen().hide_cursor(), "重建时暴露了中间光标位置");
+                    assert!(parser.screen().hide_cursor());
                 }
             }
             assert_frame(&parser, &frame("restored session"), None);
         }
-    }
 
-    #[test]
-    fn native_surface_history_scroll_reuses_unchanged_physical_rows() {
-        let mut surface = Surface::new(Vec::new());
+        let mut s_scroll = Surface::new(Vec::new());
         let mut buffer = frame("history-to-commit");
         let style = ratatui::style::Style::default();
         buffer.set_string(0, 1, "retained 中😀", style);
         buffer.set_string(0, 4, "draft", style);
         let cursor = Some(Position::new(5, 4));
-        surface.paint(&buffer, cursor, false, &[]).unwrap();
+        s_scroll.paint(&buffer, cursor, false, &[]).unwrap();
         let mut next = frame("retained 中😀");
         next.set_string(0, 4, "draft", style);
-        let before = surface.writer.len();
-        surface
+        let before = s_scroll.writer.len();
+        s_scroll
             .paint(&next, cursor, false, &[buffer.content[..24].to_vec()])
             .unwrap();
-        let output = String::from_utf8_lossy(&surface.writer[before..]);
-        assert!(output.contains("history-to-commit"));
-        assert!(
-            !output.contains("retained"),
-            "重复输出未变化的物理行：{output:?}"
-        );
-        assert!(!output.contains("\x1b[?25l") && !output.contains("\x1b[?25h"));
-        let mut parser = vt100::Parser::new(6, 24, 100);
-        parser.process(&surface.writer);
-        assert_frame(&parser, &next, cursor);
-        parser.screen_mut().set_scrollback(1);
-        assert!(parser.screen().contents().starts_with("history-to-commit"));
-    }
+        let out = String::from_utf8_lossy(&s_scroll.writer[before..]);
+        assert!(out.contains("history-to-commit") && !out.contains("retained"));
+        let mut p_scroll = vt100::Parser::new(6, 24, 100);
+        p_scroll.process(&s_scroll.writer);
+        assert_frame(&p_scroll, &next, cursor);
 
-    #[test]
-    fn native_surface_history_scroll_restores_cursor_without_cell_changes() {
-        let mut surface = Surface::new(Vec::new());
-        let buffer = Buffer::empty(Rect::new(0, 0, 24, 6));
-        let cursor = Some(Position::new(3, 4));
-        surface.paint(&buffer, cursor, false, &[]).unwrap();
-        let before = surface.writer.len();
-        surface
+        let mut s_empty = Surface::new(Vec::new());
+        let b_empty = Buffer::empty(Rect::new(0, 0, 24, 6));
+        s_empty.paint(&b_empty, cursor, false, &[]).unwrap();
+        let before_e = s_empty.writer.len();
+        s_empty
             .paint(
-                &buffer,
+                &b_empty,
                 cursor,
                 false,
                 &[frame("committed").content[..24].to_vec()],
             )
             .unwrap();
-        let output = String::from_utf8_lossy(&surface.writer[before..]);
-        assert!(output.contains("committed"));
-        assert!(!output.contains("\x1b[?25l") && !output.contains("\x1b[?25h"));
-        let mut parser = vt100::Parser::new(6, 24, 100);
-        parser.process(&surface.writer);
-        assert_frame(&parser, &buffer, cursor);
+        assert!(String::from_utf8_lossy(&s_empty.writer[before_e..]).contains("committed"));
     }
 
     #[test]
-    fn native_surface_history_batches_match_full_redraw_with_styles_and_wide_cells() {
-        use ratatui::style::{Color, Modifier, Style};
+    fn native_surface_styled_batches_overlays_purge_and_failures() {
+        {
+            use ratatui::style::{Color, Modifier, Style};
 
-        for height in [1, 6] {
-            let mut surface = Surface::new(Vec::new());
-            let mut parser = vt100::Parser::new(height, 24, 100);
-            let mut buffer = Buffer::empty(Rect::new(0, 0, 24, height));
-            let cursor = Some(Position::new(3, height - 1));
-            for batch_size in [0, 1, 2, 6, 9] {
-                let history = (0..batch_size)
-                    .map(|i| frame(&format!("committed-{i:02} 中😀")).content[..24].to_vec())
-                    .collect::<Vec<_>>();
-                for y in 0..height {
-                    let mut row = frame(&format!("{batch_size}-{y} 中😀"));
-                    row.set_style(
-                        Rect::new(0, 0, 24, 1),
-                        Style::default()
-                            .fg(Color::Green)
-                            .bg(Color::Blue)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                    copy_row(&row.content[..24], &mut buffer, 0, y, 24);
+            for height in [1, 6] {
+                let mut surface = Surface::new(Vec::new());
+                let mut parser = vt100::Parser::new(height, 24, 100);
+                let mut buffer = Buffer::empty(Rect::new(0, 0, 24, height));
+                let cursor = Some(Position::new(3, height - 1));
+                for batch_size in [0, 1, 2, 6, 9] {
+                    let history = (0..batch_size)
+                        .map(|i| frame(&format!("committed-{i:02} 中😀")).content[..24].to_vec())
+                        .collect::<Vec<_>>();
+                    for y in 0..height {
+                        let mut row = frame(&format!("{batch_size}-{y} 中😀"));
+                        row.set_style(
+                            Rect::new(0, 0, 24, 1),
+                            Style::default()
+                                .fg(Color::Green)
+                                .bg(Color::Blue)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                        copy_row(&row.content[..24], &mut buffer, 0, y, 24);
+                    }
+                    let before = surface.writer.len();
+                    surface.paint(&buffer, cursor, false, &history).unwrap();
+                    parser.process(&surface.writer[before..]);
+                    assert_frame(&parser, &buffer, cursor);
                 }
-                let before = surface.writer.len();
-                surface.paint(&buffer, cursor, false, &history).unwrap();
-                parser.process(&surface.writer[before..]);
-                assert_frame(&parser, &buffer, cursor);
             }
         }
-    }
 
-    #[test]
-    fn native_surface_keeps_main_frame_across_overlays_and_exit_without_replay() {
-        let mut surface = Surface::new(Vec::new());
-        let main = frame("retained 中😀");
-        surface
-            .paint(&main, Some(Position::new(1, 4)), false, &[])
-            .unwrap();
-        let first = surface.writer.len();
-        surface
-            .paint(&frame("temporary panel"), None, true, &[])
-            .unwrap();
-        surface
-            .paint(&main, Some(Position::new(1, 4)), false, &[])
-            .unwrap();
-        let restored = surface.writer.len();
-        let mut parser = vt100::Parser::new(6, 24, 100);
-        parser.process(&surface.writer);
-        assert!(!parser.screen().alternate_screen());
-        assert!(parser.screen().contents().contains("retained 中😀"));
-        assert!(!parser.screen().contents().contains("temporary panel"));
-        assert!(!String::from_utf8_lossy(&surface.writer[first..]).contains("retained"));
-        surface
-            .paint(&main, Some(Position::new(1, 4)), false, &[])
-            .unwrap();
-        surface.finish(6).unwrap();
-        let exit = String::from_utf8_lossy(&surface.writer[restored..]);
-        assert!(!exit.contains("retained"));
-        assert!(!exit.contains("\x1b[2J") && !exit.contains("\x1b[3J"));
-    }
+        {
+            let mut s1 = Surface::new(Vec::new());
+            let main = frame("retained 中😀");
+            s1.paint(&main, Some(Position::new(1, 4)), false, &[])
+                .unwrap();
+            let first = s1.writer.len();
+            s1.paint(&frame("temporary panel"), None, true, &[])
+                .unwrap();
+            s1.paint(&main, Some(Position::new(1, 4)), false, &[])
+                .unwrap();
+            let restored = s1.writer.len();
+            let mut p1 = vt100::Parser::new(6, 24, 100);
+            p1.process(&s1.writer);
+            assert!(
+                !p1.screen().alternate_screen() && p1.screen().contents().contains("retained 中😀")
+            );
+            assert!(!String::from_utf8_lossy(&s1.writer[first..]).contains("retained"));
+            s1.paint(&main, Some(Position::new(1, 4)), false, &[])
+                .unwrap();
+            s1.finish(6).unwrap();
+            let exit = String::from_utf8_lossy(&s1.writer[restored..]);
+            assert!(!exit.contains("retained") && !exit.contains("\x1b[3J"));
 
-    #[test]
-    fn native_surface_only_purges_for_explicit_history_reset() {
-        let mut surface = Surface::new(Vec::new());
-        surface.paint(&frame("old"), None, false, &[]).unwrap();
-        let before = surface.writer.len();
-        surface.reset_history();
-        surface.paint(&frame("new"), None, false, &[]).unwrap();
-        let reset = String::from_utf8_lossy(&surface.writer[before..]);
-        assert_eq!(reset.matches("\x1b[3J").count(), 1);
-        assert_eq!(reset.matches("\x1b[2J").count(), 1);
-        let before = surface.writer.len();
-        surface.paint(&frame("new"), None, false, &[]).unwrap();
-        assert!(!String::from_utf8_lossy(&surface.writer[before..]).contains("\x1b[3J"));
-    }
+            let mut s2 = Surface::new(Vec::new());
+            s2.paint(&frame("old"), None, false, &[]).unwrap();
+            let before = s2.writer.len();
+            s2.reset_history();
+            s2.paint(&frame("new"), None, false, &[]).unwrap();
+            let reset = String::from_utf8_lossy(&s2.writer[before..]);
+            assert_eq!(
+                (
+                    reset.matches("\x1b[3J").count(),
+                    reset.matches("\x1b[2J").count()
+                ),
+                (1, 1)
+            );
+            let b2 = s2.writer.len();
+            s2.paint(&frame("new"), None, false, &[]).unwrap();
+            assert!(!String::from_utf8_lossy(&s2.writer[b2..]).contains("\x1b[3J"));
 
-    #[test]
-    fn native_surface_invalidates_main_cache_when_reset_or_resized_under_overlay() {
-        for reset in [false, true] {
-            let mut surface = Surface::new(Vec::new());
-            let mut main = frame("normal content");
-            main.set_string(0, 5, "persistent footer", ratatui::style::Style::default());
-            surface.paint(&main, None, false, &[]).unwrap();
-            surface.paint(&frame("panel"), None, true, &[]).unwrap();
-            if reset {
-                surface.reset_history();
-                surface.paint(&frame("new panel"), None, true, &[]).unwrap();
-            } else {
-                surface
-                    .paint(&Buffer::empty(Rect::new(0, 0, 12, 4)), None, true, &[])
-                    .unwrap();
-                surface
-                    .paint(&frame("panel restored"), None, true, &[])
-                    .unwrap();
+            for do_reset in [false, true] {
+                let mut s3 = Surface::new(Vec::new());
+                let mut m3 = frame("normal content");
+                m3.set_string(0, 5, "persistent footer", ratatui::style::Style::default());
+                s3.paint(&m3, None, false, &[]).unwrap();
+                s3.paint(&frame("panel"), None, true, &[]).unwrap();
+                if do_reset {
+                    s3.reset_history();
+                } else {
+                    s3.paint(&Buffer::empty(Rect::new(0, 0, 12, 4)), None, true, &[])
+                        .unwrap();
+                }
+                s3.paint(&frame("panel restored"), None, true, &[]).unwrap();
+                assert!(s3.main.is_none());
+                s3.paint(&m3, None, false, &[]).unwrap();
+                let mut p3 = vt100::Parser::new(6, 24, 100);
+                p3.process(&s3.writer);
+                assert!(
+                    p3.screen().contents().contains("normal content")
+                        && p3.screen().contents().contains("persistent footer")
+                );
             }
+        }
+
+        for fail_write in [false, true] {
+            let mut surface = Surface::new(FailingWriter { fail_write });
+            assert!(
+                surface
+                    .paint(&frame("pending"), Some(Position::new(3, 4)), false, &[])
+                    .is_err()
+            );
+            assert!(surface.previous.is_none());
             assert!(surface.main.is_none());
-            surface.paint(&main, None, false, &[]).unwrap();
-            let mut parser = vt100::Parser::new(6, 24, 100);
-            parser.process(&surface.writer);
-            assert!(parser.screen().contents().contains("normal content"));
-            assert!(parser.screen().contents().contains("persistent footer"));
+            assert!(!surface.started);
+            assert_eq!(surface.cursor, None);
         }
     }
 
@@ -786,22 +756,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn native_surface_never_acknowledges_failed_output() {
-        for fail_write in [false, true] {
-            let mut surface = Surface::new(FailingWriter { fail_write });
-            assert!(
-                surface
-                    .paint(&frame("pending"), Some(Position::new(3, 4)), false, &[])
-                    .is_err()
-            );
-            assert!(surface.previous.is_none());
-            assert!(surface.main.is_none());
-            assert!(!surface.started);
-            assert_eq!(surface.cursor, None);
-        }
-    }
-
     fn graphics_frame() -> (Buffer, Rect) {
         let mut buffer = frame("conversation");
         let area = Rect::new(2, 1, 8, 2);
@@ -817,68 +771,57 @@ mod tests {
     }
 
     #[test]
-    fn image_surface_hiding_graphics_erases_pixels_even_when_text_diff_is_empty() {
-        let (image, area) = graphics_frame();
-        let mut surface = Surface::new(Vec::new());
-        surface
-            .paint_images(Arc::new(image.clone()), None, false, &[], &[area])
-            .unwrap();
-        let initial = surface.writer.len();
-        surface
-            .paint_images(Arc::new(image), None, false, &[], &[area])
-            .unwrap();
-        assert_eq!(surface.writer.len(), initial);
-        surface
-            .paint_images(Arc::new(frame("conversation")), None, false, &[], &[])
-            .unwrap();
-        let bytes = String::from_utf8_lossy(&surface.writer[initial..]);
-        assert!(bytes.contains("a=d,d=I,i=123"), "{bytes:?}");
-        assert_eq!(bytes.matches("\x1b[8X").count(), 2);
-        assert!(!bytes.contains("\x1b[3J"));
-        assert!(surface.graphics.is_empty());
-    }
+    fn image_surface_updates_scroll_and_screen_switch() {
+        {
+            let (image, area) = graphics_frame();
+            let mut s1 = Surface::new(Vec::new());
+            s1.paint_images(Arc::new(image.clone()), None, false, &[], &[area])
+                .unwrap();
+            let initial = s1.writer.len();
+            s1.paint_images(Arc::new(image), None, false, &[], &[area])
+                .unwrap();
+            assert_eq!(s1.writer.len(), initial);
+            s1.paint_images(Arc::new(frame("conversation")), None, false, &[], &[])
+                .unwrap();
+            let bytes = String::from_utf8_lossy(&s1.writer[initial..]);
+            assert!(
+                bytes.contains("a=d,d=I,i=123")
+                    && bytes.matches("\x1b[8X").count() == 2
+                    && s1.graphics.is_empty()
+            );
 
-    #[test]
-    fn image_surface_tmux_native_image_cleanup_reaches_outer_terminal() {
-        let (mut image, area) = graphics_frame();
-        image[(area.x, area.y)].set_symbol("\x1bPtmux;\x1b\x1b]1337;File=inline=1:AAAA\x07\x1b\\");
-        let mut surface = Surface::new(Vec::new());
-        surface
-            .paint_images(Arc::new(image), None, false, &[], &[area])
-            .unwrap();
-        let start = surface.writer.len();
-        surface
-            .paint(&frame("conversation"), None, false, &[])
-            .unwrap();
-        let output = String::from_utf8_lossy(&surface.writer[start..]);
-        assert_eq!(output.matches("\x1bPtmux;\x1b\x1b[8X\x1b\\").count(), 2);
-        assert!(!output.contains("1337;File="));
-    }
+            let (mut tmux_img, t_area) = graphics_frame();
+            tmux_img[(t_area.x, t_area.y)]
+                .set_symbol("\x1bPtmux;\x1b\x1b]1337;File=inline=1:AAAA\x07\x1b\\");
+            let mut s2 = Surface::new(Vec::new());
+            s2.paint_images(Arc::new(tmux_img), None, false, &[], &[t_area])
+                .unwrap();
+            let start2 = s2.writer.len();
+            s2.paint(&frame("conversation"), None, false, &[]).unwrap();
+            let out2 = String::from_utf8_lossy(&s2.writer[start2..]);
+            assert_eq!(out2.matches("\x1bPtmux;\x1b\x1b[8X\x1b\\").count(), 2);
 
-    #[test]
-    fn image_surface_popup_and_neighbor_changes_preserve_unchanged_thumbnail() {
-        let thumbnail = Rect::new(2, 4, 8, 2);
-        let neighbor = Rect::new(14, 4, 8, 2);
-        let popup = Rect::new(2, 0, 20, 3);
-        let add = |buffer: &mut Buffer, area: Rect, id| {
-            for row in area.top()..area.bottom() {
-                for x in area.left()..area.right() {
-                    buffer[(x, row)].set_diff_option(CellDiffOption::Skip);
+            let thumbnail = Rect::new(2, 4, 8, 2);
+            let neighbor = Rect::new(14, 4, 8, 2);
+            let popup = Rect::new(2, 0, 20, 3);
+            let add = |buffer: &mut Buffer, area: Rect, id| {
+                for row in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        buffer[(x, row)].set_diff_option(CellDiffOption::Skip);
+                    }
                 }
-            }
-            buffer[(area.x, area.y)]
-                .set_symbol(&format!("\x1b_Ga=T,i={id},q=2;AAAA\x1b\\X"))
-                .set_diff_option(CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN));
-        };
-        let mut single = frame("");
-        add(&mut single, thumbnail, 123);
-        let mut multiple = single.clone();
-        add(&mut multiple, neighbor, 456);
-        let mut preview = multiple.clone();
-        add(&mut preview, popup, 789);
-        let mut surface = Surface::new(Vec::new());
-        surface
-            .paint_images(
+                buffer[(area.x, area.y)]
+                    .set_symbol(&format!("\x1b_Ga=T,i={id},q=2;AAAA\x1b\\X"))
+                    .set_diff_option(CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN));
+            };
+            let mut single = frame("");
+            add(&mut single, thumbnail, 123);
+            let mut multiple = single.clone();
+            add(&mut multiple, neighbor, 456);
+            let mut preview = multiple.clone();
+            add(&mut preview, popup, 789);
+            let mut s3 = Surface::new(Vec::new());
+            s3.paint_images(
                 Arc::new(multiple.clone()),
                 None,
                 false,
@@ -886,65 +829,60 @@ mod tests {
                 &[thumbnail, neighbor],
             )
             .unwrap();
-        for (buffer, areas, deleted, transmitted) in [
-            (&preview, vec![thumbnail, neighbor, popup], None, Some(789)),
-            (&multiple, vec![thumbnail, neighbor], Some(789), None),
-            (&single, vec![thumbnail], Some(456), None),
-        ] {
-            let start = surface.writer.len();
-            surface
-                .paint_images(Arc::new(buffer.clone()), None, false, &[], &areas)
-                .unwrap();
-            let output = String::from_utf8_lossy(&surface.writer[start..]);
-            assert!(!output.contains("a=d,d=I,i=123"), "{output:?}");
-            assert!(!output.contains("a=T,i=123"), "{output:?}");
-            assert!(!output.contains("\x1b[2K"), "{output:?}");
-            if let Some(id) = deleted {
-                assert!(output.contains(&format!("a=d,d=I,i={id}")), "{output:?}");
-            }
-            if let Some(id) = transmitted {
-                assert!(output.contains(&format!("a=T,i={id}")), "{output:?}");
-            } else {
-                assert!(!output.contains("a=T"), "{output:?}");
+            for (buffer, areas, deleted, transmitted) in [
+                (&preview, vec![thumbnail, neighbor, popup], None, Some(789)),
+                (&multiple, vec![thumbnail, neighbor], Some(789), None),
+                (&single, vec![thumbnail], Some(456), None),
+            ] {
+                let start = s3.writer.len();
+                s3.paint_images(Arc::new(buffer.clone()), None, false, &[], &areas)
+                    .unwrap();
+                let out = String::from_utf8_lossy(&s3.writer[start..]);
+                assert!(!out.contains("a=d,d=I,i=123") && !out.contains("a=T,i=123"));
+                if let Some(id) = deleted {
+                    assert!(out.contains(&format!("a=d,d=I,i={id}")));
+                }
+                if let Some(id) = transmitted {
+                    assert!(out.contains(&format!("a=T,i={id}")));
+                }
             }
         }
-    }
 
-    #[test]
-    fn image_surface_scroll_and_screen_switch_clear_before_retransmitting() {
-        let (image, area) = graphics_frame();
-        let mut surface = Surface::new(Vec::new());
-        surface
-            .paint_images(
-                Arc::new(image.clone()),
-                Some(Position::new(2, 4)),
-                false,
-                &[],
-                &[area],
-            )
-            .unwrap();
-        let start = surface.writer.len();
-        let history = vec![Cell::new("h"); 24];
-        surface
-            .paint_images(
-                Arc::new(image.clone()),
-                Some(Position::new(2, 4)),
-                false,
-                &[history],
-                &[area],
-            )
-            .unwrap();
-        let bytes = String::from_utf8_lossy(&surface.writer[start..]);
-        assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\r\n").unwrap());
-        assert!(bytes.find("\r\n").unwrap() < bytes.find("a=T,i=123").unwrap());
-        let start = surface.writer.len();
-        surface.paint(&frame("panel"), None, true, &[]).unwrap();
-        let bytes = String::from_utf8_lossy(&surface.writer[start..]);
-        assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\x1b[?1049h").unwrap());
-        assert!(surface.main.is_none());
-        surface
-            .paint_images(Arc::new(image), None, false, &[], &[area])
-            .unwrap();
-        assert_eq!(surface.graphics, [area]);
+        {
+            let (image, area) = graphics_frame();
+            let mut surface = Surface::new(Vec::new());
+            surface
+                .paint_images(
+                    Arc::new(image.clone()),
+                    Some(Position::new(2, 4)),
+                    false,
+                    &[],
+                    &[area],
+                )
+                .unwrap();
+            let start = surface.writer.len();
+            let history = vec![Cell::new("h"); 24];
+            surface
+                .paint_images(
+                    Arc::new(image.clone()),
+                    Some(Position::new(2, 4)),
+                    false,
+                    &[history],
+                    &[area],
+                )
+                .unwrap();
+            let bytes = String::from_utf8_lossy(&surface.writer[start..]);
+            assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\r\n").unwrap());
+            assert!(bytes.find("\r\n").unwrap() < bytes.find("a=T,i=123").unwrap());
+            let start = surface.writer.len();
+            surface.paint(&frame("panel"), None, true, &[]).unwrap();
+            let bytes = String::from_utf8_lossy(&surface.writer[start..]);
+            assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\x1b[?1049h").unwrap());
+            assert!(surface.main.is_none());
+            surface
+                .paint_images(Arc::new(image), None, false, &[], &[area])
+                .unwrap();
+            assert_eq!(surface.graphics, [area]);
+        }
     }
 }

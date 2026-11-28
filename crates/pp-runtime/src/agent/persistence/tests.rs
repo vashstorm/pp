@@ -14,18 +14,92 @@ use std::sync::atomic::Ordering;
 use std::time::UNIX_EPOCH;
 
 #[test]
-fn wait_native_commit_failure_does_not_acknowledge_background_delivery() {
-    use pp_core::cancellation::CancellationToken;
-    use pp_tools::ToolPolicy;
-    use pp_tools::Tools;
-    for protocol in [Protocol::Completion, Protocol::Response] {
+fn journal_write_creation_corruption_and_lock_boundaries() {
+    {
+        use pp_core::cancellation::CancellationToken;
+        use pp_tools::ToolPolicy;
+        use pp_tools::Tools;
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+            let workflow = WorkflowState::default();
+            let token = CancellationToken::new();
+            let mut session = Session::new(
+                "fixture".into(),
+                protocol,
+                "system".into(),
+                EditMode::Replace,
+            );
+            let metadata = Metadata {
+                role_route: None,
+                cwd: dir.path(),
+                model_reference: "fixture/primary",
+                think_level: ThinkLevel::None,
+                edit_mode: EditMode::Replace,
+                tool_limits: ToolLimits::default(),
+                base_system: "system",
+                prompt_source: None,
+            };
+            let mut journal = SessionJournal::new(dir.path().join("sessions"));
+            journal
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &workflow,
+                    Some("wait test"),
+                    None,
+                )
+                .unwrap();
+            let path = dir
+                .path()
+                .join("sessions")
+                .join(format!("{}.jsonl", journal.id().unwrap()));
+            let execute = |name: &str, args: &str| {
+                tools.execute(
+                    name,
+                    args,
+                    name,
+                    ToolPolicy::Execute {
+                        workflow: &workflow,
+                    },
+                    &token,
+                    &mut |_| {},
+                )
+            };
+            execute(
+                "bash",
+                r#"{"command":"printf 'unacknowledged-output'","mode":"background"}"#,
+            );
+            let result = execute("wait", r#"{"timeout_ms":5000}"#);
+            let value: serde_json::Value = serde_json::from_str(&result.output).unwrap();
+            assert_eq!(
+                value["background_results"][0]["output"],
+                "unacknowledged-output"
+            );
+            journal.use_read_only_file(&path);
+            super::super::append_user_to(&mut session, "force a native append");
+            let committed = journal
+                .commit((&session).into())
+                .and_then(|()| tools.commit_wait_results());
+            assert!(committed.is_err());
+            // 下一批次释放预留后仍能读到同一完成结果，失败提交没有提前确认消费。
+            tools.start_wait_batch();
+            let again: serde_json::Value =
+                serde_json::from_str(&execute("wait", "{}").output).unwrap();
+            assert_eq!(
+                again["background_results"][0]["output"],
+                "unacknowledged-output"
+            );
+        }
+    }
+
+    {
         let dir = tempfile::tempdir().unwrap();
-        let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-        let workflow = WorkflowState::default();
-        let token = CancellationToken::new();
-        let mut session = Session::new(
+        let blocked = dir.path().join("sessions");
+        fs::write(&blocked, "not a directory").unwrap();
+        let session = Session::new(
             "fixture".into(),
-            protocol,
+            Protocol::Response,
             "system".into(),
             EditMode::Replace,
         );
@@ -39,60 +113,82 @@ fn wait_native_commit_failure_does_not_acknowledge_background_delivery() {
             base_system: "system",
             prompt_source: None,
         };
-        let mut journal = SessionJournal::new(dir.path().join("sessions"));
+        let mut journal = SessionJournal::new(blocked.clone());
+        let error = journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                Some("task"),
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("persisting session"));
+        assert_eq!(journal.check().unwrap_err().to_string(), error);
+        assert!(journal.id().is_none());
+        assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let metadata = Metadata {
+            role_route: None,
+            cwd: dir.path(),
+            model_reference: "fixture/primary",
+            think_level: ThinkLevel::None,
+            edit_mode: EditMode::Replace,
+            tool_limits: ToolLimits::default(),
+            base_system: "system",
+            prompt_source: None,
+        };
+        let mut journal = SessionJournal::new(dir.path().to_owned());
         journal
             .sent(
                 &metadata,
                 (&session).into(),
-                &workflow,
-                Some("wait test"),
+                &WorkflowState::default(),
+                None,
                 None,
             )
             .unwrap();
-        let path = dir
-            .path()
-            .join("sessions")
-            .join(format!("{}.jsonl", journal.id().unwrap()));
-        let execute = |name: &str, args: &str| {
-            tools.execute(
-                name,
-                args,
-                name,
-                ToolPolicy::Execute {
-                    workflow: &workflow,
-                },
-                &token,
-                &mut |_| {},
-            )
-        };
-        execute(
-            "bash",
-            r#"{"command":"printf 'unacknowledged-output'","mode":"background"}"#,
+        let id = journal.id().unwrap().to_owned();
+        assert!(
+            load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("already in use")
         );
-        let result = execute("wait", r#"{"timeout_ms":5000}"#);
-        let value: serde_json::Value = serde_json::from_str(&result.output).unwrap();
-        assert_eq!(
-            value["background_results"][0]["output"],
-            "unacknowledged-output"
-        );
-        journal.use_read_only_file(&path);
-        super::super::append_user_to(&mut session, "force a native append");
-        let committed = journal
-            .commit((&session).into())
-            .and_then(|()| tools.commit_wait_results());
-        assert!(committed.is_err());
-        // 下一批次释放预留后仍能读到同一完成结果，失败提交没有提前确认消费。
-        tools.start_wait_batch();
-        let again: serde_json::Value = serde_json::from_str(&execute("wait", "{}").output).unwrap();
-        assert_eq!(
-            again["background_results"][0]["output"],
-            "unacknowledged-output"
-        );
+        drop(journal);
+        let path = dir.path().join(format!("{id}.jsonl"));
+        let next_line = fs::read(&path)
+            .unwrap()
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count()
+            + 1;
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"invalid\n")
+            .unwrap();
+        let error = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains(&format!("line {next_line}")));
     }
 }
 
 #[test]
-fn session_id_requires_calendar_time_and_lowercase_random_suffix() {
+fn session_id_validation_and_collision_preserves_existing_file() {
     for time in ["2026-10-17T01-02-03", "2024-02-29T23-59-59"] {
         assert!(validate_id(&format!("{time}-{}", "0123456789abcdef".repeat(2))).is_ok());
     }
@@ -121,42 +217,29 @@ fn session_id_requires_calendar_time_and_lowercase_random_suffix() {
     ] {
         assert!(validate_id(&format!("2026-10-17T01-02-03-{random}")).is_err());
     }
-}
 
-#[test]
-fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
     let dir = tempfile::tempdir().unwrap();
-    let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
-    let path = dir.path().join(format!("{id}.jsonl"));
-    let header = serde_json::json!({"type":"session", "version":3, "id":id,
-            "timestamp":"2026-10-17T01:02:03Z", "cwd":"/project"});
-    let mut data = format!(
-        "{header}\n{}\n{}\n",
-        serde_json::json!({"type":"message",
-            "message":{"role":"user", "content":"  修复\n测试 "}}),
-        serde_json::json!({"type":"message",
-            "message":{"role":"assistant", "content":[{"type":"thinking", "thinking":"private thought"},
-            {"type":"text", "text":"已经\n修复"}], "stopReason":"stop"}})
-    );
-    write_log(&path, &data);
-    let listing = indexed_listing(dir.path()).unwrap();
-    let summary = &listing.sessions[0];
-    assert_eq!(summary.summary, "修复 测试");
-    assert_eq!(summary.preview, "已经 修复");
-    assert_eq!(summary.bytes, fs::metadata(&path).unwrap().len());
-    assert!(summary.done);
-    for tail in [
-        "{\"type\":\"custom\",\"customType\":\"pp.error\",\"data\":{\"message\":\"safe error\"}}\n",
-        "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"next turn\"}}\n",
-        "{\"type\":\"custom\",\"customType\":\"pp.cancelled\",\"data\":{}}\n",
-        "{partial",
-    ] {
-        let original = data.clone();
-        data.push_str(tail);
-        write_log(&path, &data);
-        assert!(!indexed_listing(dir.path()).unwrap().sessions[0].done);
-        data = original;
-    }
+    let time = DateTime::from_timestamp_millis(42)
+        .unwrap()
+        .with_timezone(&Local)
+        .format(ID_TIME_FORMAT)
+        .to_string();
+    let path = dir.path().join(format!("{time}-{}.jsonl", "00".repeat(16)));
+    fs::write(&path, "original").unwrap();
+    let _held = SessionLock::acquire(
+        &dir.path().join(".locks"),
+        &format!("{time}-{}", "00".repeat(16)),
+    )
+    .unwrap();
+    let mut candidate = 0;
+    let active = create(dir.path(), &dir.path().join(".locks"), 42, || {
+        let bytes = [candidate; 16];
+        candidate += 1;
+        Ok(bytes)
+    })
+    .unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), "original");
+    assert_eq!(active.id, format!("{time}-{}", "01".repeat(16)));
 }
 
 #[test]
@@ -280,187 +363,198 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
 }
 
 #[test]
-fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
+fn listing_preview_sorting_headers_and_isolation_boundaries() {
     use std::os::unix::fs::{PermissionsExt, symlink};
-    let dir = tempfile::tempdir().unwrap();
-    assert!(
-        indexed_listing(&dir.path().join("missing"))
-            .unwrap()
-            .sessions
-            .is_empty()
-    );
-    let mut paths = Vec::new();
-    for n in 0..5 {
-        let id = format!("2026-10-17T01-02-03-{n:032x}");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
         let path = dir.path().join(format!("{id}.jsonl"));
-        let header = serde_json::json!({"type":"session", "version":3, "id":id, "timestamp":"2026-10-17T01:02:03Z", "cwd":format!("/project/{n}")});
-        let user = if n == 0 {
-            "中文".repeat(50)
-        } else {
-            "  first\n\t user\u{0001} message  ".into()
-        };
-        let mut data = format!("{header}\n");
-        if n != 4 {
-            data.push_str(&format!(
-                "{}\n",
-                serde_json::json!({"type":"custom","data":{"huge":"ignored"}})
-            ));
-            data.push_str(&format!(
-                "{}\n",
-                serde_json::json!({"type":"message","message":{"role":"assistant","content":[]}})
-            ));
-            if n == 3 {
-                data.push_str("broken before user\n");
-            }
-            data.push_str(&format!(
-                "{}\n",
-                serde_json::json!({"type":"message","message":{"role":"user","content":user}})
-            ));
-            data.push_str("broken after user\n{partial");
-        }
+        let header = serde_json::json!({"type":"session", "version":3, "id":id,
+                "timestamp":"2026-10-17T01:02:03Z", "cwd":"/project"});
+        let mut data = format!(
+            "{header}\n{}\n{}\n",
+            serde_json::json!({"type":"message",
+                "message":{"role":"user", "content":"  修复\n测试 "}}),
+            serde_json::json!({"type":"message",
+                "message":{"role":"assistant", "content":[{"type":"thinking", "thinking":"private thought"},
+                {"type":"text", "text":"已经\n修复"}], "stopReason":"stop"}})
+        );
         write_log(&path, &data);
-        File::open(&path)
-            .unwrap()
-            .set_times(fs::FileTimes::new().set_modified(
-                UNIX_EPOCH + std::time::Duration::from_secs(if n == 0 { 20 } else { 10 }),
-            ))
-            .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
-        paths.push(path);
+        let listing = indexed_listing(dir.path()).unwrap();
+        let summary = &listing.sessions[0];
+        assert_eq!(summary.summary, "修复 测试");
+        assert_eq!(summary.preview, "已经 修复");
+        assert_eq!(summary.bytes, fs::metadata(&path).unwrap().len());
+        assert!(summary.done);
+        for tail in [
+            "{\"type\":\"custom\",\"customType\":\"pp.error\",\"data\":{\"message\":\"safe error\"}}\n",
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"next turn\"}}\n",
+            "{\"type\":\"custom\",\"customType\":\"pp.cancelled\",\"data\":{}}\n",
+            "{partial",
+        ] {
+            let original = data.clone();
+            data.push_str(tail);
+            write_log(&path, &data);
+            assert!(!indexed_listing(dir.path()).unwrap().sessions[0].done);
+            data = original;
+        }
     }
-    fs::write(dir.path().join("invalid.jsonl"), "broken").unwrap();
-    let bad = dir
-        .path()
-        .join(format!("2026-10-17T01-02-03-{}.jsonl", "f".repeat(32)));
-    fs::write(&bad, "bad header\n").unwrap();
-    let link = dir
-        .path()
-        .join(format!("2026-10-17T01-02-03-{}.jsonl", "e".repeat(32)));
-    symlink(&paths[0], link).unwrap();
-    let before: Vec<_> = paths
-        .iter()
-        .map(|p| {
-            (
-                fs::read(p).unwrap(),
-                fs::metadata(p).unwrap().modified().unwrap(),
-            )
-        })
-        .collect();
-    let _locked = SessionLock::acquire(
-        &dir.path().join(".locks"),
-        &format!("2026-10-17T01-02-03-{:032x}", 0),
-    )
-    .unwrap();
-    let listing = indexed_listing(dir.path()).unwrap();
-    assert_eq!(
-        listing
-            .sessions
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            indexed_listing(&dir.path().join("missing"))
+                .unwrap()
+                .sessions
+                .is_empty()
+        );
+        let mut paths = Vec::new();
+        for n in 0..5 {
+            let id = format!("2026-10-17T01-02-03-{n:032x}");
+            let path = dir.path().join(format!("{id}.jsonl"));
+            let header = serde_json::json!({"type":"session", "version":3, "id":id, "timestamp":"2026-10-17T01:02:03Z", "cwd":format!("/project/{n}")});
+            let user = if n == 0 {
+                "中文".repeat(50)
+            } else {
+                "  first\n\t user\u{0001} message  ".into()
+            };
+            let mut data = format!("{header}\n");
+            if n != 4 {
+                data.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({"type":"custom","data":{"huge":"ignored"}})
+                ));
+                data.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({"type":"message","message":{"role":"assistant","content":[]}})
+                ));
+                if n == 3 {
+                    data.push_str("broken before user\n");
+                }
+                data.push_str(&format!(
+                    "{}\n",
+                    serde_json::json!({"type":"message","message":{"role":"user","content":user}})
+                ));
+                data.push_str("broken after user\n{partial");
+            }
+            write_log(&path, &data);
+            File::open(&path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(
+                    UNIX_EPOCH + std::time::Duration::from_secs(if n == 0 { 20 } else { 10 }),
+                ))
+                .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+            paths.push(path);
+        }
+        fs::write(dir.path().join("invalid.jsonl"), "broken").unwrap();
+        let bad = dir
+            .path()
+            .join(format!("2026-10-17T01-02-03-{}.jsonl", "f".repeat(32)));
+        fs::write(&bad, "bad header\n").unwrap();
+        let link = dir
+            .path()
+            .join(format!("2026-10-17T01-02-03-{}.jsonl", "e".repeat(32)));
+        symlink(&paths[0], link).unwrap();
+        let before: Vec<_> = paths
             .iter()
-            .map(|s| s.id.as_str())
-            .collect::<Vec<_>>(),
-        [0, 2, 1].map(|n| format!("2026-10-17T01-02-03-{n:032x}"))
-    );
-    assert_eq!(
-        listing.sessions[0].summary,
-        format!("{}…", "中文".repeat(40))
-    );
-    assert_eq!(listing.sessions[1].summary, "first user message");
-    assert_eq!(listing.sessions[1].cwd, Path::new("/project/2"));
-    for suffix in [
-        "0".repeat(32),
-        format!("{:032x}", 1),
-        format!("{:032x}", 2),
-        format!("{:032x}", 3),
-        "f".repeat(32),
-    ] {
+            .map(|p| {
+                (
+                    fs::read(p).unwrap(),
+                    fs::metadata(p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+        let _locked = SessionLock::acquire(
+            &dir.path().join(".locks"),
+            &format!("2026-10-17T01-02-03-{:032x}", 0),
+        )
+        .unwrap();
+        let listing = indexed_listing(dir.path()).unwrap();
+        assert_eq!(
+            listing
+                .sessions
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            [0, 2, 1].map(|n| format!("2026-10-17T01-02-03-{n:032x}"))
+        );
+        assert_eq!(
+            listing.sessions[0].summary,
+            format!("{}…", "中文".repeat(40))
+        );
+        assert_eq!(listing.sessions[1].summary, "first user message");
+        assert_eq!(listing.sessions[1].cwd, Path::new("/project/2"));
+        for suffix in [
+            "0".repeat(32),
+            format!("{:032x}", 1),
+            format!("{:032x}", 2),
+            format!("{:032x}", 3),
+            "f".repeat(32),
+        ] {
+            assert!(
+                listing
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.contains(&suffix))
+            );
+        }
         assert!(
             listing
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.contains(&suffix))
+                .all(|d| !d.contains("broken before") && !d.contains("bad header"))
         );
+        for (path, (bytes, modified)) in paths.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes);
+            assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
+        }
     }
-    assert!(
-        listing
-            .diagnostics
-            .iter()
-            .all(|d| !d.contains("broken before") && !d.contains("bad header"))
-    );
-    for (path, (bytes, modified)) in paths.iter().zip(before) {
-        assert_eq!(fs::read(path).unwrap(), bytes);
-        assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
-    }
-}
 
-#[test]
-fn listing_rejects_invalid_headers_and_ignores_unfinished_user_records() {
-    let dir = tempfile::tempdir().unwrap();
-    let id = format!("2026-10-17T01-02-03-{}", "0".repeat(32));
-    let path = dir.path().join(format!("{id}.jsonl"));
-    let header = serde_json::json!({"type":"session", "version":3, "id":id, "timestamp":"2026-10-17T01:02:03Z", "cwd":"/project"});
-    let user = serde_json::json!({"type":"message", "message":{"role":"user", "content":"first"}});
-    for (key, value) in [
-        ("type", serde_json::json!("message")),
-        ("version", serde_json::json!(2)),
-        ("id", serde_json::json!("mismatch")),
-        ("timestamp", serde_json::json!("invalid")),
-        ("cwd", serde_json::json!("relative")),
-    ] {
-        let mut invalid = header.clone();
-        invalid[key] = value;
-        write_log(&path, &format!("{invalid}\n{user}\n"));
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let id = format!("2026-10-17T01-02-03-{}", "0".repeat(32));
+        let path = dir.path().join(format!("{id}.jsonl"));
+        let header = serde_json::json!({"type":"session", "version":3, "id":id, "timestamp":"2026-10-17T01:02:03Z", "cwd":"/project"});
+        let user =
+            serde_json::json!({"type":"message", "message":{"role":"user", "content":"first"}});
+        for (key, value) in [
+            ("type", serde_json::json!("message")),
+            ("version", serde_json::json!(2)),
+            ("id", serde_json::json!("mismatch")),
+            ("timestamp", serde_json::json!("invalid")),
+            ("cwd", serde_json::json!("relative")),
+        ] {
+            let mut invalid = header.clone();
+            invalid[key] = value;
+            write_log(&path, &format!("{invalid}\n{user}\n"));
+            let listing = indexed_listing(dir.path()).unwrap();
+            assert!(listing.sessions.is_empty(), "{key}");
+            assert_eq!(listing.diagnostics.len(), 1, "{key}");
+        }
+        write_log(&path, &format!("{header}\n{user}"));
         let listing = indexed_listing(dir.path()).unwrap();
-        assert!(listing.sessions.is_empty(), "{key}");
-        assert_eq!(listing.diagnostics.len(), 1, "{key}");
+        assert!(listing.sessions.is_empty());
+        assert!(listing.diagnostics.is_empty());
+        write_log(&path, &format!("{header}\n{user}\n{{partial"));
+        let listing = indexed_listing(dir.path()).unwrap();
+        assert_eq!(listing.sessions[0].summary, "first");
+        assert!(listing.diagnostics.is_empty());
+        fs::write(
+            &path,
+            format!(
+                "{header}\n{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":[]}}}}\n"
+            ),
+        )
+        .unwrap();
+        let listing = indexed_listing(dir.path()).unwrap();
+        assert!(listing.sessions.is_empty());
+        assert_eq!(listing.diagnostics.len(), 1);
     }
-    write_log(&path, &format!("{header}\n{user}"));
-    let listing = indexed_listing(dir.path()).unwrap();
-    assert!(listing.sessions.is_empty());
-    assert!(listing.diagnostics.is_empty());
-    write_log(&path, &format!("{header}\n{user}\n{{partial"));
-    let listing = indexed_listing(dir.path()).unwrap();
-    assert_eq!(listing.sessions[0].summary, "first");
-    assert!(listing.diagnostics.is_empty());
-    fs::write(
-        &path,
-        format!(
-            "{header}\n{{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":[]}}}}\n"
-        ),
-    )
-    .unwrap();
-    let listing = indexed_listing(dir.path()).unwrap();
-    assert!(listing.sessions.is_empty());
-    assert_eq!(listing.diagnostics.len(), 1);
 }
 
 #[test]
-fn collision_preserves_existing_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let time = DateTime::from_timestamp_millis(42)
-        .unwrap()
-        .with_timezone(&Local)
-        .format(ID_TIME_FORMAT)
-        .to_string();
-    let path = dir.path().join(format!("{time}-{}.jsonl", "00".repeat(16)));
-    fs::write(&path, "original").unwrap();
-    let _held = SessionLock::acquire(
-        &dir.path().join(".locks"),
-        &format!("{time}-{}", "00".repeat(16)),
-    )
-    .unwrap();
-    let mut candidate = 0;
-    let active = create(dir.path(), &dir.path().join(".locks"), 42, || {
-        let bytes = [candidate; 16];
-        candidate += 1;
-        Ok(bytes)
-    })
-    .unwrap();
-    assert_eq!(fs::read_to_string(path).unwrap(), "original");
-    assert_eq!(active.id, format!("{time}-{}", "01".repeat(16)));
-}
-
-#[test]
-fn replay_native_history_and_repair_only_on_append() {
+fn replay_repair_incomplete_commit_and_transient_snapshots() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let mut session = Session::new(
@@ -514,10 +608,7 @@ fn replay_native_history_and_repair_only_on_append() {
         assert_eq!(restored.checkpoint.think_level, ThinkLevel::High);
         assert!(restored.replay.is_empty());
     }
-}
 
-#[test]
-fn incomplete_native_commit_never_restores_projections_or_model_audit() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let mut session = Session::new(
@@ -616,6 +707,41 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
                 .think_level,
             ThinkLevel::High
         );
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(dir.path().join("sessions"));
+        journal
+            .sent(
+                &test_metadata(dir.path()),
+                (&session).into(),
+                &WorkflowState::default(),
+                Some("user"),
+                None,
+            )
+            .unwrap();
+        let id = journal.id().unwrap().to_owned();
+        let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
+        let before = fs::read(&path).unwrap();
+        journal.event(&AgentEvent::ToolPipelineSnapshot {
+            id: "call".into(),
+            pipes: serde_json::json!({"run_id": "run"}),
+            preview: Some("瞬时阶段正文".into()),
+        });
+        journal.event(&AgentEvent::ToolArgumentsDelta {
+            tool: "edit".into(),
+            index: 0,
+            text: "临时编辑参数".into(),
+        });
+        // 瞬时预览不进入可恢复日志；最终结果里的 pipes 才是权威。
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
 
@@ -872,101 +998,6 @@ fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
     }
 }
 
-#[test]
-fn initial_creation_failure_is_latched_without_a_session() {
-    let dir = tempfile::tempdir().unwrap();
-    let blocked = dir.path().join("sessions");
-    fs::write(&blocked, "not a directory").unwrap();
-    let session = Session::new(
-        "fixture".into(),
-        Protocol::Response,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let metadata = Metadata {
-        role_route: None,
-        cwd: dir.path(),
-        model_reference: "fixture/primary",
-        think_level: ThinkLevel::None,
-        edit_mode: EditMode::Replace,
-        tool_limits: ToolLimits::default(),
-        base_system: "system",
-        prompt_source: None,
-    };
-    let mut journal = SessionJournal::new(blocked.clone());
-    let error = journal
-        .sent(
-            &metadata,
-            (&session).into(),
-            &WorkflowState::default(),
-            Some("task"),
-            None,
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("persisting session"));
-    assert_eq!(journal.check().unwrap_err().to_string(), error);
-    assert!(journal.id().is_none());
-    assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
-}
-
-#[test]
-fn rejects_complete_corruption_and_locked_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let session = Session::new(
-        "fixture".into(),
-        Protocol::Completion,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let metadata = Metadata {
-        role_route: None,
-        cwd: dir.path(),
-        model_reference: "fixture/primary",
-        think_level: ThinkLevel::None,
-        edit_mode: EditMode::Replace,
-        tool_limits: ToolLimits::default(),
-        base_system: "system",
-        prompt_source: None,
-    };
-    let mut journal = SessionJournal::new(dir.path().to_owned());
-    journal
-        .sent(
-            &metadata,
-            (&session).into(),
-            &WorkflowState::default(),
-            None,
-            None,
-        )
-        .unwrap();
-    let id = journal.id().unwrap().to_owned();
-    assert!(
-        load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("already in use")
-    );
-    drop(journal);
-    let path = dir.path().join(format!("{id}.jsonl"));
-    let next_line = fs::read(&path)
-        .unwrap()
-        .iter()
-        .filter(|byte| **byte == b'\n')
-        .count()
-        + 1;
-    OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .unwrap()
-        .write_all(b"invalid\n")
-        .unwrap();
-    let error = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
-        .err()
-        .unwrap();
-    assert!(format!("{error:#}").contains(&format!("line {next_line}")));
-}
-
 fn plan_workflow() -> WorkflowState {
     WorkflowState {
         mode: WorkMode::Plan,
@@ -999,7 +1030,7 @@ fn test_metadata(dir: &std::path::Path) -> Metadata<'_> {
 }
 
 #[test]
-fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
+fn instruction_loading_and_stats_context_journal_boundaries() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let mut journal = SessionJournal::new(dir.path().to_owned());
@@ -1066,10 +1097,7 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
             )] if user == "accepted input" && content == "frozen project body"
         ));
     }
-}
 
-#[test]
-fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rearm() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let mut journal = SessionJournal::new(dir.path().to_owned());
@@ -1137,225 +1165,226 @@ fn read_only(path: &Path, journal: &mut SessionJournal) {
 }
 
 #[test]
-fn workflow_state_survives_restore_without_moving_native_cursor() {
-    let dir = tempfile::tempdir().unwrap();
-    let metadata = test_metadata(dir.path());
-    let mut session = Session::new(
-        "fixture".into(),
-        Protocol::Response,
-        "system".into(),
-        EditMode::Replace,
-    );
-    session.set_think_level(ThinkLevel::None);
-    super::super::turn::response_input(match &mut session {
-        Session::Response(request) => request,
-        _ => unreachable!(),
-    })
-    .push(
-        serde_json::from_value(serde_json::json!({"role":"user","content":"plan task"})).unwrap(),
-    );
-    let workflow = plan_workflow();
-    let mut journal = SessionJournal::new(dir.path().to_owned());
-    journal
-        .sent(
-            &metadata,
-            (&session).into(),
-            &workflow,
-            Some("plan task"),
-            None,
-        )
-        .unwrap();
-    let id = journal.id().unwrap().to_owned();
-    let path = dir.path().join(format!("{id}.jsonl"));
-    let before = fs::read(&path).unwrap();
-    let nodes_before = journal.tree().unwrap().nodes.len();
+fn workflow_state_restore_validation_and_failed_sync_rollback() {
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let mut session = Session::new(
+            "fixture".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
+        );
+        session.set_think_level(ThinkLevel::None);
+        super::super::turn::response_input(match &mut session {
+            Session::Response(request) => request,
+            _ => unreachable!(),
+        })
+        .push(
+            serde_json::from_value(serde_json::json!({"role":"user","content":"plan task"}))
+                .unwrap(),
+        );
+        let workflow = plan_workflow();
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &workflow,
+                Some("plan task"),
+                None,
+            )
+            .unwrap();
+        let id = journal.id().unwrap().to_owned();
+        let path = dir.path().join(format!("{id}.jsonl"));
+        let before = fs::read(&path).unwrap();
+        let nodes_before = journal.tree().unwrap().nodes.len();
 
-    // Workflow-only updates append their own record and
-    // never touch native history or the logical tree.
-    let mut updated = workflow.clone();
-    updated.plan.as_mut().unwrap().revision = 2;
-    updated.plan.as_mut().unwrap().content = "- [x] Create hello.txt\n".into();
-    journal.write_workflow(&updated).unwrap();
-    let text = read_log(&path);
-    assert!(text.contains(r#""customType":"pp.workflow""#));
-    assert!(!text.contains(r#""version""#));
-    assert!(fs::read(&path).unwrap().starts_with(&before));
-    assert_eq!(journal.tree().unwrap().nodes.len(), nodes_before);
-    drop(journal);
+        // Workflow-only updates append their own record and
+        // never touch native history or the logical tree.
+        let mut updated = workflow.clone();
+        updated.plan.as_mut().unwrap().revision = 2;
+        updated.plan.as_mut().unwrap().content = "- [x] Create hello.txt\n".into();
+        journal.write_workflow(&updated).unwrap();
+        let text = read_log(&path);
+        assert!(text.contains(r#""customType":"pp.workflow""#));
+        assert!(!text.contains(r#""version""#));
+        assert!(fs::read(&path).unwrap().starts_with(&before));
+        assert_eq!(journal.tree().unwrap().nodes.len(), nodes_before);
+        drop(journal);
 
-    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
-    assert_eq!(restored.work_mode(), WorkMode::Plan);
-    assert_eq!(restored.checkpoint.workflow, updated);
-    assert!(
-        matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "plan task")
-    );
-    // The workflow record is not a replay action and does not move the
-    // native cursor or the restore checkpoint's native history.
-    assert_eq!(
-        serde_json::to_value(&restored.checkpoint.session).unwrap(),
-        serde_json::to_value(&session).unwrap()
-    );
-    assert_eq!(
-        restored.journal.committed,
-        SessionRef::from(&restored.checkpoint.session).len()
-    );
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        assert_eq!(restored.work_mode(), WorkMode::Plan);
+        assert_eq!(restored.checkpoint.workflow, updated);
+        assert!(
+            matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "plan task")
+        );
+        // The workflow record is not a replay action and does not move the
+        // native cursor or the restore checkpoint's native history.
+        assert_eq!(
+            serde_json::to_value(&restored.checkpoint.session).unwrap(),
+            serde_json::to_value(&session).unwrap()
+        );
+        assert_eq!(
+            restored.journal.committed,
+            SessionRef::from(&restored.checkpoint.session).len()
+        );
 
-    drop(restored);
-    // A state record without a workflow field restores as Execute/None.
-    rewrite_records(&path, |record| {
-        if record["customType"] == "pp.session_state" {
-            record["data"]
-                .as_object_mut()
-                .unwrap()
-                .remove("workflow")
-                .expect("state embeds workflow");
+        drop(restored);
+        // A state record without a workflow field restores as Execute/None.
+        rewrite_records(&path, |record| {
+            if record["customType"] == "pp.session_state" {
+                record["data"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("workflow")
+                    .expect("state embeds workflow");
+            }
+            if record["customType"] == "pp.workflow" {
+                *record = serde_json::Value::Null;
+            }
+        });
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+        assert_eq!(restored.checkpoint.workflow, WorkflowState::default());
+        assert_eq!(restored.work_mode(), WorkMode::Execute);
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let id = journal.id().unwrap().to_owned();
+        let path = dir.path().join(format!("{id}.jsonl"));
+        drop(journal);
+
+        let mut ready = plan_workflow();
+        ready.plan.as_mut().unwrap().content = "sensitive-plan-body".into();
+        let ready_json = serde_json::to_value(&ready).unwrap();
+        let base = read_log(&path);
+        let records = [
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                        "data":{"version":2, "workflow":{"mode":"execute", "plan":null, "review":null}}}),
+                ("invalid session record", None),
+            ),
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                        "data":{"workflow":{"mode":"plan", "plan":null, "review":null}, "extra":1}}),
+                ("invalid session record", None),
+            ),
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                        "data":{"workflow":{"mode":"admin", "plan":null, "review":null}}}),
+                ("invalid session record", None),
+            ),
+            (
+                serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                        "data":{"workflow":{"mode":"execute", "plan":ready_json["plan"], "review":null}}}),
+                ("Invalid saved workflow state.", Some("sensitive-plan-body")),
+            ),
+        ];
+        for (mut record, (expected, secret)) in records {
+            let entries: Vec<serde_json::Value> = base
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            record["id"] = serde_json::json!("workflow-corruption");
+            record["parentId"] = entries.last().unwrap()["id"].clone();
+            record["timestamp"] = entries[0]["timestamp"].clone();
+            write_log(&path, &format!("{base}{record}\n"));
+            let error = format!(
+                "{:#}",
+                load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
+                    .err()
+                    .unwrap()
+            );
+            assert!(error.contains(expected), "{expected}: {error}");
+            if let Some(secret) = secret {
+                assert!(!error.contains(secret), "leaked saved content: {error}");
+            }
         }
-        if record["customType"] == "pp.workflow" {
-            *record = serde_json::Value::Null;
-        }
-    });
-    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
-    assert_eq!(restored.checkpoint.workflow, WorkflowState::default());
-    assert_eq!(restored.work_mode(), WorkMode::Execute);
-}
 
-#[test]
-fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
-    let dir = tempfile::tempdir().unwrap();
-    let metadata = test_metadata(dir.path());
-    let session = Session::new(
-        "fixture".into(),
-        Protocol::Completion,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let mut journal = SessionJournal::new(dir.path().to_owned());
-    journal
-        .sent(
-            &metadata,
-            (&session).into(),
-            &WorkflowState::default(),
-            None,
-            None,
-        )
-        .unwrap();
-    let id = journal.id().unwrap().to_owned();
-    let path = dir.path().join(format!("{id}.jsonl"));
-    drop(journal);
-
-    let mut ready = plan_workflow();
-    ready.plan.as_mut().unwrap().content = "sensitive-plan-body".into();
-    let ready_json = serde_json::to_value(&ready).unwrap();
-    let base = read_log(&path);
-    let records = [
-        (
-            serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"version":2, "workflow":{"mode":"execute", "plan":null, "review":null}}}),
-            ("invalid session record", None),
-        ),
-        (
-            serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"workflow":{"mode":"plan", "plan":null, "review":null}, "extra":1}}),
-            ("invalid session record", None),
-        ),
-        (
-            serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"workflow":{"mode":"admin", "plan":null, "review":null}}}),
-            ("invalid session record", None),
-        ),
-        (
-            serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"workflow":{"mode":"execute", "plan":ready_json["plan"], "review":null}}}),
-            ("Invalid saved workflow state.", Some("sensitive-plan-body")),
-        ),
-    ];
-    for (mut record, (expected, secret)) in records {
-        let entries: Vec<serde_json::Value> = base
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        record["id"] = serde_json::json!("workflow-corruption");
-        record["parentId"] = entries.last().unwrap()["id"].clone();
-        record["timestamp"] = entries[0]["timestamp"].clone();
-        write_log(&path, &format!("{base}{record}\n"));
+        // Corrupted embedded workflow inside pp.session_state also fails closed.
+        rewrite_records(&path, |record| {
+            if record["customType"] == "pp.session_state" {
+                record["data"]["workflow"] = serde_json::json!({"mode":"admin"});
+            }
+            if record["customType"] == "pp.workflow" {
+                *record = serde_json::Value::Null;
+            }
+        });
         let error = format!(
             "{:#}",
             load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
                 .err()
                 .unwrap()
         );
-        assert!(error.contains(expected), "{expected}: {error}");
-        if let Some(secret) = secret {
-            assert!(!error.contains(secret), "leaked saved content: {error}");
-        }
+        assert!(error.contains("invalid session record"), "{error}");
     }
 
-    // Corrupted embedded workflow inside pp.session_state also fails closed.
-    rewrite_records(&path, |record| {
-        if record["customType"] == "pp.session_state" {
-            record["data"]["workflow"] = serde_json::json!({"mode":"admin"});
-        }
-        if record["customType"] == "pp.workflow" {
-            *record = serde_json::Value::Null;
-        }
-    });
-    let error = format!(
-        "{:#}",
-        load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
-            .err()
-            .unwrap()
-    );
-    assert!(error.contains("invalid session record"), "{error}");
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+        let id = journal.id().unwrap().to_owned();
+        let mut updated = plan_workflow();
+        updated.plan.as_mut().unwrap().revision = 3;
+        journal.write_workflow(&updated).unwrap();
+        let mut next = plan_workflow();
+        next.plan.as_mut().unwrap().revision = 4;
+        let before = fs::read(&path).unwrap();
+
+        // A read-only descriptor deterministically rejects writes even as root;
+        // the failed sync must neither grant the newer revision nor corrupt the
+        // file, and the last successfully synced state still restores.
+        read_only(&path, &mut journal);
+        let error = journal.write_workflow(&next).unwrap_err().to_string();
+        assert!(error.contains("persisting session"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(journal.check().is_err());
+        drop(journal);
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+        assert_eq!(restored.work_mode(), WorkMode::Plan);
+        assert_eq!(
+            restored.checkpoint.workflow.plan.as_ref().unwrap().revision,
+            3
+        );
+    }
 }
 
 #[test]
-fn failed_workflow_sync_rolls_back_and_blocks_until_reset() {
-    let dir = tempfile::tempdir().unwrap();
-    let metadata = test_metadata(dir.path());
-    let session = Session::new(
-        "fixture".into(),
-        Protocol::Completion,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let mut journal = SessionJournal::new(dir.path().to_owned());
-    journal
-        .sent(
-            &metadata,
-            (&session).into(),
-            &WorkflowState::default(),
-            None,
-            None,
-        )
-        .unwrap();
-    let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
-    let id = journal.id().unwrap().to_owned();
-    let mut updated = plan_workflow();
-    updated.plan.as_mut().unwrap().revision = 3;
-    journal.write_workflow(&updated).unwrap();
-    let mut next = plan_workflow();
-    next.plan.as_mut().unwrap().revision = 4;
-    let before = fs::read(&path).unwrap();
-
-    // A read-only descriptor deterministically rejects writes even as root;
-    // the failed sync must neither grant the newer revision nor corrupt the
-    // file, and the last successfully synced state still restores.
-    read_only(&path, &mut journal);
-    let error = journal.write_workflow(&next).unwrap_err().to_string();
-    assert!(error.contains("persisting session"), "{error}");
-    assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(journal.check().is_err());
-    drop(journal);
-    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
-    assert_eq!(restored.work_mode(), WorkMode::Plan);
-    assert_eq!(
-        restored.checkpoint.workflow.plan.as_ref().unwrap().revision,
-        3
-    );
-}
-
-#[test]
-fn commit_plan_handoff_commits_projection_and_state_atomically() {
+fn commit_plan_handoff_atomic_rollback_and_creation_latch() {
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let metadata = test_metadata(dir.path());
@@ -1447,120 +1476,84 @@ fn commit_plan_handoff_commits_projection_and_state_atomically() {
         // The planning journal and its file are untouched by the fork.
         assert_eq!(fs::read(&planned_path).unwrap(), planned_before);
     }
-}
 
-#[test]
-fn commit_plan_handoff_failure_rolls_back_the_whole_group() {
-    let dir = tempfile::tempdir().unwrap();
-    let metadata = test_metadata(dir.path());
-    let mut session = Session::new(
-        "fixture".into(),
-        Protocol::Response,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let mut journal = SessionJournal::new(dir.path().to_owned());
-    journal
-        .sent(
-            &metadata,
-            (&session).into(),
-            &WorkflowState::default(),
-            Some("first"),
-            None,
-        )
-        .unwrap();
-    let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
-    let id = journal.id().unwrap().to_owned();
-    if let Session::Response(request) = &mut session {
-        super::super::turn::response_input(request).push(
-            serde_json::from_value(
-                serde_json::json!({"role":"user", "content":"implement the approved plan"}),
-            )
-            .unwrap(),
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = test_metadata(dir.path());
+        let mut session = Session::new(
+            "fixture".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
         );
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                Some("first"),
+                None,
+            )
+            .unwrap();
+        let path = dir.path().join(format!("{}.jsonl", journal.id().unwrap()));
+        let id = journal.id().unwrap().to_owned();
+        if let Session::Response(request) = &mut session {
+            super::super::turn::response_input(request).push(
+                serde_json::from_value(
+                    serde_json::json!({"role":"user", "content":"implement the approved plan"}),
+                )
+                .unwrap(),
+            );
+        }
+        let before = fs::read(&path).unwrap();
+        read_only(&path, &mut journal);
+        let error = journal
+            .commit_plan_handoff(
+                &metadata,
+                (&session).into(),
+                &plan_workflow(),
+                "implement the approved plan",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("persisting session"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(journal.check().is_err());
+        drop(journal);
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+        // Neither the execution projection nor the workflow grant survived.
+        assert!(
+            matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "first")
+        );
+        assert_eq!(restored.work_mode(), WorkMode::Execute);
+        assert!(restored.checkpoint.workflow.plan.is_none());
     }
-    let before = fs::read(&path).unwrap();
-    read_only(&path, &mut journal);
-    let error = journal
-        .commit_plan_handoff(
-            &metadata,
-            (&session).into(),
-            &plan_workflow(),
-            "implement the approved plan",
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("persisting session"), "{error}");
-    assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(journal.check().is_err());
-    drop(journal);
-    let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
-    // Neither the execution projection nor the workflow grant survived.
-    assert!(matches!(restored.replay.as_slice(), [ReplayRecord::User(text)] if text == "first"));
-    assert_eq!(restored.work_mode(), WorkMode::Execute);
-    assert!(restored.checkpoint.workflow.plan.is_none());
-}
 
-#[test]
-fn commit_plan_handoff_creation_failure_is_latched_without_a_session() {
-    let dir = tempfile::tempdir().unwrap();
-    let blocked = dir.path().join("sessions");
-    fs::write(&blocked, "not a directory").unwrap();
-    let session = Session::new(
-        "fixture".into(),
-        Protocol::Response,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let mut journal = SessionJournal::new(blocked.clone());
-    let error = journal
-        .commit_plan_handoff(
-            &test_metadata(dir.path()),
-            (&session).into(),
-            &plan_workflow(),
-            "implement the approved plan",
-        )
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("persisting session"), "{error}");
-    assert!(journal.id().is_none());
-    assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
-}
-
-#[test]
-fn transient_pipeline_snapshots_never_reach_the_journal() {
-    let dir = tempfile::tempdir().unwrap();
-    let session = Session::new(
-        "fixture".into(),
-        Protocol::Completion,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let mut journal = SessionJournal::new(dir.path().join("sessions"));
-    journal
-        .sent(
-            &test_metadata(dir.path()),
-            (&session).into(),
-            &WorkflowState::default(),
-            Some("user"),
-            None,
-        )
-        .unwrap();
-    let id = journal.id().unwrap().to_owned();
-    let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
-    let before = fs::read(&path).unwrap();
-    journal.event(&AgentEvent::ToolPipelineSnapshot {
-        id: "call".into(),
-        pipes: serde_json::json!({"run_id": "run"}),
-        preview: Some("瞬时阶段正文".into()),
-    });
-    journal.event(&AgentEvent::ToolArgumentsDelta {
-        tool: "edit".into(),
-        index: 0,
-        text: "临时编辑参数".into(),
-    });
-    // 瞬时预览不进入可恢复日志；最终结果里的 pipes 才是权威。
-    assert_eq!(fs::read(&path).unwrap(), before);
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("sessions");
+        fs::write(&blocked, "not a directory").unwrap();
+        let session = Session::new(
+            "fixture".into(),
+            Protocol::Response,
+            "system".into(),
+            EditMode::Replace,
+        );
+        let mut journal = SessionJournal::new(blocked.clone());
+        let error = journal
+            .commit_plan_handoff(
+                &test_metadata(dir.path()),
+                (&session).into(),
+                &plan_workflow(),
+                "implement the approved plan",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("persisting session"), "{error}");
+        assert!(journal.id().is_none());
+        assert_eq!(fs::read_to_string(blocked).unwrap(), "not a directory");
+    }
 }
 
 // 测试观察逻辑记录；物理字节和游标断言仍直接读取文件。

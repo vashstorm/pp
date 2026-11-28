@@ -257,7 +257,7 @@ impl McpManager {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::super::fixtures::{plan_register, plan_server_config, plan_spawn_client};
     use super::*;
     use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};

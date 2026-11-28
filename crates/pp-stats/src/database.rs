@@ -172,107 +172,102 @@ mod tests {
 
     /// 句柄构造不做 I/O；重复写入只建立一条连接，`ensure_schema` 随之只执行一次。
     #[test]
-    fn stats_database_reuses_one_connection_across_writes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats.db");
-        let database = Database::new(path.clone());
-        assert!(
-            !path.exists(),
-            "constructing the handle must not touch disk"
-        );
-        for key in ["one", "two"] {
+    fn stats_database_connection_reuse_retry_and_rates_fingerprint() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats.db");
+            let database = Database::new(path.clone());
+            assert!(
+                !path.exists(),
+                "constructing the handle must not touch disk"
+            );
+            for key in ["one", "two"] {
+                database
+                    .with_store(|store| store.insert(&fixture(key, 1000), &Value::Null))
+                    .unwrap();
+            }
+            // Clone 共享同一份连接状态。
             database
-                .with_store(|store| store.insert(&fixture(key, 1000), &Value::Null))
+                .clone()
+                .with_store(|store| store.insert(&fixture("three", 1000), &Value::Null))
                 .unwrap();
+            assert_eq!(database.opens(), 1);
+            let store = open_store(&path).unwrap();
+            assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 3);
         }
-        // Clone 共享同一份连接状态。
-        database
-            .clone()
-            .with_store(|store| store.insert(&fixture("three", 1000), &Value::Null))
-            .unwrap();
-        assert_eq!(database.opens(), 1);
-        let store = open_store(&path).unwrap();
-        assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 3);
-    }
-
-    /// `Store::open` 失败（这里是 symlink 拒绝）不缓存，下一次写入必须重试成功。
-    #[test]
-    fn stats_database_retries_after_a_failed_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target.db");
-        std::fs::write(&target, b"").unwrap();
-        let path = dir.path().join("stats.db");
-        std::os::unix::fs::symlink(&target, &path).unwrap();
-        let database = Database::new(path.clone());
-        assert!(database.with_store(|_| Ok(())).is_err());
-        assert_eq!(database.opens(), 0);
-        std::fs::remove_file(&path).unwrap();
-        database
-            .with_store(|store| store.insert(&fixture("retried", 1000), &Value::Null))
-            .unwrap();
-        database
-            .with_store(|store| store.insert(&fixture("next", 1000), &Value::Null))
-            .unwrap();
-        assert_eq!(database.opens(), 1);
-        let store = open_store(&path).unwrap();
-        assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 2);
-    }
-
-    /// 计价快照按 `models.yml` 的 `(mtime, len)` 缓存：缺失用内置表，变化即失效，
-    /// 解析失败仍表示未知费率。
-    #[test]
-    fn stats_rates_follow_the_models_fingerprint() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = dir.path().join("models.yml");
-        let mut cache = None;
-        let snapshot = |cache: &mut Option<RatesCache>| {
-            cached_rates(&models, cache).snapshot(
-                "fixture/primary",
-                "fixture-model",
-                Some(100),
-                Some(20),
-                Some(80),
-                Some(0),
-            )
-        };
-        // 没有 models.yml：只保留内置价格表，fixture 模型不在其中。
-        assert_eq!(snapshot(&mut cache), (None, None));
-        assert_eq!(
-            cached_rates(&models, &mut cache)
-                .snapshot(
-                    "openai/gpt-5.5",
-                    "openai/gpt-5.5",
-                    Some(1_000_000),
-                    Some(0),
-                    Some(0),
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("target.db");
+            std::fs::write(&target, b"").unwrap();
+            let path = dir.path().join("stats.db");
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            let database = Database::new(path.clone());
+            assert!(database.with_store(|_| Ok(())).is_err());
+            assert_eq!(database.opens(), 0);
+            std::fs::remove_file(&path).unwrap();
+            database
+                .with_store(|store| store.insert(&fixture("retried", 1000), &Value::Null))
+                .unwrap();
+            database
+                .with_store(|store| store.insert(&fixture("next", 1000), &Value::Null))
+                .unwrap();
+            assert_eq!(database.opens(), 1);
+            let store = open_store(&path).unwrap();
+            assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 2);
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let models = dir.path().join("models.yml");
+            let mut cache = None;
+            let snapshot = |cache: &mut Option<RatesCache>| {
+                cached_rates(&models, cache).snapshot(
+                    "fixture/primary",
+                    "fixture-model",
+                    Some(100),
+                    Some(20),
+                    Some(80),
                     Some(0),
                 )
-                .1
-                .unwrap()
-                .input,
-            5.0
-        );
-        std::fs::write(
-            &models,
-            models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
-        )
-        .unwrap();
-        assert!(((snapshot(&mut cache).0.unwrap().total()) - 0.000216).abs() < 1e-10);
-        // 文件变化（字节数不同，因而指纹必然不同）后重新加载。
-        std::fs::write(
-            &models,
-            models_with_cost(json!({"input":12.5,"cacheRead":0.25,"output":8.5})),
-        )
-        .unwrap();
-        assert_eq!(snapshot(&mut cache).1.unwrap().input, 12.5);
-        // 解析失败：未知费率，连内置价格表也不用。
-        std::fs::write(&models, "invalid secret-marker").unwrap();
-        assert_eq!(snapshot(&mut cache), (None, None));
-        std::fs::write(
-            &models,
-            models_with_cost(json!({"input":3,"cacheRead":0.3,"output":9})),
-        )
-        .unwrap();
-        assert_eq!(snapshot(&mut cache).1.unwrap().input, 3.0);
+            };
+            // 没有 models.yml：只保留内置价格表，fixture 模型不在其中。
+            assert_eq!(snapshot(&mut cache), (None, None));
+            assert_eq!(
+                cached_rates(&models, &mut cache)
+                    .snapshot(
+                        "openai/gpt-5.5",
+                        "openai/gpt-5.5",
+                        Some(1_000_000),
+                        Some(0),
+                        Some(0),
+                        Some(0),
+                    )
+                    .1
+                    .unwrap()
+                    .input,
+                5.0
+            );
+            std::fs::write(
+                &models,
+                models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
+            )
+            .unwrap();
+            assert!(((snapshot(&mut cache).0.unwrap().total()) - 0.000216).abs() < 1e-10);
+            // 文件变化（字节数不同，因而指纹必然不同）后重新加载。
+            std::fs::write(
+                &models,
+                models_with_cost(json!({"input":12.5,"cacheRead":0.25,"output":8.5})),
+            )
+            .unwrap();
+            assert_eq!(snapshot(&mut cache).1.unwrap().input, 12.5);
+            // 解析失败：未知费率，连内置价格表也不用。
+            std::fs::write(&models, "invalid secret-marker").unwrap();
+            assert_eq!(snapshot(&mut cache), (None, None));
+            std::fs::write(
+                &models,
+                models_with_cost(json!({"input":3,"cacheRead":0.3,"output":9})),
+            )
+            .unwrap();
+            assert_eq!(snapshot(&mut cache).1.unwrap().input, 3.0);
+        }
     }
 }

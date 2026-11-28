@@ -630,95 +630,125 @@ mod tests {
     }
 
     #[test]
-    fn image_preview_hover_delay_popup_scroll_resize_and_modal_hide() {
-        let mut view = View::new().unwrap();
-        let images: Vec<_> = (0..6)
-            .map(|index| {
-                let mut image = fixture();
-                image.marker = format!("\u{f03e} #{}", index + 1);
-                image
-            })
-            .collect();
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let draw = |view: &mut View, terminal: &mut Terminal<TestBackend>| {
+    fn image_preview_hover_protocols_and_worker_cache_invariants() {
+        {
+            let mut view = View::new().unwrap();
+            let images: Vec<_> = (0..6)
+                .map(|index| {
+                    let mut image = fixture();
+                    image.marker = format!("\u{f03e} #{}", index + 1);
+                    image
+                })
+                .collect();
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            let draw = |view: &mut View, terminal: &mut Terminal<TestBackend>| {
+                terminal
+                    .draw(|frame| {
+                        view.begin_frame(frame.area());
+                        view.cards(frame, Rect::new(0, 20, 100, 8), &images);
+                        view.preview(frame, Rect::new(0, 0, 100, 20));
+                    })
+                    .unwrap();
+            };
+            draw(&mut view, &mut terminal);
+            assert_eq!(view.hits.len(), 3);
+            let now = Instant::now();
+            assert!(view.mouse(mouse(MouseEventKind::Moved, 3, 22), now).0);
+            view.poll(now + Duration::from_millis(199), true);
+            assert!(!view.open);
+            view.poll(now + DELAY, true);
+            draw(&mut view, &mut terminal);
+            assert!(view.open);
+            let popup = view.popup.unwrap();
+            assert!(popup.bottom() <= 20);
+            assert!(
+                view.mouse(mouse(MouseEventKind::Moved, popup.x + 2, popup.y + 2), now)
+                    .0
+            );
+            assert!(view.open);
+            assert!(view.mouse(mouse(MouseEventKind::ScrollDown, 3, 22), now).0);
+            assert_eq!(view.first, 1);
+            assert!(!view.open);
+            draw(&mut view, &mut terminal);
+            view.mouse(mouse(MouseEventKind::Moved, 3, 22), now);
+            view.poll(now + DELAY, true);
+            view.begin_frame(Rect::new(0, 0, 20, 10));
+            assert!(!view.open);
+            draw(&mut view, &mut terminal);
+            view.mouse(mouse(MouseEventKind::Moved, 3, 22), now);
+            view.poll(now + DELAY, false);
+            assert!(!view.open);
+        }
+
+        {
+            let image = fixture();
+            for protocol in [
+                ProtocolType::Halfblocks,
+                ProtocolType::Kitty,
+                ProtocolType::Iterm2,
+                ProtocolType::Sixel,
+            ] {
+                let mut picker = Picker::halfblocks();
+                picker.set_protocol_type(protocol);
+                let rendered = encode(
+                    &image.data_url,
+                    &picker,
+                    Key {
+                        source: identity(&image),
+                        width: 20,
+                        height: 6,
+                    },
+                )
+                .unwrap();
+                assert!(rendered.buffer.area.width <= 20 && rendered.buffer.area.height <= 6);
+                let text: String = rendered
+                    .buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                match protocol {
+                    ProtocolType::Halfblocks => assert!(text.contains('▀') || text.contains('▄')),
+                    ProtocolType::Kitty => assert!(text.contains("\x1b_G") && text.contains("i=")),
+                    ProtocolType::Iterm2 => assert!(text.contains("1337;")),
+                    ProtocolType::Sixel => assert!(text.contains("\x1bP")),
+                }
+                assert_eq!(rendered.graphics, protocol != ProtocolType::Halfblocks);
+            }
+        }
+
+        {
+            let mut view = View::new().unwrap();
+            let image = fixture();
+            let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
             terminal
                 .draw(|frame| {
                     view.begin_frame(frame.area());
-                    view.cards(frame, Rect::new(0, 20, 100, 8), &images);
-                    view.preview(frame, Rect::new(0, 0, 100, 20));
+                    view.cards(frame, Rect::new(0, 10, 40, 8), std::slice::from_ref(&image));
                 })
                 .unwrap();
-        };
-        draw(&mut view, &mut terminal);
-        assert_eq!(view.hits.len(), 3);
-        let now = Instant::now();
-        assert!(view.mouse(mouse(MouseEventKind::Moved, 3, 22), now).0);
-        view.poll(now + Duration::from_millis(199), true);
-        assert!(!view.open);
-        view.poll(now + DELAY, true);
-        draw(&mut view, &mut terminal);
-        assert!(view.open);
-        let popup = view.popup.unwrap();
-        assert!(popup.bottom() <= 20);
-        assert!(
-            view.mouse(mouse(MouseEventKind::Moved, popup.x + 2, popup.y + 2), now)
-                .0
-        );
-        assert!(view.open);
-        assert!(view.mouse(mouse(MouseEventKind::ScrollDown, 3, 22), now).0);
-        assert_eq!(view.first, 1);
-        assert!(!view.open);
-        draw(&mut view, &mut terminal);
-        view.mouse(mouse(MouseEventKind::Moved, 3, 22), now);
-        view.poll(now + DELAY, true);
-        view.begin_frame(Rect::new(0, 0, 20, 10));
-        assert!(!view.open);
-        draw(&mut view, &mut terminal);
-        view.mouse(mouse(MouseEventKind::Moved, 3, 22), now);
-        view.poll(now + DELAY, false);
-        assert!(!view.open);
-    }
-
-    #[test]
-    fn image_preview_encodes_all_protocols_and_preserves_reusable_transmission() {
-        let image = fixture();
-        for protocol in [
-            ProtocolType::Halfblocks,
-            ProtocolType::Kitty,
-            ProtocolType::Iterm2,
-            ProtocolType::Sixel,
-        ] {
-            let mut picker = Picker::halfblocks();
-            picker.set_protocol_type(protocol);
-            let rendered = encode(
-                &image.data_url,
-                &picker,
-                Key {
-                    source: identity(&image),
-                    width: 20,
-                    height: 6,
-                },
-            )
-            .unwrap();
-            assert!(rendered.buffer.area.width <= 20 && rendered.buffer.area.height <= 6);
-            let text: String = rendered
-                .buffer
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            match protocol {
-                ProtocolType::Halfblocks => assert!(text.contains('▀') || text.contains('▄')),
-                ProtocolType::Kitty => assert!(text.contains("\x1b_G") && text.contains("i=")),
-                ProtocolType::Iterm2 => assert!(text.contains("1337;")),
-                ProtocolType::Sixel => assert!(text.contains("\x1bP")),
+            assert_eq!(view.pending.len(), 1);
+            terminal
+                .draw(|frame| {
+                    view.begin_frame(frame.area());
+                    view.cards(frame, Rect::new(0, 10, 40, 8), &[]);
+                })
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !view.pending.is_empty() && Instant::now() < deadline {
+                view.poll(Instant::now(), true);
+                thread::yield_now();
             }
-            assert_eq!(rendered.graphics, protocol != ProtocolType::Halfblocks);
+            assert!(view.pending.is_empty());
+            assert!(view.hits.is_empty());
+            assert!(!view.open);
+            assert!(!view.cache.is_empty());
+            assert!(view.cache[0].rendered.is_some());
         }
     }
 
     #[test]
-    fn image_preview_iterm2_fills_cells_and_centers_at_each_pixel_density() {
+    fn image_preview_iterm2_density_and_tmux_multipart_roundtrips() {
         for (width, height, columns, rows) in [(884, 368, 22, 5), (368, 884, 7, 8)] {
             let image = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_pixel(
                 width,
@@ -778,10 +808,59 @@ mod tests {
                 assert_eq!(view.graphics, vec![target]);
             }
         }
+
+        {
+            use ratatui_image::protocol::{Protocol, iterm2::Iterm2};
+
+            let image =
+                image::DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(200, 100, |x, y| {
+                    let value = (x + y * 200).wrapping_mul(2_654_435_761);
+                    image::Rgb([value as u8, (value >> 8) as u8, (value >> 16) as u8])
+                }));
+            let area = Rect::new(0, 0, 20, 5);
+            let mut png = Iterm2::new(image.clone(), area, true).unwrap();
+            iterm2_cells(&mut png).unwrap();
+            let protocol = Protocol::ITerm2(png);
+            let mut buffer = Buffer::empty(area);
+            ratatui_image::Image::new(&protocol).render(area, &mut buffer);
+            let original = buffer[(0, 0)].symbol().to_owned();
+            prepare_graphics(&mut buffer);
+            let symbol = buffer[(0, 0)].symbol();
+            let mut output = String::new();
+            let mut remaining = symbol;
+            while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
+                let (chunk, rest) = body.split_once("\x1b\\").unwrap();
+                assert!(chunk.len() < 8192);
+                output.push_str(&chunk.replace("\x1b\x1b", "\x1b"));
+                remaining = rest;
+            }
+            assert!(remaining.is_empty());
+            assert!(output.starts_with("\x1b[20X\x1b[1B"));
+            assert!(output.contains("MultipartFile=inline=1;size="));
+            assert!(
+                output.contains("width=20;height=5;preserveAspectRatio=0;doNotMoveCursor=1\x07")
+            );
+            assert!(output.ends_with("\x1b]1337;FileEnd\x07"));
+            let parts: Vec<_> = output.split("\x1b]1337;FilePart=").skip(1).collect();
+            assert!(parts.len() > 1);
+            let payload: String = parts
+                .iter()
+                .map(|part| part.split_once('\x07').unwrap().0)
+                .collect();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(payload)
+                .unwrap();
+            assert_eq!(
+                image::load_from_memory(&bytes).unwrap().to_rgb8(),
+                image.to_rgb8()
+            );
+            assert!(symbol.len() > original.len());
+            assert_eq!(iterm2_tmux("\x1b]1337;File=inline=1:AAAA\x07"), None);
+        }
     }
 
     #[test]
-    fn image_preview_kitty_png_roundtrips_pixels_with_bounded_output() {
+    fn image_preview_kitty_png_and_tmux_passthrough_preserve_bounds() {
         let image = image::DynamicImage::ImageRgba8(image::ImageBuffer::from_pixel(
             884,
             368,
@@ -830,118 +909,39 @@ mod tests {
                 image.to_rgba8()
             );
         }
-    }
 
-    #[test]
-    fn image_preview_iterm2_tmux_multipart_preserves_png_and_geometry() {
-        use ratatui_image::protocol::{Protocol, iterm2::Iterm2};
+        {
+            use ratatui_image::protocol::{Protocol, kitty::Kitty};
 
-        let image =
-            image::DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(200, 100, |x, y| {
-                let value = (x + y * 200).wrapping_mul(2_654_435_761);
-                image::Rgb([value as u8, (value >> 8) as u8, (value >> 16) as u8])
-            }));
-        let area = Rect::new(0, 0, 20, 5);
-        let mut png = Iterm2::new(image.clone(), area, true).unwrap();
-        iterm2_cells(&mut png).unwrap();
-        let protocol = Protocol::ITerm2(png);
-        let mut buffer = Buffer::empty(area);
-        ratatui_image::Image::new(&protocol).render(area, &mut buffer);
-        let original = buffer[(0, 0)].symbol().to_owned();
-        prepare_graphics(&mut buffer);
-        let symbol = buffer[(0, 0)].symbol();
-        let mut output = String::new();
-        let mut remaining = symbol;
-        while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
-            let (chunk, rest) = body.split_once("\x1b\\").unwrap();
-            assert!(chunk.len() < 8192);
-            output.push_str(&chunk.replace("\x1b\x1b", "\x1b"));
-            remaining = rest;
+            let area = Rect::new(0, 0, 90, 20);
+            let protocol = Protocol::Kitty(
+                Kitty::new(image::DynamicImage::new_rgb8(884, 368), area, 123, true).unwrap(),
+            );
+            let mut buffer = Buffer::empty(area);
+            ratatui_image::Image::new(&protocol).render(area, &mut buffer);
+            let original = buffer[(0, 0)].symbol().to_owned();
+            prepare_graphics(&mut buffer);
+            let symbol = buffer[(0, 0)].symbol();
+            let mut remaining = symbol;
+            let mut unwrapped = String::new();
+            let mut chunks = 0;
+            while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
+                let (chunk, rest) = body.split_once("\x1b\x1b\\\x1b\\").unwrap();
+                assert!(chunk.len() < 8192, "tmux 透传块过大：{} 字节", chunk.len());
+                assert!(chunk.starts_with("\x1b\x1b_G"));
+                unwrapped.push_str(chunk);
+                unwrapped.push_str("\x1b\x1b\\");
+                chunks += 1;
+                remaining = rest;
+            }
+            assert!(chunks > 1);
+            unwrapped.push_str(remaining);
+            let original = original.strip_prefix("\x1bPtmux;").unwrap();
+            let (transmission, placeholders) = original.split_once("\x1b\x1b\\\x1b\\").unwrap();
+            assert_eq!(unwrapped, format!("{transmission}\x1b\x1b\\{placeholders}"));
+            assert!(remaining.contains('\u{10EEEE}'));
+            assert!(symbol.contains("i=123,a=T,U=1"));
+            assert!(symbol.contains("m=0;"));
         }
-        assert!(remaining.is_empty());
-        assert!(output.starts_with("\x1b[20X\x1b[1B"));
-        assert!(output.contains("MultipartFile=inline=1;size="));
-        assert!(output.contains("width=20;height=5;preserveAspectRatio=0;doNotMoveCursor=1\x07"));
-        assert!(output.ends_with("\x1b]1337;FileEnd\x07"));
-        let parts: Vec<_> = output.split("\x1b]1337;FilePart=").skip(1).collect();
-        assert!(parts.len() > 1);
-        let payload: String = parts
-            .iter()
-            .map(|part| part.split_once('\x07').unwrap().0)
-            .collect();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(payload)
-            .unwrap();
-        assert_eq!(
-            image::load_from_memory(&bytes).unwrap().to_rgb8(),
-            image.to_rgb8()
-        );
-        assert!(symbol.len() > original.len());
-        assert_eq!(iterm2_tmux("\x1b]1337;File=inline=1:AAAA\x07"), None);
-    }
-
-    #[test]
-    fn image_preview_large_kitty_tmux_transmission_uses_bounded_passthroughs() {
-        use ratatui_image::protocol::{Protocol, kitty::Kitty};
-
-        let area = Rect::new(0, 0, 90, 20);
-        let protocol = Protocol::Kitty(
-            Kitty::new(image::DynamicImage::new_rgb8(884, 368), area, 123, true).unwrap(),
-        );
-        let mut buffer = Buffer::empty(area);
-        ratatui_image::Image::new(&protocol).render(area, &mut buffer);
-        let original = buffer[(0, 0)].symbol().to_owned();
-        prepare_graphics(&mut buffer);
-        let symbol = buffer[(0, 0)].symbol();
-        let mut remaining = symbol;
-        let mut unwrapped = String::new();
-        let mut chunks = 0;
-        while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
-            let (chunk, rest) = body.split_once("\x1b\x1b\\\x1b\\").unwrap();
-            assert!(chunk.len() < 8192, "tmux 透传块过大：{} 字节", chunk.len());
-            assert!(chunk.starts_with("\x1b\x1b_G"));
-            unwrapped.push_str(chunk);
-            unwrapped.push_str("\x1b\x1b\\");
-            chunks += 1;
-            remaining = rest;
-        }
-        assert!(chunks > 1);
-        unwrapped.push_str(remaining);
-        let original = original.strip_prefix("\x1bPtmux;").unwrap();
-        let (transmission, placeholders) = original.split_once("\x1b\x1b\\\x1b\\").unwrap();
-        assert_eq!(unwrapped, format!("{transmission}\x1b\x1b\\{placeholders}"));
-        assert!(remaining.contains('\u{10EEEE}'));
-        assert!(symbol.contains("i=123,a=T,U=1"));
-        assert!(symbol.contains("m=0;"));
-    }
-
-    #[test]
-    fn image_preview_worker_cache_and_late_reply_never_restore_removed_attachment() {
-        let mut view = View::new().unwrap();
-        let image = fixture();
-        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
-        terminal
-            .draw(|frame| {
-                view.begin_frame(frame.area());
-                view.cards(frame, Rect::new(0, 10, 40, 8), std::slice::from_ref(&image));
-            })
-            .unwrap();
-        assert_eq!(view.pending.len(), 1);
-        terminal
-            .draw(|frame| {
-                view.begin_frame(frame.area());
-                view.cards(frame, Rect::new(0, 10, 40, 8), &[]);
-            })
-            .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !view.pending.is_empty() && Instant::now() < deadline {
-            view.poll(Instant::now(), true);
-            thread::yield_now();
-        }
-        assert!(view.pending.is_empty());
-        assert!(view.hits.is_empty());
-        assert!(!view.open);
-        assert!(!view.cache.is_empty());
-        assert!(view.cache[0].rendered.is_some());
     }
 }

@@ -81,7 +81,7 @@ fn arguments_delta(item_id: &str, output_index: u32, value: &str) -> ResponseStr
 }
 
 #[test]
-fn streaming_file_arguments_are_incremental_and_do_not_authorize_execution() {
+fn streaming_file_argument_previews_and_argument_progress() {
     let mut stream = ChatStream::default();
     let mut events = Vec::new();
     // 工具名分片、参数先于工具名补齐，均只发布尚未显示的参数；
@@ -178,10 +178,83 @@ fn streaming_file_arguments_are_incremental_and_do_not_authorize_execution() {
         event,
         AgentEvent::ToolStarted { .. } | AgentEvent::FileChanged { .. }
     )));
+
+    // Chat tool arguments advance progress without answer text.
+    let arguments = ["{\"command\":", "\"true\"}"];
+    let mut stream = ChatStream::default();
+    let first = progress_of(|emit| {
+        stream
+            .push(
+                chat(
+                    json!({"tool_calls":[{"index":0,"id":"call","type":"function",
+                            "function":{"name":"shell","arguments":arguments[0]}}]}),
+                    None,
+                ),
+                emit,
+            )
+            .unwrap();
+    });
+    let second = progress_of(|emit| {
+        stream
+            .push(
+                chat(
+                    json!({"tool_calls":[{"index":0,
+                            "function":{"arguments":arguments[1]}}]}),
+                    Some("tool_calls"),
+                ),
+                emit,
+            )
+            .unwrap();
+    });
+    assert_eq!(first, Some(arguments[0].len() as u64));
+    assert_eq!(
+        second,
+        Some((arguments[0].len() + arguments[1].len()) as u64)
+    );
+
+    // Responses argument progress without visible answer.
+    let mut stream = ResponsesStream::default();
+    let mut visible = Vec::new();
+    let first = {
+        let mut seen = None;
+        let mut emit = |event| match event {
+            AgentEvent::AssistantDelta { text, refusal } => visible.push((text, refusal)),
+            AgentEvent::ModelOutputProgress { output_bytes } => seen = Some(output_bytes),
+            _ => {}
+        };
+        assert!(
+            stream
+                .push(arguments_delta("fc", 0, arguments[0]), &mut emit)
+                .unwrap()
+                .is_none()
+        );
+        seen
+    };
+    let second = {
+        let mut seen = None;
+        let mut emit = |event| match event {
+            AgentEvent::AssistantDelta { text, refusal } => visible.push((text, refusal)),
+            AgentEvent::ModelOutputProgress { output_bytes } => seen = Some(output_bytes),
+            _ => {}
+        };
+        assert!(
+            stream
+                .push(arguments_delta("fc", 0, arguments[1]), &mut emit)
+                .unwrap()
+                .is_none()
+        );
+        seen
+    };
+    assert_eq!(first, Some(arguments[0].len() as u64));
+    assert_eq!(
+        second,
+        Some((arguments[0].len() + arguments[1].len()) as u64)
+    );
+    assert!(visible.is_empty());
 }
 
 #[test]
-fn streaming_responses_command_code_content_index_alias_is_narrow_and_preserves_raw() {
+fn streaming_responses_decode_aliases_and_pending_arguments() {
     for (kind, payload) in [
         ("response.content_part.added", json!({"part":text("")})),
         ("response.content_part.done", json!({"part":text("answer")})),
@@ -221,14 +294,10 @@ fn streaming_responses_command_code_content_index_alias_is_narrow_and_preserves_
         value["content_index"] = Value::Null;
         assert!(serde_json::from_str::<ResponseEvent>(&value.to_string()).is_err());
     }
-    // 思考摘要的索引仍沿用原有语义；不把错误的内容索引反向映射到摘要。
     let raw = json!({"type":"response.reasoning_summary_text.delta", "sequence_number":1,
         "item_id":"rs", "output_index":0, "content_index":0, "delta":"thinking"});
     assert!(serde_json::from_str::<ResponseEvent>(&raw.to_string()).is_err());
-}
 
-#[test]
-fn streaming_responses_decode_diagnostics_include_event_and_missing_field_without_values() {
     for (raw, expected) in [
         (
             json!({"type":"response.content_part.added", "sequence_number":1,
@@ -259,10 +328,7 @@ fn streaming_responses_decode_diagnostics_include_event_and_missing_field_withou
         }
         assert!(!error.contains("private-"), "{error}");
     }
-}
 
-#[test]
-fn streaming_responses_pending_function_arguments_accept_null_only_at_start() {
     for arguments in [
         None,
         Some(Value::Null),
@@ -329,7 +395,7 @@ fn progress_of(push: impl FnOnce(&mut dyn FnMut(AgentEvent))) -> Option<u64> {
 }
 
 #[test]
-fn streaming_chat_progress_matches_across_utf8_chunk_splits() {
+fn streaming_text_progress_and_thinking_extensions() {
     let payload = "指标完成 value";
     let whole: [&str; 1] = [payload];
     let pieces: [&str; 3] = ["指", "标完成 ", "value"];
@@ -348,46 +414,7 @@ fn streaming_chat_progress_matches_across_utf8_chunk_splits() {
         totals,
         [Some(payload.len() as u64), Some(payload.len() as u64)]
     );
-}
 
-#[test]
-fn streaming_chat_tool_arguments_advance_progress_without_answer_text() {
-    let arguments = ["{\"command\":", "\"true\"}"];
-    let mut stream = ChatStream::default();
-    let first = progress_of(|emit| {
-        stream
-            .push(
-                chat(
-                    json!({"tool_calls":[{"index":0,"id":"call","type":"function",
-                            "function":{"name":"shell","arguments":arguments[0]}}]}),
-                    None,
-                ),
-                emit,
-            )
-            .unwrap();
-    });
-    let second = progress_of(|emit| {
-        stream
-            .push(
-                chat(
-                    json!({"tool_calls":[{"index":0,
-                            "function":{"arguments":arguments[1]}}]}),
-                    Some("tool_calls"),
-                ),
-                emit,
-            )
-            .unwrap();
-    });
-    // Tool ids and names never count: only the argument fragments do.
-    assert_eq!(first, Some(arguments[0].len() as u64));
-    assert_eq!(
-        second,
-        Some((arguments[0].len() + arguments[1].len()) as u64)
-    );
-}
-
-#[test]
-fn streaming_responses_progress_ignores_done_and_completed_copies() {
     let mut stream = ResponsesStream::default();
     let streamed = progress_of(|emit| {
         assert!(stream.push(delta(0, 0, "answer"), emit).unwrap().is_none());
@@ -414,53 +441,7 @@ fn streaming_responses_progress_ignores_done_and_completed_copies() {
         );
     });
     assert_eq!(completed_bytes, None);
-}
 
-#[test]
-fn streaming_responses_argument_progress_without_visible_answer() {
-    let arguments = ["{\"command\":", "\"true\"}"];
-    let mut stream = ResponsesStream::default();
-    let mut visible = Vec::new();
-    let first = {
-        let mut seen = None;
-        let mut emit = |event| match event {
-            AgentEvent::AssistantDelta { text, refusal } => visible.push((text, refusal)),
-            AgentEvent::ModelOutputProgress { output_bytes } => seen = Some(output_bytes),
-            _ => {}
-        };
-        assert!(
-            stream
-                .push(arguments_delta("fc", 0, arguments[0]), &mut emit)
-                .unwrap()
-                .is_none()
-        );
-        seen
-    };
-    let second = {
-        let mut seen = None;
-        let mut emit = |event| match event {
-            AgentEvent::AssistantDelta { text, refusal } => visible.push((text, refusal)),
-            AgentEvent::ModelOutputProgress { output_bytes } => seen = Some(output_bytes),
-            _ => {}
-        };
-        assert!(
-            stream
-                .push(arguments_delta("fc", 0, arguments[1]), &mut emit)
-                .unwrap()
-                .is_none()
-        );
-        seen
-    };
-    assert_eq!(first, Some(arguments[0].len() as u64));
-    assert_eq!(
-        second,
-        Some((arguments[0].len() + arguments[1].len()) as u64)
-    );
-    assert!(visible.is_empty());
-}
-
-#[test]
-fn thinking_chat_extensions_are_visible_and_separate_from_answer() {
     for field in ["reasoning_content", "reasoning", "reasoning_text"] {
         let mut stream = ChatStream::default();
         let mut thinking = String::new();
@@ -493,10 +474,7 @@ fn thinking_chat_extensions_are_visible_and_separate_from_answer() {
         );
         assert_eq!(turn.usage, None);
     }
-}
 
-#[test]
-fn streaming_chat_copilot_thinking_aliases_are_not_duplicated() {
     let mut stream = ChatStream::default();
     let mut thinking = String::new();
     stream
@@ -515,10 +493,53 @@ fn streaming_chat_copilot_thinking_aliases_are_not_duplicated() {
         .unwrap();
     assert_eq!(thinking, "inspect");
     assert!(into_completion_turn(stream.finish().unwrap()).is_ok());
+
+    for summary in [true, false] {
+        let mut stream = ResponsesStream::default();
+        let mut thinking = String::new();
+        let mut emit = |event| match event {
+            AgentEvent::ThinkingDelta { text } => {
+                assert!(!summary);
+                thinking.push_str(&text);
+            }
+            AgentEvent::ReasoningSummaryDelta { text } => {
+                assert!(summary);
+                thinking.push_str(&text);
+            }
+            _ => {}
+        };
+        let kind = if summary {
+            "response.reasoning_summary_text"
+        } else {
+            "response.reasoning_text"
+        };
+        let index = if summary {
+            "summary_index"
+        } else {
+            "content_index"
+        };
+        stream.push(event(json!({"type":format!("{kind}.delta"),"sequence_number":1,"item_id":"r","output_index":0,index:0,"delta":"inspect"})), &mut emit).unwrap();
+        stream.push(event(json!({"type":format!("{kind}.done"),"sequence_number":2,"item_id":"r","output_index":0,index:0,"text":"inspect 中"})), &mut emit).unwrap();
+        let reasoning = if summary {
+            json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
+        } else {
+            json!({"type":"reasoning","id":"r","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
+        };
+        stream.push(event(json!({"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":reasoning})), &mut emit).unwrap();
+        let turn = stream
+            .push(
+                completed(json!([reasoning, message("m", json!([text("answer")]))])),
+                &mut emit,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(thinking, "inspect 中");
+        assert_eq!(turn.text, "answer");
+    }
 }
 
 #[test]
-fn streaming_chat_copilot_defaults_only_missing_object_metadata() {
+fn streaming_chat_decoding_and_metadata_diagnostics() {
     let baseline = json!({"id":"fixture", "created":0, "model":"fixture",
         "choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]});
     let chunk = ChatChunk::decode(baseline.clone()).unwrap();
@@ -535,10 +556,7 @@ fn streaming_chat_copilot_defaults_only_missing_object_metadata() {
             "decoding Chat Completions response: invalid field type at object"
         );
     }
-}
 
-#[test]
-fn streaming_chat_decode_diagnostics_keep_paths_without_provider_values() {
     let baseline = json!({"id":"fixture", "object":"chat.completion.chunk", "created":0,
         "model":"fixture", "choices":[{"index":0,"delta":{"role":"assistant"}}]});
     let mut missing = baseline.clone();
@@ -598,10 +616,7 @@ fn streaming_chat_decode_diagnostics_keep_paths_without_provider_values() {
         "decoding Chat Completions response: invalid field type at <field>"
     );
     assert!(!format!("{error:?}").contains("private"));
-}
 
-#[test]
-fn streaming_chat_copilot_error_keeps_usage_and_never_finishes_successfully() {
     let mut stream = ChatStream::default();
     let mut visible = Vec::new();
     stream
@@ -630,7 +645,7 @@ fn streaming_chat_copilot_error_keeps_usage_and_never_finishes_successfully() {
 }
 
 #[test]
-fn streaming_chat_copilot_refusal_requires_text_and_rejects_pending_tools() {
+fn streaming_chat_tool_aggregation_refusals_and_role_completion() {
     for field in ["content", "refusal"] {
         let mut stream = ChatStream::default();
         stream
@@ -699,56 +714,7 @@ fn streaming_chat_copilot_refusal_requires_text_and_rejects_pending_tools() {
             .push(chat(json!({}), Some("refusal")), &mut |_| {})
             .is_err()
     );
-}
 
-#[test]
-fn thinking_responses_deduplicate_deltas_done_and_completed() {
-    for summary in [true, false] {
-        let mut stream = ResponsesStream::default();
-        let mut thinking = String::new();
-        let mut emit = |event| match event {
-            AgentEvent::ThinkingDelta { text } => {
-                assert!(!summary);
-                thinking.push_str(&text);
-            }
-            AgentEvent::ReasoningSummaryDelta { text } => {
-                assert!(summary);
-                thinking.push_str(&text);
-            }
-            _ => {}
-        };
-        let kind = if summary {
-            "response.reasoning_summary_text"
-        } else {
-            "response.reasoning_text"
-        };
-        let index = if summary {
-            "summary_index"
-        } else {
-            "content_index"
-        };
-        stream.push(event(json!({"type":format!("{kind}.delta"),"sequence_number":1,"item_id":"r","output_index":0,index:0,"delta":"inspect"})), &mut emit).unwrap();
-        stream.push(event(json!({"type":format!("{kind}.done"),"sequence_number":2,"item_id":"r","output_index":0,index:0,"text":"inspect 中"})), &mut emit).unwrap();
-        let reasoning = if summary {
-            json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
-        } else {
-            json!({"type":"reasoning","id":"r","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
-        };
-        stream.push(event(json!({"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":reasoning})), &mut emit).unwrap();
-        let turn = stream
-            .push(
-                completed(json!([reasoning, message("m", json!([text("answer")]))])),
-                &mut emit,
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(thinking, "inspect 中");
-        assert_eq!(turn.text, "answer");
-    }
-}
-
-#[test]
-fn streaming_chat_aggregates_interleaved_tool_fragments_and_late_role() {
     let mut stream = ChatStream::default();
     let mut visible = Vec::new();
     stream.push(chat(json!({"content":"before","tool_calls":[
@@ -780,10 +746,7 @@ fn streaming_chat_aggregates_interleaved_tool_fragments_and_late_role() {
     assert_eq!(first.function.arguments, r#"{"path":"a","content":"b"}"#);
     assert_eq!((&*second.id, &*second.function.name), ("second", "bash"));
     assert_eq!(second.function.arguments, r#"{"command":"true"}"#);
-}
 
-#[test]
-fn streaming_chat_requires_finish_and_valid_complete_batch() {
     let mut unfinished = ChatStream::default();
     unfinished
         .push(
@@ -826,10 +789,7 @@ fn streaming_chat_requires_finish_and_valid_complete_batch() {
             )
             .is_err()
     );
-}
 
-#[test]
-fn streaming_chat_missing_role_defaults_only_after_aggregation() {
     for role in [None, Some(Value::Null)] {
         for tools in [false, true] {
             let mut delta = if tools {
@@ -857,7 +817,6 @@ fn streaming_chat_missing_role_defaults_only_after_aggregation() {
         }
     }
 
-    // 缺省角色不掩盖末尾的显式错误角色，也不替代必要的结束状态或有效正文。
     for (role, finish) in [
         (None, None),
         (None, Some("length")),
@@ -888,10 +847,7 @@ fn streaming_chat_missing_role_defaults_only_after_aggregation() {
             )
             .is_err()
     );
-}
 
-#[test]
-fn streaming_chat_refusal_is_provisional_and_usage_only_chunk_keeps_usage() {
     let mut stream = ChatStream::default();
     let mut visible = Vec::new();
     stream
@@ -906,8 +862,6 @@ fn streaming_chat_refusal_is_provisional_and_usage_only_chunk_keeps_usage() {
             &mut capture(&mut visible),
         )
         .unwrap();
-    // The trailing usage-only chunk carries no choices; its usage must still
-    // be kept and later non-empty usage wins over earlier ones.
     stream
         .push(
             usage_chunk(json!({"prompt_tokens":10,"completion_tokens":2,"total_tokens":12})),
@@ -915,13 +869,13 @@ fn streaming_chat_refusal_is_provisional_and_usage_only_chunk_keeps_usage() {
         )
         .unwrap();
     stream
-            .push(
-                usage_chunk(
-                    json!({"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300,"prompt_tokens_details":{"cached_tokens":40}}),
-                ),
-                &mut capture(&mut visible),
-            )
-            .unwrap();
+        .push(
+            usage_chunk(
+                json!({"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300,"prompt_tokens_details":{"cached_tokens":40}}),
+            ),
+            &mut capture(&mut visible),
+        )
+        .unwrap();
     let turn = into_completion_turn(stream.finish().unwrap()).unwrap();
     assert_eq!(
         turn.message.content,
@@ -944,7 +898,7 @@ fn streaming_chat_refusal_is_provisional_and_usage_only_chunk_keeps_usage() {
 }
 
 #[test]
-fn context_responses_usage_and_refusal_flags_from_completed_response() {
+fn streaming_responses_ordering_and_completed_turn_flags() {
     let usage = json!({
         "input_tokens":12000, "output_tokens":300, "total_tokens":12300,
         "input_tokens_details":{"cached_tokens":40},
@@ -958,7 +912,6 @@ fn context_responses_usage_and_refusal_flags_from_completed_response() {
         )
         .unwrap()
         .unwrap();
-    // Input/output only; cached and reasoning details are not added on top.
     assert_eq!(
         turn.usage,
         Some(TokenUsage {
@@ -992,10 +945,7 @@ fn context_responses_usage_and_refusal_flags_from_completed_response() {
         .unwrap()
         .unwrap();
     assert!(!turn.refusal);
-}
 
-#[test]
-fn streaming_responses_orders_parts_and_items_without_replaying_final_text() {
     let mut stream = ResponsesStream::default();
     let mut visible = Vec::new();
     stream
@@ -1043,10 +993,7 @@ fn streaming_responses_orders_parts_and_items_without_replaying_final_text() {
     assert_eq!(turn.text, "ABC");
     assert!(!turn.has_calls);
     assert_eq!(visible.len(), 3);
-}
 
-#[test]
-fn streaming_responses_missing_part_tail_defers_successors_until_completion() {
     let mut stream = ResponsesStream::default();
     let mut visible = Vec::new();
     stream
@@ -1066,10 +1013,7 @@ fn streaming_responses_missing_part_tail_defers_successors_until_completion() {
         )
         .unwrap();
     assert_eq!(visible, [("A".into(), false), ("BC".into(), false)]);
-}
 
-#[test]
-fn streaming_responses_completed_only_and_refusal_priority() {
     for (parts, expected, refusal) in [
         (json!([text("whole")]), "whole", false),
         (
@@ -1095,10 +1039,7 @@ fn streaming_responses_completed_only_and_refusal_priority() {
         assert_eq!(turn.text, expected);
         assert_eq!(visible, [(expected.into(), refusal)]);
     }
-}
 
-#[test]
-fn streaming_responses_rejects_conflicts_and_invalid_batches_before_return() {
     for output in [
         json!([message("m", json!([text("different")])),
                 {"type":"function_call","id":"fc","call_id":"call","name":"write","arguments":"{}"}]),
@@ -1117,10 +1058,7 @@ fn streaming_responses_rejects_conflicts_and_invalid_batches_before_return() {
         );
         assert_eq!(visible, [("partial".into(), false)]);
     }
-}
 
-#[test]
-fn streaming_responses_argument_deltas_never_trigger_tools_or_text() {
     let mut stream = ResponsesStream::default();
     let mut visible = Vec::new();
     for value in [
@@ -1153,7 +1091,7 @@ fn streaming_responses_argument_deltas_never_trigger_tools_or_text() {
 }
 
 #[test]
-fn streaming_responses_failure_codes_are_allowlisted_and_actionable() {
+fn streaming_responses_failure_and_incomplete_diagnostics() {
     let private = "private-provider-body fixture-key https://private.invalid/\u{1b}[31m";
     for kind in ["response.failed", "error"] {
         for code in [
@@ -1191,10 +1129,7 @@ fn streaming_responses_failure_codes_are_allowlisted_and_actionable() {
             }
         }
     }
-}
 
-#[test]
-fn streaming_responses_unknown_and_missing_error_codes_still_fail_safely() {
     for kind in ["response.failed", "error"] {
         for code in [
             Some("private-code fixture-key https://private.invalid/"),
@@ -1241,10 +1176,7 @@ fn streaming_responses_unknown_and_missing_error_codes_still_fail_safely() {
                 .is_err()
         );
     }
-}
 
-#[test]
-fn streaming_responses_incomplete_reasons_are_allowlisted() {
     for reason in [
         "max_output_tokens",
         "content_filter",
@@ -1291,10 +1223,7 @@ fn streaming_responses_incomplete_reasons_are_allowlisted() {
             .unwrap();
         assert!(error.to_string().contains("response.incomplete"));
     }
-}
 
-#[test]
-fn streaming_responses_terminal_failures_keep_partial_display_without_committing_output() {
     let output = json!([
         message("m", json!([text("partial-uncommitted-tail")])),
         {"type":"function_call","id":"fc","call_id":"call","name":"write","arguments":"{}"}
@@ -1334,8 +1263,6 @@ fn streaming_responses_terminal_failures_keep_partial_display_without_committing
                 .unwrap()
                 .is_none()
         );
-        // No ResponseTurn is returned, so neither history nor tools can consume
-        // the terminal payload or the previously streamed function call.
         let error = stream
             .push(failure, &mut capture(&mut visible))
             .err()

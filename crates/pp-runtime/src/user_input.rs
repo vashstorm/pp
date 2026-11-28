@@ -481,143 +481,144 @@ mod tests {
     }
 
     #[test]
-    fn resource_references_exclude_email_inline_code_fences_and_escape() {
-        let text = "a@b.com `@inline` @@literal @one\n```rust\n@decorator\n```\n~~~\n@fenced\n~~~\n@\"目录/my file.txt\"";
-        assert_eq!(
-            references(text)
-                .into_iter()
-                .map(|r| r.path)
-                .collect::<Vec<_>>(),
-            vec![None, Some("one".into()), Some("目录/my file.txt".into())]
-        );
-        assert_eq!(
-            joined(&prepare_text("@@literal", Path::new(".")).unwrap()),
-            "@literal"
-        );
-    }
-
-    #[test]
-    fn resource_snapshots_include_text_directory_and_outside_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = dir.path().join("project");
-        std::fs::create_dir(&project).unwrap();
-        std::fs::create_dir(project.join("目录")).unwrap();
-        std::fs::write(project.join("目录/my file.txt"), "你好\nsecond\n").unwrap();
-        std::fs::write(dir.path().join("outside.txt"), "outside").unwrap();
-        let input = prepare_text(
-            "查看 @\"目录/my file.txt\" 和 @目录/ @../outside.txt",
-            &project,
-        )
-        .unwrap();
-        let text = joined(&input);
-        assert!(text.contains("你好"));
-        assert!(text.contains("my file.txt"));
-        assert!(text.contains("outside"));
-        std::fs::write(dir.path().join("outside.txt"), "changed").unwrap();
-        assert_eq!(joined(&input), text);
-        assert!(prepare_text("@../outside.txt:1", &project).is_err());
-        assert!(prepare_text("@missing", &project).is_err());
-        assert!(prepare_text("@https://example.com", &project).is_err());
-    }
-
-    #[test]
-    fn resource_truncation_reports_continuation_and_rejects_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("file"), "first\nsecond\nthird\n").unwrap();
-        let input = prepare(
-            "@file".into(),
-            "@file",
-            Vec::new(),
-            dir.path(),
-            ToolLimits {
-                read_max_lines: 1,
-                ..Default::default()
-            },
-            &CancellationToken::new(),
-        )
-        .unwrap();
-        assert!(input.display.contains("截断"));
-        assert!(joined(&input).contains("first"));
-        assert!(!joined(&input).contains("second"));
-        assert!(joined(&input).contains(":2"));
-        for bytes in [
-            vec![b'a'; 100].into_iter().chain([0]).collect::<Vec<_>>(),
-            vec![0xff, 0xfe, 0xfd],
-            vec![0xe4, 0xb8],
-        ] {
-            std::fs::write(dir.path().join("binary"), bytes).unwrap();
-            assert!(prepare_text("@binary", dir.path()).is_err());
+    fn resource_references_snapshots_and_truncation() {
+        {
+            let text = "a@b.com `@inline` @@literal @one\n```rust\n@decorator\n```\n~~~\n@fenced\n~~~\n@\"目录/my file.txt\"";
+            assert_eq!(
+                references(text)
+                    .into_iter()
+                    .map(|r| r.path)
+                    .collect::<Vec<_>>(),
+                vec![None, Some("one".into()), Some("目录/my file.txt".into())]
+            );
+            assert_eq!(
+                joined(&prepare_text("@@literal", Path::new(".")).unwrap()),
+                "@literal"
+            );
         }
-    }
 
-    #[test]
-    fn resource_images_keep_order_and_preserve_source_after_deletion() {
-        let dir = tempfile::tempdir().unwrap();
-        image::DynamicImage::new_rgb8(2, 3)
-            .save(dir.path().join("shot.png"))
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let project = dir.path().join("project");
+            std::fs::create_dir(&project).unwrap();
+            std::fs::create_dir(project.join("目录")).unwrap();
+            std::fs::write(project.join("目录/my file.txt"), "你好\nsecond\n").unwrap();
+            std::fs::write(dir.path().join("outside.txt"), "outside").unwrap();
+            let input = prepare_text(
+                "查看 @\"目录/my file.txt\" 和 @目录/ @../outside.txt",
+                &project,
+            )
             .unwrap();
-        let input = prepare_text("before @shot.png after", dir.path()).unwrap();
-        let mut bound = image_file(&dir.path().join("shot.png")).unwrap();
-        bound.marker = "#1".into();
-        for range in [usize::MAX..usize::MAX, 0..usize::MAX] {
-            bound.source_range = Some(range);
+            let text = joined(&input);
+            assert!(text.contains("你好"));
+            assert!(text.contains("my file.txt"));
+            assert!(text.contains("outside"));
+            std::fs::write(dir.path().join("outside.txt"), "changed").unwrap();
+            assert_eq!(joined(&input), text);
+            assert!(prepare_text("@../outside.txt:1", &project).is_err());
+            assert!(prepare_text("@missing", &project).is_err());
+            assert!(prepare_text("@https://example.com", &project).is_err());
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("file"), "first\nsecond\nthird\n").unwrap();
             let input = prepare(
-                "#1".into(),
-                "#1",
-                vec![bound.clone()],
+                "@file".into(),
+                "@file",
+                Vec::new(),
                 dir.path(),
-                ToolLimits::default(),
+                ToolLimits {
+                    read_max_lines: 1,
+                    ..Default::default()
+                },
                 &CancellationToken::new(),
             )
             .unwrap();
-            assert!(!input.has_images());
+            assert!(input.display.contains("截断"));
+            assert!(joined(&input).contains("first"));
+            assert!(!joined(&input).contains("second"));
+            assert!(joined(&input).contains(":2"));
+            for bytes in [
+                vec![b'a'; 100].into_iter().chain([0]).collect::<Vec<_>>(),
+                vec![0xff, 0xfe, 0xfd],
+                vec![0xe4, 0xb8],
+            ] {
+                std::fs::write(dir.path().join("binary"), bytes).unwrap();
+                assert!(prepare_text("@binary", dir.path()).is_err());
+            }
         }
-        assert!(
-            matches!(&input.parts[..], [Part::Text(before), Part::Image(url), Part::Text(after)] if before.contains("before") && url.starts_with("data:image/png;base64,") && after.contains("after"))
-        );
-        std::fs::remove_file(dir.path().join("shot.png")).unwrap();
-        assert!(input.has_images());
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        assert!(
-            prepare(
-                "plain".into(),
-                "plain",
-                Vec::new(),
-                dir.path(),
-                ToolLimits::default(),
-                &cancelled
-            )
-            .is_err()
-        );
     }
 
     #[test]
-    fn resource_pasted_paths_are_all_or_nothing_and_support_shell_and_uri() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in ["one.png", "my shot.png"] {
-            image::DynamicImage::new_rgb8(1, 1)
-                .save(dir.path().join(name))
+    fn resource_images_and_pasted_paths() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            image::DynamicImage::new_rgb8(2, 3)
+                .save(dir.path().join("shot.png"))
                 .unwrap();
+            let input = prepare_text("before @shot.png after", dir.path()).unwrap();
+            let mut bound = image_file(&dir.path().join("shot.png")).unwrap();
+            bound.marker = "#1".into();
+            for range in [usize::MAX..usize::MAX, 0..usize::MAX] {
+                bound.source_range = Some(range);
+                let input = prepare(
+                    "#1".into(),
+                    "#1",
+                    vec![bound.clone()],
+                    dir.path(),
+                    ToolLimits::default(),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+                assert!(!input.has_images());
+            }
+            assert!(
+                matches!(&input.parts[..], [Part::Text(before), Part::Image(url), Part::Text(after)] if before.contains("before") && url.starts_with("data:image/png;base64,") && after.contains("after"))
+            );
+            std::fs::remove_file(dir.path().join("shot.png")).unwrap();
+            assert!(input.has_images());
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            assert!(
+                prepare(
+                    "plain".into(),
+                    "plain",
+                    Vec::new(),
+                    dir.path(),
+                    ToolLimits::default(),
+                    &cancelled
+                )
+                .is_err()
+            );
         }
-        for text in [
-            "one.png",
-            "\"my shot.png\"",
-            "my\\ shot.png",
-            "my shot.png",
-            "one.png 'my shot.png'",
-        ] {
-            assert!(pasted_paths(text, dir.path()).is_some(), "{text}");
-        }
-        let uri = format!("file://{}/my%20shot.png", dir.path().display());
-        assert!(pasted_paths(&uri, dir.path()).is_some());
-        for text in [
-            "explain one.png",
-            "one.png missing.png",
-            "one.png\nnotes",
-            "'one.png",
-        ] {
-            assert!(pasted_paths(text, dir.path()).is_none());
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            for name in ["one.png", "my shot.png"] {
+                image::DynamicImage::new_rgb8(1, 1)
+                    .save(dir.path().join(name))
+                    .unwrap();
+            }
+            for text in [
+                "one.png",
+                "\"my shot.png\"",
+                "my\\ shot.png",
+                "my shot.png",
+                "one.png 'my shot.png'",
+            ] {
+                assert!(pasted_paths(text, dir.path()).is_some(), "{text}");
+            }
+            let uri = format!("file://{}/my%20shot.png", dir.path().display());
+            assert!(pasted_paths(&uri, dir.path()).is_some());
+            for text in [
+                "explain one.png",
+                "one.png missing.png",
+                "one.png\nnotes",
+                "'one.png",
+            ] {
+                assert!(pasted_paths(text, dir.path()).is_none());
+            }
         }
     }
 }

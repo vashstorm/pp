@@ -384,155 +384,151 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_guard_respects_allow_override_and_prefix_boundaries() {
-        let deny = vec![
-            PathBuf::from("/Users/u/.ssh"),
-            PathBuf::from("/Users/u/.pp/agent"),
-        ];
-        let allow = vec![
-            PathBuf::from("/Users/u/.pp/agent/skills"),
-            PathBuf::from("/Users/u/.ssh/known_hosts"),
-        ];
+    fn read_write_guards_and_normalize_path() {
+        {
+            let deny = vec![
+                PathBuf::from("/Users/u/.ssh"),
+                PathBuf::from("/Users/u/.pp/agent"),
+            ];
+            let allow = vec![
+                PathBuf::from("/Users/u/.pp/agent/skills"),
+                PathBuf::from("/Users/u/.ssh/known_hosts"),
+            ];
 
-        let cases = [
-            ("/Users/u/.ssh/id_ed25519", true),
-            ("/Users/u/.ssh_backup/key", false),
-            ("/Users/u/.ssh/known_hosts", false),
-            ("/Users/u/.pp/agent/models.yml", true),
-            ("/Users/u/.pp/agent/skills/demo/SKILL.md", false),
-            ("/Users/u/project/src/main.rs", false),
-        ];
+            let cases = [
+                ("/Users/u/.ssh/id_ed25519", true),
+                ("/Users/u/.ssh_backup/key", false),
+                ("/Users/u/.ssh/known_hosts", false),
+                ("/Users/u/.pp/agent/models.yml", true),
+                ("/Users/u/.pp/agent/skills/demo/SKILL.md", false),
+                ("/Users/u/project/src/main.rs", false),
+            ];
 
-        for (path, expect_denied) in cases {
-            let res = check_read_path(Path::new(path), &deny, &allow, None, &[]);
-            assert_eq!(res.is_err(), expect_denied, "path={path}");
+            for (path, expect_denied) in cases {
+                let res = check_read_path(Path::new(path), &deny, &allow, None, &[]);
+                assert_eq!(res.is_err(), expect_denied, "path={path}");
+            }
         }
-    }
+        {
+            let writable = vec![PathBuf::from("/work/repo"), PathBuf::from("/private/tmp")];
+            let protect = vec![
+                PathBuf::from("/work/repo/.git/hooks"),
+                PathBuf::from("/work/repo/.pp"),
+            ];
 
-    #[test]
-    fn write_guard_respects_protect_priority_and_safe_devices() {
-        let writable = vec![PathBuf::from("/work/repo"), PathBuf::from("/private/tmp")];
-        let protect = vec![
-            PathBuf::from("/work/repo/.git/hooks"),
-            PathBuf::from("/work/repo/.pp"),
-        ];
+            let cases = [
+                ("/work/repo/src/lib.rs", true),
+                ("/work/repo/.pp-cache/x", true),
+                ("/work/repo/.pp/hooks.yml", false),
+                ("/work/repo/.git/hooks/pre-commit", false),
+                ("/private/tmp/out.log", true),
+                ("/private/var/folders/ab/cdef/T/dsym", true),
+                ("/dev/null", true),
+                ("/Users/u/.zshrc", false),
+            ];
 
-        let cases = [
-            ("/work/repo/src/lib.rs", true),
-            ("/work/repo/.pp-cache/x", true),
-            ("/work/repo/.pp/hooks.yml", false),
-            ("/work/repo/.git/hooks/pre-commit", false),
-            ("/private/tmp/out.log", true),
-            ("/private/var/folders/ab/cdef/T/dsym", true),
-            ("/dev/null", true),
-            ("/Users/u/.zshrc", false),
-        ];
-
-        for (path, expect_ok) in cases {
-            let res = check_write_path(
-                Path::new(path),
-                crate::EffectiveMode::WorkspaceWrite,
-                Path::new("/work/repo"),
-                &writable,
-                &[],
-                &protect,
-                &[],
-                &[],
-                &[],
-            );
-            assert_eq!(res.is_ok(), expect_ok, "path={path} -> {res:?}");
+            for (path, expect_ok) in cases {
+                let res = check_write_path(
+                    Path::new(path),
+                    crate::EffectiveMode::WorkspaceWrite,
+                    Path::new("/work/repo"),
+                    &writable,
+                    &[],
+                    &protect,
+                    &[],
+                    &[],
+                    &[],
+                );
+                assert_eq!(res.is_ok(), expect_ok, "path={path} -> {res:?}");
+            }
         }
-    }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let outside = root.join("outside_secret");
 
-    #[test]
-    fn normalize_path_handles_missing_parent_traversal_and_dangling_symlink() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
-        let outside = root.join("outside_secret");
+            let link = root.join("dangling_link");
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
 
-        let link = root.join("dangling_link");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-
-        assert_eq!(normalize_path(&link), outside);
-        assert_eq!(
-            normalize_path(&root.join("missing/../sub/file.txt")),
-            root.join("sub/file.txt")
-        );
-    }
-
-    #[test]
-    fn sandbox_lexical_fast_path_only_skips_component_disjoint_paths() {
-        let deny = vec![PathBuf::from("/work/repo/.ssh")];
-        let cases = [
-            ("/work/repo/src/main.rs", true),
-            ("/work/repo/.ssh_backup/key", true),
-            ("/work/repo/.ssh", false),
-            ("/work/repo/.ssh/id_rsa", false),
-            ("/work/repo", false),
-            ("/work", false),
-            ("work/repo/src", false),
-            ("/work/repo/../repo/src", false),
-            // `.` 由 `Path::components` 归一，不改变安全性
-            ("/work/./repo/src", true),
-        ];
-        for (path, outside) in cases {
+            assert_eq!(normalize_path(&link), outside);
             assert_eq!(
-                lexically_outside_deny(Path::new(path), &deny),
-                outside,
-                "path={path}"
+                normalize_path(&root.join("missing/../sub/file.txt")),
+                root.join("sub/file.txt")
             );
         }
-        assert!(lexically_outside_deny(Path::new("/work/repo/src"), &[]));
     }
 
     #[test]
-    fn sandbox_lexical_aliases_cover_private_prefix_folding() {
-        assert_eq!(
-            lexical_aliases(Path::new("/private/tmp/secret")),
-            vec![PathBuf::from("/tmp/secret")]
-        );
-        assert_eq!(
-            lexical_aliases(Path::new("/private/var/folders/x/T")),
-            vec![PathBuf::from("/var/folders/x/T")]
-        );
-        assert!(lexical_aliases(Path::new("/Users/u/.ssh")).is_empty());
-        assert!(lexical_aliases(Path::new("/private/tmpx/secret")).is_empty());
-    }
-
-    #[test]
-    fn write_guard_rejects_read_denied_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
-        let secret = root.join("secret");
-        let allowed = secret.join("public");
-        assert!(
-            check_write_path(
-                &secret.join("key"),
-                crate::EffectiveMode::WorkspaceWrite,
-                &root,
-                std::slice::from_ref(&root),
-                &[],
-                &[],
-                &[],
-                std::slice::from_ref(&secret),
-                std::slice::from_ref(&allowed),
-            )
-            .is_err()
-        );
-        assert!(
-            check_write_path(
-                &allowed.join("note"),
-                crate::EffectiveMode::WorkspaceWrite,
-                &root,
-                std::slice::from_ref(&root),
-                &[],
-                &[],
-                &[],
-                std::slice::from_ref(&secret),
-                std::slice::from_ref(&allowed),
-            )
-            .is_ok()
-        );
+    fn lexical_fast_path_aliases_and_denied_write_guard() {
+        {
+            let deny = vec![PathBuf::from("/work/repo/.ssh")];
+            let cases = [
+                ("/work/repo/src/main.rs", true),
+                ("/work/repo/.ssh_backup/key", true),
+                ("/work/repo/.ssh", false),
+                ("/work/repo/.ssh/id_rsa", false),
+                ("/work/repo", false),
+                ("/work", false),
+                ("work/repo/src", false),
+                ("/work/repo/../repo/src", false),
+                // `.` 由 `Path::components` 归一，不改变安全性
+                ("/work/./repo/src", true),
+            ];
+            for (path, outside) in cases {
+                assert_eq!(
+                    lexically_outside_deny(Path::new(path), &deny),
+                    outside,
+                    "path={path}"
+                );
+            }
+            assert!(lexically_outside_deny(Path::new("/work/repo/src"), &[]));
+        }
+        {
+            assert_eq!(
+                lexical_aliases(Path::new("/private/tmp/secret")),
+                vec![PathBuf::from("/tmp/secret")]
+            );
+            assert_eq!(
+                lexical_aliases(Path::new("/private/var/folders/x/T")),
+                vec![PathBuf::from("/var/folders/x/T")]
+            );
+            assert!(lexical_aliases(Path::new("/Users/u/.ssh")).is_empty());
+            assert!(lexical_aliases(Path::new("/private/tmpx/secret")).is_empty());
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let secret = root.join("secret");
+            let allowed = secret.join("public");
+            assert!(
+                check_write_path(
+                    &secret.join("key"),
+                    crate::EffectiveMode::WorkspaceWrite,
+                    &root,
+                    std::slice::from_ref(&root),
+                    &[],
+                    &[],
+                    &[],
+                    std::slice::from_ref(&secret),
+                    std::slice::from_ref(&allowed),
+                )
+                .is_err()
+            );
+            assert!(
+                check_write_path(
+                    &allowed.join("note"),
+                    crate::EffectiveMode::WorkspaceWrite,
+                    &root,
+                    std::slice::from_ref(&root),
+                    &[],
+                    &[],
+                    &[],
+                    std::slice::from_ref(&secret),
+                    std::slice::from_ref(&allowed),
+                )
+                .is_ok()
+            );
+        }
     }
 }

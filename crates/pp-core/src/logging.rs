@@ -343,149 +343,147 @@ mod tests {
     }
 
     #[test]
-    fn whole_record_size_boundary_and_oversize_rejection() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut file = RotatingFile::new(dir.path().join("logs")).unwrap();
-        let record = b"{\"mark\":1}\n";
-        let first = padded_record(MAX_LOG_BYTES as usize - record.len());
-        fs::write(file.path(date(), 1), &first).unwrap();
-        append(&mut file, record, date()).unwrap();
-        assert_eq!(
-            fs::metadata(file.path(date(), 1)).unwrap().len(),
-            MAX_LOG_BYTES
-        );
-        append(&mut file, record, date()).unwrap();
-        assert_eq!(fs::read(file.path(date(), 2)).unwrap(), record);
-        let before = fs::read(file.path(date(), 2)).unwrap();
-        assert_eq!(
-            append(&mut file, &vec![b'x'; MAX_LOG_BYTES as usize + 1], date())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(fs::read(file.path(date(), 2)).unwrap(), before);
-        assert_eq!(records(&file.dir).len(), 3);
-
-        let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
-            file,
-            buffer: Vec::new(),
-            error: None,
-        })));
+    fn log_size_boundary_threads_and_error_recovery() {
         {
-            let mut event = writer.make_writer();
-            event.write_all(b"{\"partial\":").unwrap();
-            assert!(
-                event
-                    .write_all(&vec![b'x'; MAX_LOG_BYTES as usize])
-                    .is_err()
+            let dir = tempfile::tempdir().unwrap();
+            let mut file = RotatingFile::new(dir.path().join("logs")).unwrap();
+            let record = b"{\"mark\":1}\n";
+            let first = padded_record(MAX_LOG_BYTES as usize - record.len());
+            fs::write(file.path(date(), 1), &first).unwrap();
+            append(&mut file, record, date()).unwrap();
+            assert_eq!(
+                fs::metadata(file.path(date(), 1)).unwrap().len(),
+                MAX_LOG_BYTES
             );
-        }
-        let state = writer.0.lock().unwrap();
-        assert_eq!(
-            state.error.as_ref().unwrap().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(fs::read(state.file.path(date(), 2)).unwrap(), before);
-        assert_eq!(records(&state.file.dir).len(), 3);
+            append(&mut file, record, date()).unwrap();
+            assert_eq!(fs::read(file.path(date(), 2)).unwrap(), record);
+            let before = fs::read(file.path(date(), 2)).unwrap();
+            assert_eq!(
+                append(&mut file, &vec![b'x'; MAX_LOG_BYTES as usize + 1], date())
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::read(file.path(date(), 2)).unwrap(), before);
+            assert_eq!(records(&file.dir).len(), 3);
 
-        // Debug 文本日志共用同一体积上限：超限记录整条拒绝，文件保持原样。
-        let mut debug = DebugLog {
-            file: RotatingFile::new(dir.path().join("debug-logs")).unwrap(),
-        };
-        debug.record(&serde_json::json!({"turn": 1})).unwrap();
-        let path = debug
-            .file
-            .path_for(Namespace::Debug, Local::now().date_naive(), 1);
-        let before = fs::read(&path).unwrap();
-        let oversize = serde_json::json!({"pad": "x".repeat(MAX_LOG_BYTES as usize)});
-        assert_eq!(
-            debug.record(&oversize).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(fs::read(&path).unwrap(), before);
-    }
-
-    #[test]
-    fn threaded_events_are_complete_unique_and_bounded() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = RotatingFile::new(dir.path().join("logs")).unwrap();
-        let path = file.dir.clone();
-        let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
-            file,
-            buffer: Vec::new(),
-            error: None,
-        })));
-        let dispatch = tracing::Dispatch::new(
-            tracing_subscriber::registry().with(
-                tracing_subscriber::fmt::layer()
-                    .json()
-                    .with_writer(writer.clone()),
-            ),
-        );
-        std::thread::scope(|scope| {
-            for thread in 0..8 {
-                let dispatch = &dispatch;
-                scope.spawn(move || {
-                    tracing::dispatcher::with_default(dispatch, || {
-                        for index in 0..50 {
-                            tracing::info!(
-                                event = "thread_record",
-                                pid = std::process::id(),
-                                marker = thread * 50 + index
-                            );
-                        }
-                    })
-                });
+            let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
+                file,
+                buffer: Vec::new(),
+                error: None,
+            })));
+            {
+                let mut event = writer.make_writer();
+                event.write_all(b"{\"partial\":").unwrap();
+                assert!(
+                    event
+                        .write_all(&vec![b'x'; MAX_LOG_BYTES as usize])
+                        .is_err()
+                );
             }
-        });
-        let values = records(&path);
-        let markers: BTreeSet<_> = values
-            .iter()
-            .map(|value| value["fields"]["marker"].as_u64().unwrap())
-            .collect();
-        assert_eq!(markers, (0..400).collect());
-        assert_eq!(values.len(), markers.len());
-        assert!(writer.0.lock().unwrap().error.is_none());
-    }
+            let state = writer.0.lock().unwrap();
+            assert_eq!(
+                state.error.as_ref().unwrap().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::read(state.file.path(date(), 2)).unwrap(), before);
+            assert_eq!(records(&state.file.dir).len(), 3);
 
-    #[test]
-    fn failed_append_releases_lock_and_next_event_still_writes() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = RotatingFile::new(dir.path().join("logs")).unwrap();
-        let path = file.path(Local::now().date_naive(), 1);
-        let sentinel = dir.path().join("sentinel");
-        fs::write(&sentinel, b"untouched").unwrap();
-        symlink(&sentinel, &path).unwrap();
-        let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
-            file,
-            buffer: Vec::new(),
-            error: None,
-        })));
-        writer
-            .make_writer()
-            .write_all(b"{\"lost\":true}\n")
+            // Debug 文本日志共用同一体积上限：超限记录整条拒绝，文件保持原样。
+            let mut debug = DebugLog {
+                file: RotatingFile::new(dir.path().join("debug-logs")).unwrap(),
+            };
+            debug.record(&serde_json::json!({"turn": 1})).unwrap();
+            let path = debug
+                .file
+                .path_for(Namespace::Debug, Local::now().date_naive(), 1);
+            let before = fs::read(&path).unwrap();
+            let oversize = serde_json::json!({"pad": "x".repeat(MAX_LOG_BYTES as usize)});
+            assert_eq!(
+                debug.record(&oversize).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = RotatingFile::new(dir.path().join("logs")).unwrap();
+            let path = file.dir.clone();
+            let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
+                file,
+                buffer: Vec::new(),
+                error: None,
+            })));
+            let dispatch = tracing::Dispatch::new(
+                tracing_subscriber::registry().with(
+                    tracing_subscriber::fmt::layer()
+                        .json()
+                        .with_writer(writer.clone()),
+                ),
+            );
+            std::thread::scope(|scope| {
+                for thread in 0..8 {
+                    let dispatch = &dispatch;
+                    scope.spawn(move || {
+                        tracing::dispatcher::with_default(dispatch, || {
+                            for index in 0..50 {
+                                tracing::info!(
+                                    event = "thread_record",
+                                    pid = std::process::id(),
+                                    marker = thread * 50 + index
+                                );
+                            }
+                        })
+                    });
+                }
+            });
+            let values = records(&path);
+            let markers: BTreeSet<_> = values
+                .iter()
+                .map(|value| value["fields"]["marker"].as_u64().unwrap())
+                .collect();
+            assert_eq!(markers, (0..400).collect());
+            assert_eq!(values.len(), markers.len());
+            assert!(writer.0.lock().unwrap().error.is_none());
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let file = RotatingFile::new(dir.path().join("logs")).unwrap();
+            let path = file.path(Local::now().date_naive(), 1);
+            let sentinel = dir.path().join("sentinel");
+            fs::write(&sentinel, b"untouched").unwrap();
+            symlink(&sentinel, &path).unwrap();
+            let writer = EventMakeWriter(Arc::new(Mutex::new(WriterState {
+                file,
+                buffer: Vec::new(),
+                error: None,
+            })));
+            writer
+                .make_writer()
+                .write_all(b"{\"lost\":true}\n")
+                .unwrap();
+            assert!(writer.0.lock().unwrap().error.is_some());
+            let lock = open_regular(
+                &writer.0.lock().unwrap().file.dir.join(".lock"),
+                false,
+                false,
+            )
             .unwrap();
-        assert!(writer.0.lock().unwrap().error.is_some());
-        let lock = open_regular(
-            &writer.0.lock().unwrap().file.dir.join(".lock"),
-            false,
-            false,
-        )
-        .unwrap();
-        flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
-        flock(&lock, FlockOperation::Unlock).unwrap();
-        assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
-        fs::remove_file(&path).unwrap();
-        writer
-            .make_writer()
-            .write_all(b"{\"recovered\":true}\n")
-            .unwrap();
-        assert_eq!(fs::read(path).unwrap(), b"{\"recovered\":true}\n");
-        let guard = LoggingGuard {
-            state: writer.0.clone(),
-        };
-        assert!(guard.take_error().is_some());
-        assert!(guard.take_error().is_none());
+            flock(&lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+            flock(&lock, FlockOperation::Unlock).unwrap();
+            assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
+            fs::remove_file(&path).unwrap();
+            writer
+                .make_writer()
+                .write_all(b"{\"recovered\":true}\n")
+                .unwrap();
+            assert_eq!(fs::read(path).unwrap(), b"{\"recovered\":true}\n");
+            let guard = LoggingGuard {
+                state: writer.0.clone(),
+            };
+            assert!(guard.take_error().is_some());
+            assert!(guard.take_error().is_none());
+        }
     }
 
     #[test]

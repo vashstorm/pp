@@ -275,81 +275,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compile_profile_never_interpolates_raw_paths_into_sbpl() {
-        let writable = vec![PathBuf::from("/tmp/evil\") (allow default")];
-        let protect = vec![PathBuf::from("/work/.git/hooks")];
-        let deny_read = vec![PathBuf::from("/home/u/.ssh")];
-        let allow_read = vec![PathBuf::from("/home/u/.ssh/known_hosts")];
-        let docker_sock = PathBuf::from("/home/u/.docker/run/docker.sock");
+    fn compile_profile_and_exec_args_boundaries() {
+        {
+            let writable = vec![PathBuf::from("/tmp/evil\") (allow default")];
+            let protect = vec![PathBuf::from("/work/.git/hooks")];
+            let deny_read = vec![PathBuf::from("/home/u/.ssh")];
+            let allow_read = vec![PathBuf::from("/home/u/.ssh/known_hosts")];
+            let docker_sock = PathBuf::from("/home/u/.docker/run/docker.sock");
 
-        let cwd = PathBuf::from("/work");
-        let spec = SeatbeltSpec {
-            mode: crate::EffectiveMode::WorkspaceWrite,
-            cwd: &cwd,
-            writable: &writable,
-            allow_write_files: &[],
-            protect: &protect,
-            immutable_protect: &[],
-            home_deny_root: None,
-            home_allow_read: &[],
-            deny_read: &deny_read,
-            allow_read: &allow_read,
-            allow_read_metadata: &[],
-            docker_user_sock: Some(&docker_sock),
-            network: false,
-        };
-        let (profile, params) = compile_profile(&spec).unwrap();
-        assert!(!profile.contains("evil"));
-        assert!(!profile.contains("/work/.git/hooks"));
-        assert!(profile.contains("(param \"W0\")"));
-        assert!(profile.contains("(param \"P0\")"));
-        assert!(profile.contains("(param \"R0\")"));
-        assert!(profile.contains("(param \"A0\")"));
-        assert!(profile.contains("(param \"DS0\")"));
-        assert!(profile.contains(
-            "(deny network-outbound)\n(allow network-outbound (remote ip \"localhost:*\"))"
-        ));
+            let cwd = PathBuf::from("/work");
+            let spec = SeatbeltSpec {
+                mode: crate::EffectiveMode::WorkspaceWrite,
+                cwd: &cwd,
+                writable: &writable,
+                allow_write_files: &[],
+                protect: &protect,
+                immutable_protect: &[],
+                home_deny_root: None,
+                home_allow_read: &[],
+                deny_read: &deny_read,
+                allow_read: &allow_read,
+                allow_read_metadata: &[],
+                docker_user_sock: Some(&docker_sock),
+                network: false,
+            };
+            let (profile, params) = compile_profile(&spec).unwrap();
+            assert!(!profile.contains("evil"));
+            assert!(!profile.contains("/work/.git/hooks"));
+            assert!(profile.contains("(param \"W0\")"));
+            assert!(profile.contains("(param \"P0\")"));
+            assert!(profile.contains("(param \"R0\")"));
+            assert!(profile.contains("(param \"A0\")"));
+            assert!(profile.contains("(param \"DS0\")"));
+            assert!(profile.contains(
+                "(deny network-outbound)\n(allow network-outbound (remote ip \"localhost:*\"))"
+            ));
 
-        let docker_deny_pos = profile
-            .rfind("path-literal \"/var/run/docker.sock\"")
+            let docker_deny_pos = profile
+                .rfind("path-literal \"/var/run/docker.sock\"")
+                .unwrap();
+            let unix_allow_pos = profile
+                .find("(allow network-outbound (remote unix-socket))")
+                .unwrap();
+            assert!(docker_deny_pos > unix_allow_pos);
+            assert_eq!(params.len(), 5);
+        }
+        {
+            let writable = vec![PathBuf::from("/work")];
+            let cwd = PathBuf::from("/work");
+            let spec = SeatbeltSpec {
+                mode: crate::EffectiveMode::WorkspaceWrite,
+                cwd: &cwd,
+                writable: &writable,
+                allow_write_files: &[],
+                protect: &[],
+                immutable_protect: &[],
+                home_deny_root: None,
+                home_allow_read: &[],
+                deny_read: &[],
+                allow_read: &[],
+                allow_read_metadata: &[],
+                docker_user_sock: None,
+                network: true,
+            };
+            let (bin, args) = build_exec_args(
+                &spec,
+                "/bin/echo",
+                &[OsString::from("-n"), OsString::from("hi")],
+            )
             .unwrap();
-        let unix_allow_pos = profile
-            .find("(allow network-outbound (remote unix-socket))")
-            .unwrap();
-        assert!(docker_deny_pos > unix_allow_pos);
-        assert_eq!(params.len(), 5);
-    }
-
-    #[test]
-    fn build_exec_args_places_double_dash_before_target_command() {
-        let writable = vec![PathBuf::from("/work")];
-        let cwd = PathBuf::from("/work");
-        let spec = SeatbeltSpec {
-            mode: crate::EffectiveMode::WorkspaceWrite,
-            cwd: &cwd,
-            writable: &writable,
-            allow_write_files: &[],
-            protect: &[],
-            immutable_protect: &[],
-            home_deny_root: None,
-            home_allow_read: &[],
-            deny_read: &[],
-            allow_read: &[],
-            allow_read_metadata: &[],
-            docker_user_sock: None,
-            network: true,
-        };
-        let (bin, args) = build_exec_args(
-            &spec,
-            "/bin/echo",
-            &[OsString::from("-n"), OsString::from("hi")],
-        )
-        .unwrap();
-        assert_eq!(bin, "/usr/bin/sandbox-exec");
-        let dash_dash = args.iter().position(|a| a == "--").unwrap();
-        assert_eq!(args[dash_dash + 1], "/bin/echo");
-        assert_eq!(args[dash_dash + 2], "-n");
-        assert_eq!(args[dash_dash + 3], "hi");
+            assert_eq!(bin, "/usr/bin/sandbox-exec");
+            let dash_dash = args.iter().position(|a| a == "--").unwrap();
+            assert_eq!(args[dash_dash + 1], "/bin/echo");
+            assert_eq!(args[dash_dash + 2], "-n");
+            assert_eq!(args[dash_dash + 3], "hi");
+        }
     }
 
     #[test]

@@ -497,7 +497,7 @@ impl CleanupPermit for Permit {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::*;
     use brush_core::{ManagedProcess, ProcessSupervisor};
     use std::process::{ExitStatus, Stdio};
@@ -549,341 +549,329 @@ mod tests {
     }
 
     #[test]
-    fn embedded_shell_supervisor_managed_spawn_waits_and_reaps() {
-        let supervisor = supervisor();
-        let spawned = supervisor
-            .spawn(command("exit 7"), SpawnGroup::New, None)
-            .expect("spawn");
-        let pid = spawned.process.pid();
-        assert!(pid > 0);
-        assert_eq!(spawned.process.pgid(), pid);
-        assert!(process_exists(pid));
-
-        let status = wait_exit(spawned.process.as_ref());
-        assert_eq!(status.code(), Some(7));
-        let process = spawned.process.clone();
-        drop(spawned.group);
-        drop(spawned.process);
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Exited);
-        assert!(outcome.cleanup_error.is_none());
-        wait_until(|| !process_exists(pid));
-        // Registry removal must not invalidate the cached terminal status or
-        // make a later kill on the returned PID fail.
-        assert_eq!(wait_exit(process.as_ref()).code(), Some(7));
-        assert!(supervisor.signal_pid(pid, libc::SIGTERM).is_ok());
-        assert!(supervisor.signal_pid(pid, 0).is_ok());
-    }
-
-    #[test]
-    fn embedded_shell_supervisor_group_lease_anchors_leader_until_group_is_empty() {
-        let supervisor = supervisor();
-        let leader = supervisor
-            .spawn(command("sleep 0.2; exit 5"), SpawnGroup::New, None)
-            .expect("spawn leader");
-        let leader_pid = leader.process.pid();
-        let pgid = leader.group.pgid();
-
-        let joined = supervisor
-            .spawn(command("exit 3"), SpawnGroup::Join(leader.group), None)
-            .expect("spawn joined stage");
-        assert_eq!(joined.process.pgid(), pgid);
-
-        assert_eq!(wait_exit(joined.process.as_ref()).code(), Some(3));
-        // The lease keeps the exited leader as an anchor even though the joined
-        // stage is already reaped.
-        assert_eq!(wait_exit(leader.process.as_ref()).code(), Some(5));
-        assert!(process_exists(leader_pid), "leader anchor was reaped early");
-
-        drop(joined.group);
-        drop(leader.process);
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Exited);
-        assert!(outcome.cleanup_error.is_none());
-        wait_until(|| !process_exists(leader_pid));
-    }
-
-    #[test]
-    fn embedded_shell_supervisor_join_after_leader_exit() {
-        let supervisor = supervisor();
-        let leader = supervisor
-            .spawn(command("exit 5"), SpawnGroup::New, None)
-            .expect("spawn leader");
-        let pgid = leader.group.pgid();
-
-        // Observe the leader's exit while the assembly lease still holds the
-        // zombie anchor. A later pipeline stage must still be able to join the
-        // group by pgid.
-        assert_eq!(wait_exit(leader.process.as_ref()).code(), Some(5));
-        let joined = supervisor
-            .spawn(command("exit 3"), SpawnGroup::Join(leader.group), None)
-            .expect("join after leader exit");
-        assert_eq!(joined.process.pgid(), pgid);
-        assert_eq!(wait_exit(joined.process.as_ref()).code(), Some(3));
-
-        drop(joined.group);
-        drop(leader.process);
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Exited);
-        assert!(outcome.cleanup_error.is_none());
-    }
-
-    #[test]
-    fn embedded_shell_supervisor_stop_escalates_and_closes_spawning() {
-        let supervisor = supervisor();
-        let spawned = supervisor
-            .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
-            .expect("spawn");
-        let pid = spawned.process.pid();
-
-        supervisor.request_stop();
-        let permit = loop {
-            if let Some(permit) = supervisor.cleanup_permit() {
-                break permit;
-            }
-            assert!(
-                !supervisor.is_finished(),
-                "stop finished before a permit existed"
-            );
-            thread::sleep(Duration::from_millis(5));
-        };
-
-        // Spawns inside the TERM cleanup window are allowed.
-        let cleanup = supervisor
-            .spawn(command("exit 0"), SpawnGroup::New, Some(permit.as_ref()))
-            .expect("cleanup spawn");
-        drop(cleanup.group);
-        drop(cleanup.process);
-
-        wait_until(|| permit.is_revoked());
-        assert!(supervisor.cleanup_permit().is_none());
-        assert!(
-            supervisor
-                .spawn(command("exit 0"), SpawnGroup::New, Some(permit.as_ref()))
-                .is_err()
-        );
-        assert!(
-            supervisor
-                .spawn(command("exit 0"), SpawnGroup::New, None)
-                .is_err()
-        );
-
-        drop(spawned.group);
-        drop(spawned.process);
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Stopped);
-        assert!(outcome.cleanup_error.is_none());
-        wait_until(|| !process_exists(pid));
-    }
-
-    /// active 轮询在无状态变化时会退避到上限；但任一状态变化必须立即回到
-    /// 基线，因此停止请求的 TERM→KILL 升级不会被推到下一个长间隔之后。
-    #[test]
-    fn embedded_shell_supervisor_backoff_keeps_stop_escalation_prompt() {
-        let supervisor = supervisor();
-        let spawned = supervisor
-            .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
-            .expect("spawn");
-        let pid = spawned.process.pid();
-        // 静置到退避上限：子进程一直不退出，注册表没有任何变化。
-        thread::sleep(Duration::from_millis(300));
-
-        supervisor.request_stop();
-        let permit = loop {
-            if let Some(permit) = supervisor.cleanup_permit() {
-                break permit;
-            }
-            assert!(
-                !supervisor.is_finished(),
-                "stop finished before a permit existed"
-            );
-            thread::sleep(Duration::from_millis(1));
-        };
-        // 宽限期内的 TERM 被 trap 吸收，升级仍由基线轮询驱动到 SIGKILL。
-        wait_until(|| permit.is_revoked());
-
-        drop(spawned.group);
-        drop(spawned.process);
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Stopped);
-        assert!(outcome.cleanup_error.is_none());
-        wait_until(|| !process_exists(pid));
-    }
-
-    #[test]
-    fn embedded_shell_supervisor_parent_cancellation_reports_cancelled() {
-        let cancellation = CancellationToken::new();
-        let stop = CancellationToken::new();
-        let supervisor = Supervisor::new_with_stop(None, cancellation.clone(), stop.clone(), None)
-            .expect("supervisor");
-        let spawned = supervisor
-            .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
-            .expect("spawn");
-        let pid = spawned.process.pid();
-        // Both inputs are cancelled: parent cancellation must win.
-        cancellation.cancel();
-        stop.cancel();
-        supervisor.interpreter_finished();
-        drop(spawned.group);
-        drop(spawned.process);
-
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Cancelled);
-        assert!(outcome.cleanup_error.is_none());
-        wait_until(|| !process_exists(pid));
-    }
-
-    #[test]
-    fn embedded_shell_supervisor_stop_token_reports_stopped() {
-        let stop = CancellationToken::new();
-        let supervisor =
-            Supervisor::new_with_stop(None, CancellationToken::new(), stop.clone(), None)
-                .expect("supervisor");
-        let spawned = supervisor
-            .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
-            .expect("spawn");
-        let pid = spawned.process.pid();
-        // The host-facing stop token alone selects Stopped, without request_stop.
-        stop.cancel();
-        supervisor.interpreter_finished();
-        drop(spawned.group);
-        drop(spawned.process);
-
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Stopped);
-        assert!(outcome.cleanup_error.is_none());
-        wait_until(|| !process_exists(pid));
-    }
-
-    #[test]
-    fn embedded_shell_supervisor_refuses_to_signal_the_host() {
-        let supervisor = supervisor();
-        let host = std::process::id() as i32;
-        assert!(supervisor.signal_pid(host, libc::SIGTERM).is_err());
-        assert!(supervisor.signal_pid(0, libc::SIGTERM).is_err());
-        assert!(supervisor.signal_pid(-1, libc::SIGTERM).is_err());
-        // Queries remain available.
-        assert!(supervisor.signal_pid(host, 0).is_ok());
-
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        assert_eq!(outcome.termination, Termination::Exited);
-        assert!(outcome.cleanup_error.is_none());
-    }
-
-    #[test]
-    fn stopping_exits_promptly_once_interpreter_and_children_finish() {
-        let supervisor = supervisor();
-        let spawned = supervisor
-            .spawn(command("sleep 30"), SpawnGroup::New, None)
-            .expect("spawn");
-        assert!(process_exists(spawned.process.pid()));
-        drop(spawned.group);
-        drop(spawned.process);
-
-        let started = Instant::now();
-        supervisor.request_stop();
-        supervisor.interpreter_finished();
-        let outcome = supervisor.wait();
-        let elapsed = started.elapsed();
-        assert_eq!(outcome.termination, Termination::Stopped);
-        assert!(outcome.cleanup_error.is_none());
-        // 正常响应 SIGTERM 的子进程退出后应远早于 1s GRACE 窗口结束。
-        assert!(
-            elapsed < Duration::from_millis(600),
-            "expected prompt exit in Stopping phase, got {elapsed:?}"
-        );
-    }
-
-    /// SIGKILL 之后注册表若始终无法清空（组内仍有不可杀的成员），monitor
-    /// 不得无限重发信号：必须在独立的 kill 宽限期后放弃回收，让
-    /// `Supervisor::wait()` 返回；未回收的记录保持真实状态。
-    #[test]
-    fn embedded_shell_supervisor_killing_deadline_lets_wait_return() {
-        use std::os::unix::process::ExitStatusExt;
-        use std::process::ExitStatus;
-        use std::sync::Weak;
-        use std::sync::mpsc;
-
-        let supervisor = Supervisor::new_with_stop(
-            None,
-            CancellationToken::new(),
-            CancellationToken::new(),
-            None,
-        )
-        .expect("supervisor");
-        // 模拟“组长已观察退出、租约已释放、组内仍有存活成员”的顽固状态：
-        // 宿主进程组必然有存活成员，注册表永远不会自行清空。
-        let pid = 2_000_000_000;
-        let cell = Arc::new(ProcessCell {
-            pid,
-            pgid: host_pgid(),
-            inner: Mutex::new(CellInner::default()),
-        });
-        cell.complete(super::process::CellOutcome::Status(ExitStatus::from_raw(0)));
+    fn supervisor_spawn_leases_and_join_after_leader_exit() {
         {
-            let mut state = lock(&supervisor.shared.state);
-            state.phase = Phase::Stopping;
-            state.interpreter_done = true;
-            // TERM 宽限期已过，monitor 下一轮就会升级到 SIGKILL。
-            state.grace_deadline = Some(Instant::now() - Duration::from_millis(1));
-            state.groups.insert(
-                0,
-                GroupRecord {
-                    pgid: host_pgid(),
-                    leader: pid,
-                    lease: Weak::new(),
-                },
+            let supervisor = supervisor();
+            let spawned = supervisor
+                .spawn(command("exit 7"), SpawnGroup::New, None)
+                .expect("spawn");
+            let pid = spawned.process.pid();
+            assert!(pid > 0);
+            assert_eq!(spawned.process.pgid(), pid);
+            assert!(process_exists(pid));
+
+            let status = wait_exit(spawned.process.as_ref());
+            assert_eq!(status.code(), Some(7));
+            let process = spawned.process.clone();
+            drop(spawned.group);
+            drop(spawned.process);
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Exited);
+            assert!(outcome.cleanup_error.is_none());
+            wait_until(|| !process_exists(pid));
+            // Registry removal must not invalidate the cached terminal status or
+            // make a later kill on the returned PID fail.
+            assert_eq!(wait_exit(process.as_ref()).code(), Some(7));
+            assert!(supervisor.signal_pid(pid, libc::SIGTERM).is_ok());
+            assert!(supervisor.signal_pid(pid, 0).is_ok());
+        }
+        {
+            let supervisor = supervisor();
+            let leader = supervisor
+                .spawn(command("sleep 0.2; exit 5"), SpawnGroup::New, None)
+                .expect("spawn leader");
+            let leader_pid = leader.process.pid();
+            let pgid = leader.group.pgid();
+
+            let joined = supervisor
+                .spawn(command("exit 3"), SpawnGroup::Join(leader.group), None)
+                .expect("spawn joined stage");
+            assert_eq!(joined.process.pgid(), pgid);
+
+            assert_eq!(wait_exit(joined.process.as_ref()).code(), Some(3));
+            // The lease keeps the exited leader as an anchor even though the joined
+            // stage is already reaped.
+            assert_eq!(wait_exit(leader.process.as_ref()).code(), Some(5));
+            assert!(process_exists(leader_pid), "leader anchor was reaped early");
+
+            drop(joined.group);
+            drop(leader.process);
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Exited);
+            assert!(outcome.cleanup_error.is_none());
+            wait_until(|| !process_exists(leader_pid));
+        }
+        {
+            let supervisor = supervisor();
+            let leader = supervisor
+                .spawn(command("exit 5"), SpawnGroup::New, None)
+                .expect("spawn leader");
+            let pgid = leader.group.pgid();
+
+            // Observe the leader's exit while the assembly lease still holds the
+            // zombie anchor. A later pipeline stage must still be able to join the
+            // group by pgid.
+            assert_eq!(wait_exit(leader.process.as_ref()).code(), Some(5));
+            let joined = supervisor
+                .spawn(command("exit 3"), SpawnGroup::Join(leader.group), None)
+                .expect("join after leader exit");
+            assert_eq!(joined.process.pgid(), pgid);
+            assert_eq!(wait_exit(joined.process.as_ref()).code(), Some(3));
+
+            drop(joined.group);
+            drop(leader.process);
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Exited);
+            assert!(outcome.cleanup_error.is_none());
+        }
+    }
+
+    #[test]
+    fn supervisor_stop_backoff_and_cancellation_modes() {
+        {
+            let supervisor = supervisor();
+            let spawned = supervisor
+                .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
+                .expect("spawn");
+            let pid = spawned.process.pid();
+
+            supervisor.request_stop();
+            let permit = loop {
+                if let Some(permit) = supervisor.cleanup_permit() {
+                    break permit;
+                }
+                assert!(
+                    !supervisor.is_finished(),
+                    "stop finished before a permit existed"
+                );
+                thread::sleep(Duration::from_millis(5));
+            };
+
+            // Spawns inside the TERM cleanup window are allowed.
+            let cleanup = supervisor
+                .spawn(command("exit 0"), SpawnGroup::New, Some(permit.as_ref()))
+                .expect("cleanup spawn");
+            drop(cleanup.group);
+            drop(cleanup.process);
+
+            wait_until(|| permit.is_revoked());
+            assert!(supervisor.cleanup_permit().is_none());
+            assert!(
+                supervisor
+                    .spawn(command("exit 0"), SpawnGroup::New, Some(permit.as_ref()))
+                    .is_err()
             );
-            state.procs.insert(
-                pid,
-                ProcessRecord {
-                    cell,
-                    group: 0,
-                    leader: true,
-                    observed: true,
-                    reaped: false,
-                },
+            assert!(
+                supervisor
+                    .spawn(command("exit 0"), SpawnGroup::New, None)
+                    .is_err()
+            );
+
+            drop(spawned.group);
+            drop(spawned.process);
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Stopped);
+            assert!(outcome.cleanup_error.is_none());
+            wait_until(|| !process_exists(pid));
+        }
+        {
+            let supervisor = supervisor();
+            let spawned = supervisor
+                .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
+                .expect("spawn");
+            let pid = spawned.process.pid();
+            // 静置到退避上限：子进程一直不退出，注册表没有任何变化。
+            thread::sleep(Duration::from_millis(300));
+
+            supervisor.request_stop();
+            let permit = loop {
+                if let Some(permit) = supervisor.cleanup_permit() {
+                    break permit;
+                }
+                assert!(
+                    !supervisor.is_finished(),
+                    "stop finished before a permit existed"
+                );
+                thread::sleep(Duration::from_millis(1));
+            };
+            // 宽限期内的 TERM 被 trap 吸收，升级仍由基线轮询驱动到 SIGKILL。
+            wait_until(|| permit.is_revoked());
+
+            drop(spawned.group);
+            drop(spawned.process);
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Stopped);
+            assert!(outcome.cleanup_error.is_none());
+            wait_until(|| !process_exists(pid));
+        }
+        {
+            let cancellation = CancellationToken::new();
+            let stop = CancellationToken::new();
+            let supervisor =
+                Supervisor::new_with_stop(None, cancellation.clone(), stop.clone(), None)
+                    .expect("supervisor");
+            let spawned = supervisor
+                .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
+                .expect("spawn");
+            let pid = spawned.process.pid();
+            // Both inputs are cancelled: parent cancellation must win.
+            cancellation.cancel();
+            stop.cancel();
+            supervisor.interpreter_finished();
+            drop(spawned.group);
+            drop(spawned.process);
+
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Cancelled);
+            assert!(outcome.cleanup_error.is_none());
+            wait_until(|| !process_exists(pid));
+        }
+        {
+            let stop = CancellationToken::new();
+            let supervisor =
+                Supervisor::new_with_stop(None, CancellationToken::new(), stop.clone(), None)
+                    .expect("supervisor");
+            let spawned = supervisor
+                .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
+                .expect("spawn");
+            let pid = spawned.process.pid();
+            // The host-facing stop token alone selects Stopped, without request_stop.
+            stop.cancel();
+            supervisor.interpreter_finished();
+            drop(spawned.group);
+            drop(spawned.process);
+
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Stopped);
+            assert!(outcome.cleanup_error.is_none());
+            wait_until(|| !process_exists(pid));
+        }
+    }
+
+    #[test]
+    fn supervisor_host_guard_prompt_stop_and_killing_deadline() {
+        {
+            let supervisor = supervisor();
+            let host = std::process::id() as i32;
+            assert!(supervisor.signal_pid(host, libc::SIGTERM).is_err());
+            assert!(supervisor.signal_pid(0, libc::SIGTERM).is_err());
+            assert!(supervisor.signal_pid(-1, libc::SIGTERM).is_err());
+            // Queries remain available.
+            assert!(supervisor.signal_pid(host, 0).is_ok());
+
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            assert_eq!(outcome.termination, Termination::Exited);
+            assert!(outcome.cleanup_error.is_none());
+        }
+        {
+            let supervisor = supervisor();
+            let spawned = supervisor
+                .spawn(command("sleep 30"), SpawnGroup::New, None)
+                .expect("spawn");
+            assert!(process_exists(spawned.process.pid()));
+            drop(spawned.group);
+            drop(spawned.process);
+
+            let started = Instant::now();
+            supervisor.request_stop();
+            supervisor.interpreter_finished();
+            let outcome = supervisor.wait();
+            let elapsed = started.elapsed();
+            assert_eq!(outcome.termination, Termination::Stopped);
+            assert!(outcome.cleanup_error.is_none());
+            // 正常响应 SIGTERM 的子进程退出后应远早于 1s GRACE 窗口结束。
+            assert!(
+                elapsed < Duration::from_millis(600),
+                "expected prompt exit in Stopping phase, got {elapsed:?}"
             );
         }
-        supervisor.shared.notify();
-
-        let waiting = supervisor.clone();
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let outcome = waiting.wait();
-            let _ = tx.send(outcome);
-        });
-        let outcome = rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("supervisor wait() never returned: Killing with live work must finish");
-
-        assert_eq!(outcome.termination, Termination::Exited);
-        let message = outcome
-            .cleanup_error
-            .expect("abandoned reclamation must report a cleanup failure")
-            .to_string();
-        assert!(
-            message.contains("after SIGKILL"),
-            "unexpected cleanup error: {message}"
-        );
         {
-            let state = lock(&supervisor.shared.state);
-            let record = state
-                .procs
-                .get(&pid)
-                .expect("the unreclaimed record must keep its real state");
+            use std::os::unix::process::ExitStatusExt;
+            use std::process::ExitStatus;
+            use std::sync::Weak;
+            use std::sync::mpsc;
+
+            let supervisor = Supervisor::new_with_stop(
+                None,
+                CancellationToken::new(),
+                CancellationToken::new(),
+                None,
+            )
+            .expect("supervisor");
+            // 模拟“组长已观察退出、租约已释放、组内仍有存活成员”的顽固状态：
+            // 宿主进程组必然有存活成员，注册表永远不会自行清空。
+            let pid = 2_000_000_000;
+            let cell = Arc::new(ProcessCell {
+                pid,
+                pgid: host_pgid(),
+                inner: Mutex::new(CellInner::default()),
+            });
+            cell.complete(super::process::CellOutcome::Status(ExitStatus::from_raw(0)));
+            {
+                let mut state = lock(&supervisor.shared.state);
+                state.phase = Phase::Stopping;
+                state.interpreter_done = true;
+                // TERM 宽限期已过，monitor 下一轮就会升级到 SIGKILL。
+                state.grace_deadline = Some(Instant::now() - Duration::from_millis(1));
+                state.groups.insert(
+                    0,
+                    GroupRecord {
+                        pgid: host_pgid(),
+                        leader: pid,
+                        lease: Weak::new(),
+                    },
+                );
+                state.procs.insert(
+                    pid,
+                    ProcessRecord {
+                        cell,
+                        group: 0,
+                        leader: true,
+                        observed: true,
+                        reaped: false,
+                    },
+                );
+            }
+            supervisor.shared.notify();
+
+            let waiting = supervisor.clone();
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || {
+                let outcome = waiting.wait();
+                let _ = tx.send(outcome);
+            });
+            let outcome = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("supervisor wait() never returned: Killing with live work must finish");
+
+            assert_eq!(outcome.termination, Termination::Exited);
+            let message = outcome
+                .cleanup_error
+                .expect("abandoned reclamation must report a cleanup failure")
+                .to_string();
             assert!(
-                !record.reaped,
-                "an unreclaimed process must not be marked reaped"
+                message.contains("after SIGKILL"),
+                "unexpected cleanup error: {message}"
             );
-            assert!(record.observed);
-            assert!(state.groups.contains_key(&0));
+            {
+                let state = lock(&supervisor.shared.state);
+                let record = state
+                    .procs
+                    .get(&pid)
+                    .expect("the unreclaimed record must keep its real state");
+                assert!(
+                    !record.reaped,
+                    "an unreclaimed process must not be marked reaped"
+                );
+                assert!(record.observed);
+                assert!(state.groups.contains_key(&0));
+            }
         }
     }
 }

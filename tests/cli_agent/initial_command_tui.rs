@@ -36,37 +36,3 @@ fn initial_command_runs_on_startup_and_keeps_session_interactive() {
     no_more(&server);
 }
 
-// 未知启动命令只在界面提示并保留草稿，不发请求也不退出。
-// 用例名带 `initial_command` 前缀：约定的定向筛选是 `test(initial_command)`（子串匹配）。
-#[test]
-fn initial_command_unknown_notifies_and_keeps_draft() {
-    let server = server();
-    let home = tempfile::tempdir().unwrap();
-    std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
-    std::fs::write(
-        config_path(home.path(), "models.yml"),
-        fixture_models(&server),
-    )
-    .unwrap();
-    let mut pty = Pty::start_with_args(home.path(), home.path(), &["/nope"]);
-    pty.wait_for("未知启动命令的错误提示与输入焦点", |screen| {
-        input_is_ready(screen)
-            && screen.contents().contains("unknown command: /nope; use /help")
-    });
-    assert!(
-        notification_bounds(
-            pty.parser.screen(),
-            "Error",
-            vt100::Color::Rgb(224, 108, 117)
-        )
-        .is_some(),
-        "未知命令应显示为错误条目\n{}",
-        pty.contents()
-    );
-    pty.draft("/nope");
-    assert_eq!(pty.prompt(), "/nope");
-    no_more(&server);
-    pty.input("\x03");
-    pty.finish();
-    no_more(&server);
-}

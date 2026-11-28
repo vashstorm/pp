@@ -194,29 +194,6 @@ impl ModelCatalog {
 mod tests {
     use super::*;
 
-    #[test]
-    fn model_roles_subagent_default_fallback_respects_explicit_disable() {
-        let (_dir, mut catalog) = fixture();
-        assert_eq!(
-            catalog.subagent_roles()[&ModelRole::Default].model,
-            catalog.default_reference()
-        );
-        catalog
-            .save_model_role(
-                ModelRole::Default,
-                Some(RoleAssignment {
-                    enabled: false,
-                    model: "fixture/two".into(),
-                    effort: ThinkLevel::High,
-                    fallback: None,
-                }),
-            )
-            .unwrap();
-        let roles = catalog.subagent_roles();
-        assert!(!roles[&ModelRole::Default].enabled);
-        assert_eq!(roles[&ModelRole::Default].model, "fixture/two");
-    }
-
     fn fixture() -> (tempfile::TempDir, ModelCatalog) {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -253,265 +230,290 @@ mod tests {
     }
 
     #[test]
-    fn model_roles_persist_independent_model_and_effort_and_preserve_settings() {
-        let (dir, mut catalog) = fixture();
-        catalog
-            .save_model_role(
-                ModelRole::Fast,
-                Some(assignment("fixture/two", ThinkLevel::Low)),
-            )
-            .unwrap();
-        catalog
-            .save_model_role(
-                ModelRole::Review,
-                Some(assignment("fixture/one", ThinkLevel::High)),
-            )
-            .unwrap();
-        let mut restored = ModelCatalog::from_files(
-            &dir.path().join("settings.yml"),
-            &dir.path().join("models.yml"),
-        )
-        .unwrap();
-        assert_eq!(
-            restored
-                .role_selection(ModelRole::Fast, "fixture/one", ThinkLevel::High)
-                .unwrap(),
-            assignment("fixture/two", ThinkLevel::Low)
-        );
-        assert_eq!(
-            restored
-                .role_selection(ModelRole::Review, "fixture/two", ThinkLevel::Low)
-                .unwrap(),
-            assignment("fixture/one", ThinkLevel::High)
-        );
-        assert_eq!(restored.default_reference(), "fixture/one");
-        restored.save_model_role(ModelRole::Fast, None).unwrap();
-        let mut fallback = assignment("fixture/one", ThinkLevel::Medium);
-        fallback.enabled = false;
-        assert_eq!(
-            restored
-                .role_selection(ModelRole::Fast, "fixture/one", ThinkLevel::Medium)
-                .unwrap(),
-            fallback
-        );
-        assert!(restored.model_roles().contains_key(&ModelRole::Review));
-        let text = fs::read_to_string(dir.path().join("settings.yml")).unwrap();
-        assert!(text.contains("# 保留其他设置") && text.contains("edit: hashline"));
-    }
+    fn model_roles_persistence_defaults_and_error_atomicity() {
+        {
+            let (_dir, mut catalog) = fixture();
+            assert_eq!(
+                catalog.subagent_roles()[&ModelRole::Default].model,
+                catalog.default_reference()
+            );
+            catalog
+                .save_model_role(
+                    ModelRole::Default,
+                    Some(RoleAssignment {
+                        enabled: false,
+                        model: "fixture/two".into(),
+                        effort: ThinkLevel::High,
+                        fallback: None,
+                    }),
+                )
+                .unwrap();
+            let roles = catalog.subagent_roles();
+            assert!(!roles[&ModelRole::Default].enabled);
+            assert_eq!(roles[&ModelRole::Default].model, "fixture/two");
+        }
 
-    #[test]
-    fn model_roles_invalid_effort_or_save_failure_never_changes_committed_state() {
-        let (dir, mut catalog) = fixture();
-        let value = assignment("fixture/two", ThinkLevel::High);
-        catalog
-            .save_model_role(ModelRole::Plan, Some(value.clone()))
+        {
+            let (dir, mut catalog) = fixture();
+            catalog
+                .save_model_role(
+                    ModelRole::Fast,
+                    Some(assignment("fixture/two", ThinkLevel::Low)),
+                )
+                .unwrap();
+            catalog
+                .save_model_role(
+                    ModelRole::Review,
+                    Some(assignment("fixture/one", ThinkLevel::High)),
+                )
+                .unwrap();
+            let mut restored = ModelCatalog::from_files(
+                &dir.path().join("settings.yml"),
+                &dir.path().join("models.yml"),
+            )
             .unwrap();
-        for invalid in [
-            assignment("fixture/two", ThinkLevel::Max),
-            assignment("removed/model", ThinkLevel::Low),
-        ] {
+            assert_eq!(
+                restored
+                    .role_selection(ModelRole::Fast, "fixture/one", ThinkLevel::High)
+                    .unwrap(),
+                assignment("fixture/two", ThinkLevel::Low)
+            );
+            assert_eq!(
+                restored
+                    .role_selection(ModelRole::Review, "fixture/two", ThinkLevel::Low)
+                    .unwrap(),
+                assignment("fixture/one", ThinkLevel::High)
+            );
+            assert_eq!(restored.default_reference(), "fixture/one");
+            restored.save_model_role(ModelRole::Fast, None).unwrap();
+            let mut fallback = assignment("fixture/one", ThinkLevel::Medium);
+            fallback.enabled = false;
+            assert_eq!(
+                restored
+                    .role_selection(ModelRole::Fast, "fixture/one", ThinkLevel::Medium)
+                    .unwrap(),
+                fallback
+            );
+            assert!(restored.model_roles().contains_key(&ModelRole::Review));
+            let text = fs::read_to_string(dir.path().join("settings.yml")).unwrap();
+            assert!(text.contains("# 保留其他设置") && text.contains("edit: hashline"));
+        }
+
+        {
+            let (dir, mut catalog) = fixture();
+            let value = assignment("fixture/two", ThinkLevel::High);
+            catalog
+                .save_model_role(ModelRole::Plan, Some(value.clone()))
+                .unwrap();
+            for invalid in [
+                assignment("fixture/two", ThinkLevel::Max),
+                assignment("removed/model", ThinkLevel::Low),
+            ] {
+                assert!(
+                    catalog
+                        .save_model_role(ModelRole::Plan, Some(invalid))
+                        .is_err()
+                );
+            }
+            let mut malformed = assignment("garbage", ThinkLevel::Low);
+            malformed.enabled = false;
             assert!(
                 catalog
-                    .save_model_role(ModelRole::Plan, Some(invalid))
+                    .save_model_role(ModelRole::Plan, Some(malformed))
                     .is_err()
             );
+            assert_eq!(catalog.model_roles()[&ModelRole::Plan], value);
+            let agent_db = dir.path().join("agent.db");
+            fs::remove_file(&agent_db).unwrap();
+            fs::create_dir(&agent_db).unwrap();
+            assert!(catalog.save_model_role(ModelRole::Plan, None).is_err());
+            assert_eq!(catalog.model_roles()[&ModelRole::Plan], value);
         }
-        // 禁用的 Role 同样保持复合引用约束。
-        let mut malformed = assignment("garbage", ThinkLevel::Low);
-        malformed.enabled = false;
-        assert!(
-            catalog
-                .save_model_role(ModelRole::Plan, Some(malformed))
-                .is_err()
-        );
-        assert_eq!(catalog.model_roles()[&ModelRole::Plan], value);
-        // agent.db 不可用时保存失败，catalog 内存快照保持已提交状态。
-        let agent_db = dir.path().join("agent.db");
-        fs::remove_file(&agent_db).unwrap();
-        fs::create_dir(&agent_db).unwrap();
-        assert!(catalog.save_model_role(ModelRole::Plan, None).is_err());
-        assert_eq!(catalog.model_roles()[&ModelRole::Plan], value);
     }
 
     #[test]
-    fn model_roles_default_and_legacy_default_shortcuts_share_one_selection() {
-        let (dir, mut catalog) = fixture();
-        catalog
-            .save_model_role(
-                ModelRole::Default,
-                Some(assignment("fixture/two", ThinkLevel::High)),
+    fn model_roles_shortcuts_validation_and_deselection() {
+        {
+            let (dir, mut catalog) = fixture();
+            catalog
+                .save_model_role(
+                    ModelRole::Default,
+                    Some(assignment("fixture/two", ThinkLevel::High)),
+                )
+                .unwrap();
+            assert_eq!(catalog.default_reference(), "fixture/two");
+            assert_eq!(catalog.default_think_level(), ThinkLevel::High);
+            catalog.save_default_think_level(ThinkLevel::Low).unwrap();
+            assert_eq!(
+                catalog.model_roles()[&ModelRole::Default].effort,
+                ThinkLevel::Low
+            );
+            catalog.save_default_model("fixture/one").unwrap();
+            assert_eq!(
+                catalog.model_roles()[&ModelRole::Default].model,
+                "fixture/one"
+            );
+            let restored = ModelCatalog::from_files(
+                &dir.path().join("settings.yml"),
+                &dir.path().join("models.yml"),
             )
             .unwrap();
-        assert_eq!(catalog.default_reference(), "fixture/two");
-        assert_eq!(catalog.default_think_level(), ThinkLevel::High);
-        catalog.save_default_think_level(ThinkLevel::Low).unwrap();
-        assert_eq!(
-            catalog.model_roles()[&ModelRole::Default].effort,
-            ThinkLevel::Low
-        );
-        catalog.save_default_model("fixture/one").unwrap();
-        assert_eq!(
-            catalog.model_roles()[&ModelRole::Default].model,
-            "fixture/one"
-        );
-        let restored = ModelCatalog::from_files(
-            &dir.path().join("settings.yml"),
-            &dir.path().join("models.yml"),
-        )
-        .unwrap();
-        assert_eq!(restored.default_reference(), "fixture/one");
-        assert_eq!(restored.default_think_level(), ThinkLevel::Low);
-    }
+            assert_eq!(restored.default_reference(), "fixture/one");
+            assert_eq!(restored.default_think_level(), ThinkLevel::Low);
+        }
 
-    #[test]
-    fn model_roles_reject_unknown_names_and_malformed_assignments() {
-        for input in [
-            "model_roles: {smol: {model: fixture/one, effort: low}}",
-            "model_roles: {fast: {model: one, effort: low}}",
-            "model_roles: {fast: {model: fixture/one, effort: turbo}}",
-            "model_roles: null",
-        ] {
-            assert!(
-                yaml::parse::<ModelPreferences>(input, "settings")
-                    .and_then(|preferences| preferences.validate())
-                    .is_err(),
-                "{input}"
-            );
-        }
-        for role in ModelRole::ALL {
-            assert_eq!(
-                serde_json::from_str::<ModelRole>(&format!("\"{}\"", role.name().to_lowercase()))
-                    .unwrap(),
-                role
-            );
-        }
-    }
-
-    #[test]
-    fn model_roles_deselection_preserves_config_and_stops_default_and_automatic_routing() {
-        let (dir, mut catalog) = fixture();
-        let active = assignment("fixture/two", ThinkLevel::High);
-        catalog
-            .save_model_role(ModelRole::Default, Some(active.clone()))
-            .unwrap();
-        let mut inactive = active;
-        inactive.enabled = false;
-        for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
-            catalog
-                .save_model_role(role, Some(inactive.clone()))
-                .unwrap();
-        }
-        assert_eq!(catalog.default_reference(), "fixture/one");
-        assert_eq!(catalog.default_think_level(), ThinkLevel::None);
-        catalog.reload_models().unwrap();
-        for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
-            assert!(!catalog.model_roles()[&role].enabled);
-            assert_eq!(catalog.model_roles()[&role].model, "fixture/two");
-            let selected = catalog
-                .role_selection(role, "fixture/one", ThinkLevel::Low)
-                .unwrap();
-            assert_eq!(selected.model, "fixture/one");
-            assert_eq!(selected.effort, ThinkLevel::Low);
-        }
-        let restored = ModelCatalog::from_files(
-            &dir.path().join("settings.yml"),
-            &dir.path().join("models.yml"),
-        )
-        .unwrap();
-        for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
-            assert!(!restored.model_roles()[&role].enabled);
-            assert_eq!(restored.model_roles()[&role].model, "fixture/two");
-        }
-    }
-    #[test]
-    fn fallback_roles_allow_same_model_and_preserve_independent_efforts() {
-        let (dir, mut catalog) = fixture();
-        for effort in [ThinkLevel::Low, ThinkLevel::High] {
-            let mut value = assignment("fixture/two", ThinkLevel::High);
-            value.fallback = Some(RoleModel {
-                model: value.model.clone(),
-                effort,
-            });
+        {
+            for input in [
+                "model_roles: {smol: {model: fixture/one, effort: low}}",
+                "model_roles: {fast: {model: one, effort: low}}",
+                "model_roles: {fast: {model: fixture/one, effort: turbo}}",
+                "model_roles: null",
+            ] {
+                assert!(
+                    yaml::parse::<ModelPreferences>(input, "settings")
+                        .and_then(|preferences| preferences.validate())
+                        .is_err(),
+                    "{input}"
+                );
+            }
             for role in ModelRole::ALL {
-                catalog.save_model_role(role, Some(value.clone())).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<ModelRole>(&format!(
+                        "\"{}\"",
+                        role.name().to_lowercase()
+                    ))
+                    .unwrap(),
+                    role
+                );
+            }
+        }
+
+        {
+            let (dir, mut catalog) = fixture();
+            let active = assignment("fixture/two", ThinkLevel::High);
+            catalog
+                .save_model_role(ModelRole::Default, Some(active.clone()))
+                .unwrap();
+            let mut inactive = active;
+            inactive.enabled = false;
+            for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
+                catalog
+                    .save_model_role(role, Some(inactive.clone()))
+                    .unwrap();
+            }
+            assert_eq!(catalog.default_reference(), "fixture/one");
+            assert_eq!(catalog.default_think_level(), ThinkLevel::None);
+            catalog.reload_models().unwrap();
+            for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
+                assert!(!catalog.model_roles()[&role].enabled);
+                assert_eq!(catalog.model_roles()[&role].model, "fixture/two");
+                let selected = catalog
+                    .role_selection(role, "fixture/one", ThinkLevel::Low)
+                    .unwrap();
+                assert_eq!(selected.model, "fixture/one");
+                assert_eq!(selected.effort, ThinkLevel::Low);
             }
             let restored = ModelCatalog::from_files(
                 &dir.path().join("settings.yml"),
                 &dir.path().join("models.yml"),
             )
             .unwrap();
-            for role in ModelRole::ALL {
-                assert_eq!(restored.model_roles()[&role], value);
-                assert_eq!(restored.role_route(role).unwrap().fallback, value.fallback);
+            for role in [ModelRole::Default, ModelRole::Plan, ModelRole::Review] {
+                assert!(!restored.model_roles()[&role].enabled);
+                assert_eq!(restored.model_roles()[&role].model, "fixture/two");
             }
         }
     }
 
     #[test]
-    fn fallback_roles_save_default_model_matching_fallback() {
-        let (dir, mut catalog) = fixture();
-        let mut value = assignment("fixture/one", ThinkLevel::High);
-        value.fallback = Some(RoleModel {
-            model: "fixture/two".into(),
-            effort: ThinkLevel::Low,
-        });
-        catalog
-            .save_model_role(ModelRole::Default, Some(value.clone()))
-            .unwrap();
-        catalog.save_default_model("fixture/two").unwrap();
-        value.model = "fixture/two".into();
-        assert_eq!(catalog.model_roles()[&ModelRole::Default], value);
-        let restored = ModelCatalog::from_files(
-            &dir.path().join("settings.yml"),
-            &dir.path().join("models.yml"),
-        )
-        .unwrap();
-        assert_eq!(restored.default_reference(), "fixture/two");
-        assert_eq!(restored.model_roles()[&ModelRole::Default], value);
-    }
+    fn fallback_roles_routing_and_atomic_roundtrip() {
+        {
+            let (dir, mut catalog) = fixture();
+            for effort in [ThinkLevel::Low, ThinkLevel::High] {
+                let mut value = assignment("fixture/two", ThinkLevel::High);
+                value.fallback = Some(RoleModel {
+                    model: value.model.clone(),
+                    effort,
+                });
+                for role in ModelRole::ALL {
+                    catalog.save_model_role(role, Some(value.clone())).unwrap();
+                }
+                let restored = ModelCatalog::from_files(
+                    &dir.path().join("settings.yml"),
+                    &dir.path().join("models.yml"),
+                )
+                .unwrap();
+                for role in ModelRole::ALL {
+                    assert_eq!(restored.model_roles()[&role], value);
+                    assert_eq!(restored.role_route(role).unwrap().fallback, value.fallback);
+                }
+            }
+        }
 
-    #[test]
-    fn fallback_roles_roundtrip_missing_primary_and_validation_are_atomic() {
-        let (dir, mut catalog) = fixture();
-        let mut value = assignment("fixture/two", ThinkLevel::High);
-        value.fallback = Some(RoleModel {
-            model: "fixture/one".into(),
-            effort: ThinkLevel::Low,
-        });
-        catalog
-            .save_model_role(ModelRole::Fast, Some(value.clone()))
-            .unwrap();
-        let restored = ModelCatalog::from_files(
-            &dir.path().join("settings.yml"),
-            &dir.path().join("models.yml"),
-        )
-        .unwrap();
-        assert_eq!(restored.model_roles()[&ModelRole::Fast], value);
-        let mut invalid = value.clone();
-        invalid.fallback.as_mut().unwrap().model = "removed/model".into();
-        assert!(
+        {
+            let (dir, mut catalog) = fixture();
+            let mut value = assignment("fixture/one", ThinkLevel::High);
+            value.fallback = Some(RoleModel {
+                model: "fixture/two".into(),
+                effort: ThinkLevel::Low,
+            });
             catalog
-                .save_model_role(ModelRole::Fast, Some(invalid))
-                .is_err()
-        );
-        assert_eq!(catalog.model_roles()[&ModelRole::Fast], value);
-        value.model.clear();
-        assert!(
+                .save_model_role(ModelRole::Default, Some(value.clone()))
+                .unwrap();
+            catalog.save_default_model("fixture/two").unwrap();
+            value.model = "fixture/two".into();
+            assert_eq!(catalog.model_roles()[&ModelRole::Default], value);
+            let restored = ModelCatalog::from_files(
+                &dir.path().join("settings.yml"),
+                &dir.path().join("models.yml"),
+            )
+            .unwrap();
+            assert_eq!(restored.default_reference(), "fixture/two");
+            assert_eq!(restored.model_roles()[&ModelRole::Default], value);
+        }
+
+        {
+            let (dir, mut catalog) = fixture();
+            let mut value = assignment("fixture/two", ThinkLevel::High);
+            value.fallback = Some(RoleModel {
+                model: "fixture/one".into(),
+                effort: ThinkLevel::Low,
+            });
             catalog
                 .save_model_role(ModelRole::Fast, Some(value.clone()))
-                .is_err()
-        );
-        value.enabled = false;
-        catalog
-            .save_model_role(ModelRole::Fast, Some(value.clone()))
+                .unwrap();
+            let restored = ModelCatalog::from_files(
+                &dir.path().join("settings.yml"),
+                &dir.path().join("models.yml"),
+            )
             .unwrap();
-        assert!(catalog.role_route(ModelRole::Fast).is_none());
-        catalog.reload_models().unwrap();
-        assert_eq!(catalog.model_roles()[&ModelRole::Fast], value);
-        value.model = "fixture/two".into();
-        catalog
-            .save_model_role(ModelRole::Fast, Some(value))
-            .unwrap();
-        assert!(!catalog.model_roles()[&ModelRole::Fast].enabled);
+            assert_eq!(restored.model_roles()[&ModelRole::Fast], value);
+            let mut invalid = value.clone();
+            invalid.fallback.as_mut().unwrap().model = "removed/model".into();
+            assert!(
+                catalog
+                    .save_model_role(ModelRole::Fast, Some(invalid))
+                    .is_err()
+            );
+            assert_eq!(catalog.model_roles()[&ModelRole::Fast], value);
+            value.model.clear();
+            assert!(
+                catalog
+                    .save_model_role(ModelRole::Fast, Some(value.clone()))
+                    .is_err()
+            );
+            value.enabled = false;
+            catalog
+                .save_model_role(ModelRole::Fast, Some(value.clone()))
+                .unwrap();
+            assert!(catalog.role_route(ModelRole::Fast).is_none());
+            catalog.reload_models().unwrap();
+            assert_eq!(catalog.model_roles()[&ModelRole::Fast], value);
+            value.model = "fixture/two".into();
+            catalog
+                .save_model_role(ModelRole::Fast, Some(value))
+                .unwrap();
+            assert!(!catalog.model_roles()[&ModelRole::Fast].enabled);
+        }
     }
 }

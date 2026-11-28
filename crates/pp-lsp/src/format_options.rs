@@ -565,291 +565,272 @@ mod tests {
     }
 
     #[test]
-    fn lsp_format_options_fallback_is_two_spaces() {
-        let dir = project();
-        let options = resolve(&dir.path().join("notes.txt"), "no indentation\n");
+    fn lsp_format_options_content_inference_and_fallback() {
+        {
+            let dir = project();
+            let options = resolve(&dir.path().join("notes.txt"), "no indentation\n");
 
-        assert_eq!(tab_size(&options), 2);
-        assert!(insert_spaces(&options));
-        assert_eq!(options["trimTrailingWhitespace"], json!(true));
-        assert_eq!(options["insertFinalNewline"], json!(true));
-        assert_eq!(options["trimFinalNewlines"], json!(true));
+            assert_eq!(tab_size(&options), 2);
+            assert!(insert_spaces(&options));
+            assert_eq!(options["trimTrailingWhitespace"], json!(true));
+            assert_eq!(options["insertFinalNewline"], json!(true));
+            assert_eq!(options["trimFinalNewlines"], json!(true));
+        }
+
+        {
+            let dir = project();
+
+            let two = resolve(
+                &dir.path().join("two.rs"),
+                "fn a() {\n  b();\n    c();\n      d();\n}\n",
+            );
+            assert_eq!(tab_size(&two), 2);
+            assert!(insert_spaces(&two));
+
+            let four = resolve(
+                &dir.path().join("four.rs"),
+                "fn a() {\n    b();\n        c();\n}\n",
+            );
+            assert_eq!(tab_size(&four), 4);
+            assert!(insert_spaces(&four));
+        }
+
+        {
+            let dir = project();
+
+            let tabbed = resolve(&dir.path().join("tab.rs"), "\tfirst\n    second\n");
+            assert!(!insert_spaces(&tabbed));
+            assert_eq!(tab_size(&tabbed), 2);
+
+            let spaced = resolve(&dir.path().join("space.rs"), "    first\n\tsecond\n");
+            assert!(insert_spaces(&spaced));
+            assert_eq!(tab_size(&spaced), 4);
+        }
+
+        {
+            let dir = project();
+
+            let blank = resolve(&dir.path().join("blank.rs"), "\n   \n\t\n  x\n");
+            assert_eq!(tab_size(&blank), 2);
+            assert!(insert_spaces(&blank));
+
+            let crlf = resolve(&dir.path().join("crlf.rs"), "fn a() {\r\n    x\r\n}\r\n");
+            assert_eq!(tab_size(&crlf), 4);
+            assert!(insert_spaces(&crlf));
+        }
     }
 
     #[test]
-    fn lsp_format_options_content_space_gcd() {
-        let dir = project();
+    fn lsp_format_options_editorconfig_inheritance_globs_and_precedence() {
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write(
+                &dir.path().join(EDITORCONFIG_NAME),
+                "root = true\n[*.rs]\nindent_style = space\nindent_size = 4\n",
+            );
 
-        // 2/4/6 的 GCD 是 2。
-        let two = resolve(
-            &dir.path().join("two.rs"),
-            "fn a() {\n  b();\n    c();\n      d();\n}\n",
-        );
-        assert_eq!(tab_size(&two), 2);
-        assert!(insert_spaces(&two));
+            let nested = dir.path().join("crate");
+            fs::create_dir(&nested).expect("nested dir");
+            write(
+                &nested.join(EDITORCONFIG_NAME),
+                "[*.rs]\nindent_style = tab\n",
+            );
 
-        // 4/8 的 GCD 是 4。
-        let four = resolve(
-            &dir.path().join("four.rs"),
-            "fn a() {\n    b();\n        c();\n}\n",
-        );
-        assert_eq!(tab_size(&four), 4);
-        assert!(insert_spaces(&four));
+            let inherited = resolve(&nested.join("lib.rs"), "fn a() {}\n");
+            assert_eq!(tab_size(&inherited), 4);
+            assert!(!insert_spaces(&inherited));
+
+            let sections = dir.path().join("sections");
+            fs::create_dir(&sections).expect("sections dir");
+            write(
+                &sections.join(EDITORCONFIG_NAME),
+                "[*.rs]\nindent_size = 2\n[lib.rs]\nindent_size = 6\n",
+            );
+            assert_eq!(tab_size(&resolve(&sections.join("lib.rs"), "")), 6);
+            assert_eq!(tab_size(&resolve(&sections.join("mod.rs"), "")), 2);
+            assert_eq!(tab_size(&resolve(&sections.join("other.rs"), "")), 2);
+        }
+
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write(
+                &dir.path().join(EDITORCONFIG_NAME),
+                "root = true\n[*.rs]\nindent_size = 8\n",
+            );
+
+            let nested = dir.path().join("pkg");
+            fs::create_dir(&nested).expect("nested dir");
+
+            assert_eq!(tab_size(&resolve(&nested.join("a.rs"), "")), 8);
+
+            write(&nested.join(EDITORCONFIG_NAME), "root = true\n");
+            assert_eq!(tab_size(&resolve(&nested.join("b.rs"), "")), 2);
+        }
+
+        {
+            let (dir, path) = scenario(
+                "[*.rs]\nindent_size = 2\n\
+                 [src/*.ts]\nindent_size = 8\n\
+                 [*.{md,txt}]\nindent_size = 6\n\
+                 [/special/*.go]\nindent_size = 5\n",
+                "src/deep/lib.rs",
+            );
+
+            assert_eq!(tab_size(&resolve(&path, "    x\n")), 2);
+
+            assert_eq!(
+                tab_size(&resolve(&dir.path().join("src/direct.ts"), "    x\n")),
+                8
+            );
+            assert_eq!(
+                tab_size(&resolve(&dir.path().join("src/deep/lib.ts"), "    x\n")),
+                4
+            );
+
+            assert_eq!(
+                tab_size(&resolve(&dir.path().join("README.md"), "    x\n")),
+                6
+            );
+            assert_eq!(
+                tab_size(&resolve(&dir.path().join("docs/readme.txt"), "    x\n")),
+                6
+            );
+
+            assert_eq!(
+                tab_size(&resolve(&dir.path().join("special/x.go"), "    x\n")),
+                5
+            );
+            assert_eq!(
+                tab_size(&resolve(&dir.path().join("src/deep/y.go"), "    x\n")),
+                4
+            );
+        }
+
+        {
+            let (_tab_style, tab_style) =
+                scenario("[*]\nindent_style = tab\nindent_size = 8\n", "a.rs");
+            let options = resolve(&tab_style, "  fn a() {}\n");
+            assert_eq!(tab_size(&options), 8);
+            assert!(!insert_spaces(&options));
+
+            let (_tab_width, tab_width) =
+                scenario("[*]\nindent_style = tab\ntab_width = 6\n", "a.rs");
+            let options = resolve(&tab_width, "");
+            assert_eq!(tab_size(&options), 6);
+            assert!(!insert_spaces(&options));
+
+            let (_size_tab, size_tab) = scenario("[*]\nindent_size = tab\ntab_width = 3\n", "a.rs");
+            let options = resolve(&size_tab, "");
+            assert_eq!(tab_size(&options), 3);
+            assert!(!insert_spaces(&options));
+
+            let (_spaces, spaces) = scenario("[*]\nindent_size = 3\n", "a.rs");
+            let options = resolve(&spaces, "");
+            assert_eq!(tab_size(&options), 3);
+            assert!(insert_spaces(&options));
+
+            let (_size_wins, size_wins) = scenario("[*]\nindent_size = 4\ntab_width = 8\n", "a.rs");
+            assert_eq!(tab_size(&resolve(&size_wins, "")), 4);
+
+            let (_clamped, clamped) = scenario("[*]\nindent_size = 99\n", "a.rs");
+            assert_eq!(tab_size(&resolve(&clamped, "")), 16);
+
+            let (_zero, zero) = scenario("[*]\nindent_size = 0\ntab_width = 0\n", "a.rs");
+            let options = resolve(&zero, "    x\n");
+            assert_eq!(tab_size(&options), 4);
+            assert!(insert_spaces(&options));
+        }
     }
 
     #[test]
-    fn lsp_format_options_content_first_line_picks_style() {
-        let dir = project();
+    fn lsp_format_options_invalid_unreadable_and_fifo_fallback() {
+        {
+            let (_dir, path) = scenario(
+                "this is not a key value\n\
+                 [*.rs]\n\
+                 indent_size = banana\n\
+                 tab_width = 0\n",
+                "a.rs",
+            );
+            let options = resolve(&path, "");
+            assert_eq!(tab_size(&options), 2);
+            assert!(insert_spaces(&options));
 
-        // 第一个缩进行是制表符：即使后面出现空格缩进也不改回空格。
-        let tabbed = resolve(&dir.path().join("tab.rs"), "\tfirst\n    second\n");
-        assert!(!insert_spaces(&tabbed));
-        assert_eq!(tab_size(&tabbed), 2);
+            let (_reset_dir, reset_path) =
+                scenario("[*]\nindent_size = 6\n[]\nindent_size = 2\n", "a.rs");
+            assert_eq!(tab_size(&resolve(&reset_path, "")), 6);
+        }
 
-        // 第一个缩进行是空格：后续制表符行不参与 GCD。
-        let spaced = resolve(&dir.path().join("space.rs"), "    first\n\tsecond\n");
-        assert!(insert_spaces(&spaced));
-        assert_eq!(tab_size(&spaced), 4);
+        {
+            let dir = project();
+            let nested = dir.path().join("blocked");
+            fs::create_dir(&nested).expect("nested dir");
+            fs::create_dir(nested.join(EDITORCONFIG_NAME)).expect("config dir");
+
+            let options = resolve(&nested.join("a.rs"), "    x\n");
+            assert_eq!(tab_size(&options), 4);
+            assert!(insert_spaces(&options));
+        }
+
+        {
+            let dir = project();
+
+            let pipe_dir = dir.path().join("pipe");
+            fs::create_dir(&pipe_dir).expect("pipe dir");
+            let pipe = pipe_dir.join(EDITORCONFIG_NAME);
+            let status = std::process::Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .expect("spawn mkfifo");
+            assert!(status.success(), "mkfifo failed with {status}");
+
+            let link_dir = dir.path().join("link");
+            fs::create_dir(&link_dir).expect("link dir");
+            std::os::unix::fs::symlink(&pipe, link_dir.join(EDITORCONFIG_NAME))
+                .expect("symlink to fifo");
+
+            assert_eq!(tab_size(&resolve(&pipe_dir.join("a.rs"), "    x\n")), 4);
+            assert_eq!(tab_size(&resolve(&link_dir.join("a.rs"), "    x\n")), 4);
+        }
     }
 
     #[test]
-    fn lsp_format_options_content_skips_blank_lines_and_crlf() {
-        let dir = project();
+    fn lsp_format_options_cache_invalidation() {
+        {
+            let dir = project();
+            let config = dir.path().join(EDITORCONFIG_NAME);
+            write(&config, "root = true\n[*.rs]\nindent_size = 2\n");
+            let path = dir.path().join("a.rs");
+            assert_eq!(tab_size(&resolve(&path, "")), 2);
 
-        let blank = resolve(&dir.path().join("blank.rs"), "\n   \n\t\n  x\n");
-        assert_eq!(tab_size(&blank), 2);
-        assert!(insert_spaces(&blank));
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&config)
+                .expect("open config");
+            file.write_all(b"root = true\n[*.rs]\nindent_size = 4\n")
+                .expect("rewrite config");
+            file.flush().expect("flush");
+            let times =
+                fs::FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(30));
+            file.set_times(times).expect("set mtime");
+            drop(file);
 
-        let crlf = resolve(&dir.path().join("crlf.rs"), "fn a() {\r\n    x\r\n}\r\n");
-        assert_eq!(tab_size(&crlf), 4);
-        assert!(insert_spaces(&crlf));
-    }
+            assert_eq!(tab_size(&resolve(&path, "")), 4);
+        }
 
-    #[test]
-    fn lsp_format_options_editorconfig_merges_far_to_near() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write(
-            &dir.path().join(EDITORCONFIG_NAME),
-            "root = true\n[*.rs]\nindent_style = space\nindent_size = 4\n",
-        );
+        {
+            let dir = project();
+            let nested = dir.path().join("sub");
+            fs::create_dir(&nested).expect("nested dir");
+            let config = nested.join(EDITORCONFIG_NAME);
+            write(&config, "[*.rs]\nindent_size = 8\n");
 
-        let nested = dir.path().join("crate");
-        fs::create_dir(&nested).expect("nested dir");
-        // 近层只覆盖风格，宽度继续继承外层。
-        write(
-            &nested.join(EDITORCONFIG_NAME),
-            "[*.rs]\nindent_style = tab\n",
-        );
+            let path = nested.join("a.rs");
+            assert_eq!(tab_size(&resolve(&path, "")), 8);
 
-        let inherited = resolve(&nested.join("lib.rs"), "fn a() {}\n");
-        assert_eq!(tab_size(&inherited), 4);
-        assert!(!insert_spaces(&inherited));
-
-        // 同一文件内后出现的小节覆盖先出现的小节。
-        let sections = dir.path().join("sections");
-        fs::create_dir(&sections).expect("sections dir");
-        write(
-            &sections.join(EDITORCONFIG_NAME),
-            "[*.rs]\nindent_size = 2\n[lib.rs]\nindent_size = 6\n",
-        );
-        assert_eq!(tab_size(&resolve(&sections.join("lib.rs"), "")), 6);
-        assert_eq!(tab_size(&resolve(&sections.join("mod.rs"), "")), 2);
-
-        // 外层 4 被近层 2 覆盖。
-        assert_eq!(tab_size(&resolve(&sections.join("other.rs"), "")), 2);
-    }
-
-    #[test]
-    fn lsp_format_options_editorconfig_root_stops_parent_chain() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write(
-            &dir.path().join(EDITORCONFIG_NAME),
-            "root = true\n[*.rs]\nindent_size = 8\n",
-        );
-
-        let nested = dir.path().join("pkg");
-        fs::create_dir(&nested).expect("nested dir");
-
-        // 近层没有 root：继续继承外层 8。
-        assert_eq!(tab_size(&resolve(&nested.join("a.rs"), "")), 8);
-
-        // 近层声明 root=true 后，外层不再参与。
-        write(&nested.join(EDITORCONFIG_NAME), "root = true\n");
-        assert_eq!(tab_size(&resolve(&nested.join("b.rs"), "")), 2);
-    }
-
-    #[test]
-    fn lsp_format_options_editorconfig_globs_match_descendants() {
-        let (dir, path) = scenario(
-            "[*.rs]\nindent_size = 2\n\
-             [src/*.ts]\nindent_size = 8\n\
-             [*.{md,txt}]\nindent_size = 6\n\
-             [/special/*.go]\nindent_size = 5\n",
-            "src/deep/lib.rs",
-        );
-
-        // 无斜杠 pattern 匹配任意深度的同名文件。
-        assert_eq!(tab_size(&resolve(&path, "    x\n")), 2);
-
-        // 含斜杠 pattern 只匹配自己目录的直接子文件；不匹配时回退内容缩进 4。
-        assert_eq!(
-            tab_size(&resolve(&dir.path().join("src/direct.ts"), "    x\n")),
-            8
-        );
-        assert_eq!(
-            tab_size(&resolve(&dir.path().join("src/deep/lib.ts"), "    x\n")),
-            4
-        );
-
-        // 花括号候选与子目录同样按无斜杠规则递归。
-        assert_eq!(
-            tab_size(&resolve(&dir.path().join("README.md"), "    x\n")),
-            6
-        );
-        assert_eq!(
-            tab_size(&resolve(&dir.path().join("docs/readme.txt"), "    x\n")),
-            6
-        );
-
-        // 前导斜杠被忽略。
-        assert_eq!(
-            tab_size(&resolve(&dir.path().join("special/x.go"), "    x\n")),
-            5
-        );
-        assert_eq!(
-            tab_size(&resolve(&dir.path().join("src/deep/y.go"), "    x\n")),
-            4
-        );
-    }
-
-    #[test]
-    fn lsp_format_options_editorconfig_style_and_size_precedence() {
-        let (_tab_style, tab_style) =
-            scenario("[*]\nindent_style = tab\nindent_size = 8\n", "a.rs");
-        let options = resolve(&tab_style, "  fn a() {}\n");
-        assert_eq!(tab_size(&options), 8);
-        assert!(!insert_spaces(&options));
-
-        let (_tab_width, tab_width) = scenario("[*]\nindent_style = tab\ntab_width = 6\n", "a.rs");
-        let options = resolve(&tab_width, "");
-        assert_eq!(tab_size(&options), 6);
-        assert!(!insert_spaces(&options));
-
-        let (_size_tab, size_tab) = scenario("[*]\nindent_size = tab\ntab_width = 3\n", "a.rs");
-        let options = resolve(&size_tab, "");
-        assert_eq!(tab_size(&options), 3);
-        assert!(!insert_spaces(&options));
-
-        let (_spaces, spaces) = scenario("[*]\nindent_size = 3\n", "a.rs");
-        let options = resolve(&spaces, "");
-        assert_eq!(tab_size(&options), 3);
-        assert!(insert_spaces(&options));
-
-        // `indent_size` 优先于 `tab_width`。
-        let (_size_wins, size_wins) = scenario("[*]\nindent_size = 4\ntab_width = 8\n", "a.rs");
-        assert_eq!(tab_size(&resolve(&size_wins, "")), 4);
-
-        let (_clamped, clamped) = scenario("[*]\nindent_size = 99\n", "a.rs");
-        assert_eq!(tab_size(&resolve(&clamped, "")), 16);
-
-        let (_zero, zero) = scenario("[*]\nindent_size = 0\ntab_width = 0\n", "a.rs");
-        let options = resolve(&zero, "    x\n");
-        assert_eq!(tab_size(&options), 4);
-        assert!(insert_spaces(&options));
-    }
-
-    #[test]
-    fn lsp_format_options_invalid_editorconfig_falls_back() {
-        let (_dir, path) = scenario(
-            "this is not a key value\n\
-             [*.rs]\n\
-             indent_size = banana\n\
-             tab_width = 0\n",
-            "a.rs",
-        );
-        let options = resolve(&path, "");
-        assert_eq!(tab_size(&options), 2);
-        assert!(insert_spaces(&options));
-
-        // `[]` 结束前一个小节，之后的属性不归属任何小节。
-        let (_reset_dir, reset_path) =
-            scenario("[*]\nindent_size = 6\n[]\nindent_size = 2\n", "a.rs");
-        assert_eq!(tab_size(&resolve(&reset_path, "")), 6);
-    }
-
-    #[test]
-    fn lsp_format_options_unreadable_editorconfig_is_ignored() {
-        let dir = project();
-        let nested = dir.path().join("blocked");
-        fs::create_dir(&nested).expect("nested dir");
-        // 同名目录无法作为配置文件读取，发现过程必须静默跳过。
-        fs::create_dir(nested.join(EDITORCONFIG_NAME)).expect("config dir");
-
-        let options = resolve(&nested.join("a.rs"), "    x\n");
-        assert_eq!(tab_size(&options), 4);
-        assert!(insert_spaces(&options));
-    }
-
-    #[test]
-    fn lsp_format_options_fifo_ignored() {
-        let dir = project();
-
-        let pipe_dir = dir.path().join("pipe");
-        fs::create_dir(&pipe_dir).expect("pipe dir");
-        let pipe = pipe_dir.join(EDITORCONFIG_NAME);
-        let status = std::process::Command::new("mkfifo")
-            .arg(&pipe)
-            .status()
-            .expect("spawn mkfifo");
-        assert!(status.success(), "mkfifo failed with {status}");
-
-        // 经符号链接指向 FIFO 的配置同样必须被忽略。
-        let link_dir = dir.path().join("link");
-        fs::create_dir(&link_dir).expect("link dir");
-        std::os::unix::fs::symlink(&pipe, link_dir.join(EDITORCONFIG_NAME))
-            .expect("symlink to fifo");
-
-        // 读取使用 O_NONBLOCK 打开 fd 后先看类型，FIFO 既不会挂住也不会产生配置。
-        assert_eq!(tab_size(&resolve(&pipe_dir.join("a.rs"), "    x\n")), 4);
-        assert_eq!(tab_size(&resolve(&link_dir.join("a.rs"), "    x\n")), 4);
-    }
-
-    #[test]
-    fn lsp_format_options_cache_refreshes_changed_config() {
-        let dir = project();
-        let config = dir.path().join(EDITORCONFIG_NAME);
-        write(&config, "root = true\n[*.rs]\nindent_size = 2\n");
-        let path = dir.path().join("a.rs");
-        assert_eq!(tab_size(&resolve(&path, "")), 2);
-
-        // 等长改写（只看长度无法区分）+ 强制 mtime 前进，验证缓存会失效。
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&config)
-            .expect("open config");
-        file.write_all(b"root = true\n[*.rs]\nindent_size = 4\n")
-            .expect("rewrite config");
-        file.flush().expect("flush");
-        let times = fs::FileTimes::new().set_modified(SystemTime::now() + Duration::from_secs(30));
-        file.set_times(times).expect("set mtime");
-        drop(file);
-
-        assert_eq!(tab_size(&resolve(&path, "")), 4);
-    }
-
-    #[test]
-    fn lsp_format_options_cache_sees_deleted_config() {
-        let dir = project();
-        let nested = dir.path().join("sub");
-        fs::create_dir(&nested).expect("nested dir");
-        let config = nested.join(EDITORCONFIG_NAME);
-        write(&config, "[*.rs]\nindent_size = 8\n");
-
-        let path = nested.join("a.rs");
-        assert_eq!(tab_size(&resolve(&path, "")), 8);
-
-        fs::remove_file(&config).expect("remove config");
-        assert_eq!(tab_size(&resolve(&path, "")), 2);
+            fs::remove_file(&config).expect("remove config");
+            assert_eq!(tab_size(&resolve(&path, "")), 2);
+        }
     }
 }

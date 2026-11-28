@@ -44,7 +44,7 @@ fn category(report: &ContextReport, key: CategoryKey) -> &CategorySummary {
 }
 
 #[test]
-fn empty_session_reports_zero_usage_and_empty_categories_without_side_effects() {
+fn empty_session_and_reset_clear_context_diagnosis() {
     for protocol in [Protocol::Response, Protocol::Completion] {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("cfg");
@@ -118,10 +118,7 @@ fn empty_session_reports_zero_usage_and_empty_categories_without_side_effects() 
             0
         );
     }
-}
 
-#[test]
-fn reset_clears_context_diagnosis_and_snapshot_to_zero() {
     for protocol in [Protocol::Response, Protocol::Completion] {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("cfg");
@@ -703,23 +700,22 @@ fn in_context_tokens(report: &ContextReport) -> u64 {
 }
 
 #[test]
-fn json_body_preview_skips_parsing_above_the_preview_budget() {
-    let within = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES - 32));
-    assert!(within.len() < MAX_PREVIEW_BYTES);
-    assert!(
-        super::sections::json_body_preview(&within).contains("\n  \"content\""),
-        "预算内的 JSON 正文仍按既有口径美化"
-    );
+fn context_diagnosis_preview_budget_cache_and_instructions() {
+    {
+        let within = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES - 32));
+        assert!(within.len() < MAX_PREVIEW_BYTES);
+        assert!(
+            super::sections::json_body_preview(&within).contains("\n  \"content\""),
+            "预算内的 JSON 正文仍按既有口径美化"
+        );
 
-    let over = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES));
-    assert!(over.len() > MAX_PREVIEW_BYTES);
-    let preview = super::sections::json_body_preview(&over);
-    assert_eq!(preview, super::sections::oversized_preview(over.len()));
-    assert!(!preview.contains('a'), "超大正文不再复制、解析或美化");
-}
+        let over = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES));
+        assert!(over.len() > MAX_PREVIEW_BYTES);
+        let preview = super::sections::json_body_preview(&over);
+        assert_eq!(preview, super::sections::oversized_preview(over.len()));
+        assert!(!preview.contains('a'), "超大正文不再复制、解析或美化");
+    }
 
-#[test]
-fn oversized_tool_output_is_summarized_but_still_accounted() {
     for protocol in [Protocol::Response, Protocol::Completion] {
         let dir = tempfile::tempdir().unwrap();
         let cfg = dir.path().join("cfg");
@@ -777,142 +773,140 @@ fn oversized_tool_output_is_summarized_but_still_accounted() {
         assert!(outputs.tokens > MAX_PREVIEW_BYTES as u64 / 3);
         assert_eq!(in_context_tokens(&report), report.active_tokens);
     }
-}
 
-#[test]
-fn published_snapshot_reuses_cached_prefix_without_duplicating_items() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("cfg");
-    let work = dir.path().join("work");
-    let sessions = dir.path().join("sessions");
-    fs::create_dir_all(&cfg).unwrap();
-    fs::create_dir_all(&work).unwrap();
-    fs::create_dir_all(&sessions).unwrap();
-    fs::write(work.join("AGENTS.md"), "Keep diagnostics cached.").unwrap();
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let work = dir.path().join("work");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(work.join("AGENTS.md"), "Keep diagnostics cached.").unwrap();
 
-    let catalog = test_catalog(&cfg, Protocol::Response, Some(200_000));
-    let mut agent = Agent::new(
-        catalog,
-        Tools::new(work.clone(), EditMode::Replace).unwrap(),
-        sessions,
-    )
-    .unwrap();
-    let snapshot = agent.observe_context();
-    agent.refresh_instructions().unwrap();
-    agent.append_user("first");
-    push_tool_exchange(&mut agent, "call_1", "AGENTS.md", r#"{"ok":true,"rule":1}"#);
+        let catalog = test_catalog(&cfg, Protocol::Response, Some(200_000));
+        let mut agent = Agent::new(
+            catalog,
+            Tools::new(work.clone(), EditMode::Replace).unwrap(),
+            sessions,
+        )
+        .unwrap();
+        let snapshot = agent.observe_context();
+        agent.refresh_instructions().unwrap();
+        agent.append_user("first");
+        push_tool_exchange(&mut agent, "call_1", "AGENTS.md", r#"{"ok":true,"rule":1}"#);
 
-    agent.publish_context_snapshot();
-    let first = snapshot_read(&snapshot);
-    assert_eq!(category(&first, CategoryKey::UserMessages).item_count, 1);
-    assert_eq!(category(&first, CategoryKey::ToolCalls).item_count, 1);
-    let output_title = category(&first, CategoryKey::ToolOutput).items[0]
-        .title
-        .clone();
-    assert!(
-        output_title.contains("read"),
-        "工具输出按前缀调用表标注工具名：{output_title}"
-    );
-
-    // 相同状态再次发布：复用缓存前缀，不能重复追加同一条消息的分类。
-    agent.publish_context_snapshot();
-    let repeat = snapshot_read(&snapshot);
-    assert_eq!(repeat.categories.len(), 10);
-    for (left, right) in first.categories.iter().zip(&repeat.categories) {
-        assert_eq!(left.key, right.key);
-        assert_eq!(left.item_count, right.item_count, "category {:?}", left.key);
-        assert_eq!(left.bytes, right.bytes, "category {:?}", left.key);
-        assert_eq!(left.tokens, right.tokens, "category {:?}", left.key);
-    }
-    assert_eq!(in_context_tokens(&repeat), repeat.active_tokens);
-
-    // 追加尾部：只新增尾部消息的分类，前缀里的调用表仍被复用。
-    agent.append_user("second");
-    push_tool_exchange(&mut agent, "call_2", "AGENTS.md", r#"{"ok":true,"rule":2}"#);
-    agent.publish_context_snapshot();
-    let extended = snapshot_read(&snapshot);
-    assert_eq!(category(&extended, CategoryKey::UserMessages).item_count, 2);
-    assert_eq!(category(&extended, CategoryKey::ToolCalls).item_count, 2);
-    assert_eq!(category(&extended, CategoryKey::ToolOutput).item_count, 2);
-    assert_eq!(
-        category(&extended, CategoryKey::ToolOutput).items[0].title,
-        output_title
-    );
-    assert!(
-        category(&extended, CategoryKey::ToolOutput).items[1]
+        agent.publish_context_snapshot();
+        let first = snapshot_read(&snapshot);
+        assert_eq!(category(&first, CategoryKey::UserMessages).item_count, 1);
+        assert_eq!(category(&first, CategoryKey::ToolCalls).item_count, 1);
+        let output_title = category(&first, CategoryKey::ToolOutput).items[0]
             .title
-            .contains("read")
-    );
-    assert_eq!(in_context_tokens(&extended), extended.active_tokens);
+            .clone();
+        assert!(
+            output_title.contains("read"),
+            "工具输出按前缀调用表标注工具名：{output_title}"
+        );
 
-    // 工具表指纹变化（新增 MCP 工具）必须重算 Custom Tools。
-    assert_eq!(category(&extended, CategoryKey::CustomTools).item_count, 0);
-    let mut defs = agent.tools.all_definitions(agent.workflow.mode);
-    defs.push(async_openai::types::chat::FunctionObject {
-        name: "mcp__docs__search".into(),
-        description: Some("Search docs via MCP".into()),
-        parameters: Some(serde_json::json!({"type": "object", "properties": {}})),
-        strict: Some(false),
-    });
-    agent.session.set_tools(defs);
-    agent.publish_context_snapshot();
-    let with_mcp = snapshot_read(&snapshot);
-    assert_eq!(category(&with_mcp, CategoryKey::CustomTools).item_count, 1);
-    assert_eq!(in_context_tokens(&with_mcp), with_mcp.active_tokens);
-}
+        // 相同状态再次发布：复用缓存前缀，不能重复追加同一条消息的分类。
+        agent.publish_context_snapshot();
+        let repeat = snapshot_read(&snapshot);
+        assert_eq!(repeat.categories.len(), 10);
+        for (left, right) in first.categories.iter().zip(&repeat.categories) {
+            assert_eq!(left.key, right.key);
+            assert_eq!(left.item_count, right.item_count, "category {:?}", left.key);
+            assert_eq!(left.bytes, right.bytes, "category {:?}", left.key);
+            assert_eq!(left.tokens, right.tokens, "category {:?}", left.key);
+        }
+        assert_eq!(in_context_tokens(&repeat), repeat.active_tokens);
 
-#[test]
-fn reported_project_load_change_recomputes_instruction_section() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("cfg");
-    let work = dir.path().join("work");
-    let sessions = dir.path().join("sessions");
-    fs::create_dir_all(&cfg).unwrap();
-    fs::create_dir_all(work.join("nested")).unwrap();
-    fs::create_dir_all(&sessions).unwrap();
-    fs::write(work.join("AGENTS.md"), "Root sent rule.").unwrap();
+        // 追加尾部：只新增尾部消息的分类，前缀里的调用表仍被复用。
+        agent.append_user("second");
+        push_tool_exchange(&mut agent, "call_2", "AGENTS.md", r#"{"ok":true,"rule":2}"#);
+        agent.publish_context_snapshot();
+        let extended = snapshot_read(&snapshot);
+        assert_eq!(category(&extended, CategoryKey::UserMessages).item_count, 2);
+        assert_eq!(category(&extended, CategoryKey::ToolCalls).item_count, 2);
+        assert_eq!(category(&extended, CategoryKey::ToolOutput).item_count, 2);
+        assert_eq!(
+            category(&extended, CategoryKey::ToolOutput).items[0].title,
+            output_title
+        );
+        assert!(
+            category(&extended, CategoryKey::ToolOutput).items[1]
+                .title
+                .contains("read")
+        );
+        assert_eq!(in_context_tokens(&extended), extended.active_tokens);
 
-    let catalog = test_catalog(&cfg, Protocol::Response, Some(200_000));
-    let mut agent = Agent::new(
-        catalog,
-        Tools::new(work.clone(), EditMode::Replace).unwrap(),
-        sessions,
-    )
-    .unwrap();
-    let snapshot = agent.observe_context();
-    agent.refresh_instructions().unwrap();
-    agent.tools.project_request_sent();
-    for doc in std::mem::take(&mut agent.pending_project_load) {
+        // 工具表指纹变化（新增 MCP 工具）必须重算 Custom Tools。
+        assert_eq!(category(&extended, CategoryKey::CustomTools).item_count, 0);
+        let mut defs = agent.tools.all_definitions(agent.workflow.mode);
+        defs.push(async_openai::types::chat::FunctionObject {
+            name: "mcp__docs__search".into(),
+            description: Some("Search docs via MCP".into()),
+            parameters: Some(serde_json::json!({"type": "object", "properties": {}})),
+            strict: Some(false),
+        });
+        agent.session.set_tools(defs);
+        agent.publish_context_snapshot();
+        let with_mcp = snapshot_read(&snapshot);
+        assert_eq!(category(&with_mcp, CategoryKey::CustomTools).item_count, 1);
+        assert_eq!(in_context_tokens(&with_mcp), with_mcp.active_tokens);
+    }
+
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let work = dir.path().join("work");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::create_dir_all(work.join("nested")).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(work.join("AGENTS.md"), "Root sent rule.").unwrap();
+
+        let catalog = test_catalog(&cfg, Protocol::Response, Some(200_000));
+        let mut agent = Agent::new(
+            catalog,
+            Tools::new(work.clone(), EditMode::Replace).unwrap(),
+            sessions,
+        )
+        .unwrap();
+        let snapshot = agent.observe_context();
+        agent.refresh_instructions().unwrap();
+        agent.tools.project_request_sent();
+        for doc in std::mem::take(&mut agent.pending_project_load) {
+            agent
+                .reported_project_load
+                .insert(doc.path.display().to_string(), doc.content);
+        }
+        agent.append_user("first");
+
+        agent.publish_context_snapshot();
+        let first = snapshot_read(&snapshot);
+        let sent = category(&first, CategoryKey::InstructionFiles).item_count;
+        assert!(sent >= 1, "已发送的规则必须计入 Instruction Files");
+
+        // 第二轮又发送一份规则：项目指令指纹变化必须重算该分区。
+        let nested = work.join("nested/AGENTS.md");
+        fs::write(&nested, "Nested rule.").unwrap();
         agent
             .reported_project_load
-            .insert(doc.path.display().to_string(), doc.content);
+            .insert(nested.display().to_string(), "Nested rule.".into());
+        agent.publish_context_snapshot();
+        let second = snapshot_read(&snapshot);
+        assert_eq!(
+            category(&second, CategoryKey::InstructionFiles).item_count,
+            sent + 1
+        );
+        assert!(
+            category(&second, CategoryKey::InstructionFiles)
+                .items
+                .iter()
+                .any(|item| item.title.ends_with("nested/AGENTS.md"))
+        );
+        assert_eq!(in_context_tokens(&second), second.active_tokens);
     }
-    agent.append_user("first");
-
-    agent.publish_context_snapshot();
-    let first = snapshot_read(&snapshot);
-    let sent = category(&first, CategoryKey::InstructionFiles).item_count;
-    assert!(sent >= 1, "已发送的规则必须计入 Instruction Files");
-
-    // 第二轮又发送一份规则：项目指令指纹变化必须重算该分区。
-    let nested = work.join("nested/AGENTS.md");
-    fs::write(&nested, "Nested rule.").unwrap();
-    agent
-        .reported_project_load
-        .insert(nested.display().to_string(), "Nested rule.".into());
-    agent.publish_context_snapshot();
-    let second = snapshot_read(&snapshot);
-    assert_eq!(
-        category(&second, CategoryKey::InstructionFiles).item_count,
-        sent + 1
-    );
-    assert!(
-        category(&second, CategoryKey::InstructionFiles)
-            .items
-            .iter()
-            .any(|item| item.title.ends_with("nested/AGENTS.md"))
-    );
-    assert_eq!(in_context_tokens(&second), second.active_tokens);
 }
 
 fn snapshot_read(snapshot: &Snapshot) -> ContextReport {

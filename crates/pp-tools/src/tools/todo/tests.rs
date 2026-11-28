@@ -100,590 +100,544 @@ fn blocked_reason(phases: &[TodoPhase], content: &str) -> Option<String> {
 }
 
 #[test]
-fn todo_init_activates_first_task_and_reports_change() {
-    let (value, change) = run(
-        &[],
-        &init_args(&[("First", &["A", "B"]), ("Second", &["C"])]),
-    );
-    assert_eq!(value["ok"], json!(true));
-    assert_eq!(value["op"], json!("init"));
-    assert!(
-        value["content"]
-            .as_str()
-            .unwrap()
-            .contains("Overall: 0/3 done, 3 open.")
-    );
-    let change = change.expect("init must return a change");
-    assert_eq!(
-        value["phases"],
-        serde_json::to_value(&change.phases).unwrap()
-    );
-    assert_eq!(status_of(&change.phases, "A"), TodoStatus::InProgress);
-    assert_eq!(status_of(&change.phases, "B"), TodoStatus::Pending);
-    assert_eq!(status_of(&change.phases, "C"), TodoStatus::Pending);
-}
-
-#[test]
-fn todo_done_keeps_active_until_it_finishes_then_advances() {
-    let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
-    let (value, change) = run(&current, r#"{"op":"done","task":"B"}"#);
-    assert_eq!(value["ok"], json!(true));
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "B"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
-
-    let (value, change) = run(&next, r#"{"op":"done","task":"A"}"#);
-    assert_eq!(value["ok"], json!(true));
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "B"), TodoStatus::Completed);
-    // No active left: earliest pending starts; completed stays closed.
-    assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
-}
-
-#[test]
-fn todo_done_without_target_completes_everything() {
-    let current = inited(&[("First", &["A"]), ("Second", &["C"])]);
-    let (_, change) = run(&current, r#"{"op":"done"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "C"), TodoStatus::Completed);
-}
-
-#[test]
-fn todo_done_phase_targets_whole_phase() {
-    let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
-    let (_, change) = run(&current, r#"{"op":"done","phase":"First"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "B"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
-}
-
-#[test]
-fn todo_start_preserves_other_active_and_reopens() {
-    let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
-    let (_, change) = run(&current, r#"{"op":"start","task":"C"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
-    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
-
-    // Explicit re-open of a closed task is allowed upstream.
-    let (_, change) = run(&next, r#"{"op":"done","task":"C"}"#);
-    let next = change.unwrap().phases;
-    let (_, change) = run(&next, r#"{"op":"start","task":"C"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
-    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
-}
-
-#[test]
-fn todo_parallel_work_keeps_active_until_each_task_settles() {
-    let mut current = inited(&[("First", &["A", "B"]), ("Second", &["C", "D", "E"])]);
-    for task in ["B", "C", "D", "D"] {
-        let (value, change) = run(&current, &json!({"op":"start","task":task}).to_string());
-        assert_eq!(value["ok"], true);
-        current = change.unwrap().phases;
+fn todo_init_and_view_rules() {
+    {
+        let (value, change) = run(
+            &[],
+            &init_args(&[("First", &["A", "B"]), ("Second", &["C"])]),
+        );
+        assert_eq!(value["ok"], json!(true));
+        assert_eq!(value["op"], json!("init"));
+        assert!(
+            value["content"]
+                .as_str()
+                .unwrap()
+                .contains("Overall: 0/3 done, 3 open.")
+        );
+        let change = change.expect("init must return a change");
+        assert_eq!(
+            value["phases"],
+            serde_json::to_value(&change.phases).unwrap()
+        );
+        assert_eq!(status_of(&change.phases, "A"), TodoStatus::InProgress);
+        assert_eq!(status_of(&change.phases, "B"), TodoStatus::Pending);
+        assert_eq!(status_of(&change.phases, "C"), TodoStatus::Pending);
     }
-    for task in ["A", "B", "C", "D"] {
-        assert_eq!(status_of(&current, task), TodoStatus::InProgress);
-    }
-    assert_eq!(status_of(&current, "E"), TodoStatus::Pending);
 
-    // 完成、阻塞及追加操作均不撤销其他并发项，也不提前启动后续工作。
-    for args in [
-        r#"{"op":"done","task":"B"}"#,
-        r#"{"op":"block","task":"C","reason":"dependency"}"#,
-        r#"{"op":"append","phase":"Second","items":["F"]}"#,
-    ] {
-        let (value, change) = run(&current, args);
-        assert_eq!(value["ok"], true);
-        current = change.unwrap().phases;
-        for task in ["A", "D"] {
+    {
+        let current = inited(&[("First", &["A"])]);
+        for arguments in [
+            r#"{"op":"init","list":[{"phase":"P","items":["a"]},{"phase":"P","items":["b"]}]}"#,
+            r#"{"op":"init","list":[{"phase":"P","items":["a"]},{"phase":"Q","items":["a"]}]}"#,
+        ] {
+            let (value, change) = run(&current, arguments);
+            assert_eq!(value["ok"], json!(false), "{value}");
+            assert!(value["error"].as_str().unwrap().contains("Duplicate"));
+            assert!(change.is_none());
+            assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
+        }
+
+        let (value, change) = run(&current, r#"{"op":"init"}"#);
+        assert_eq!(value["ok"], json!(false));
+        assert_eq!(value["error"], json!("Missing list for init operation"));
+        assert!(change.is_none());
+        assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
+
+        let (value, change) = run(&current, r#"{"op":"init","list":[]}"#);
+        assert_eq!(value["ok"], json!(true));
+        assert_eq!(value["content"], json!("Todo list cleared."));
+        assert!(change.expect("init must return a change").phases.is_empty());
+    }
+
+    {
+        let (value, change) = run(&[], r#"{"op":"init","items":["A","B"],"phase":"Custom"}"#);
+        assert_eq!(value["ok"], json!(true));
+        let next = change.unwrap().phases;
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].name, "Custom");
+
+        let (value, change) = run(&[], r#"{"op":"init","items":["A"]}"#);
+        assert_eq!(value["ok"], json!(true));
+        let next = change.unwrap().phases;
+        assert_eq!(next[0].name, "Tasks");
+    }
+
+    {
+        let mut current = Vec::new();
+        for args in [
+            r#"{"op":"init","items":["a"],"occurrence":1}"#,
+            r#"{"op":"append","phase":"Tasks","items":["b"],"occurrence":1}"#,
+            r#"{"op":"view","occurrence":1}"#,
+        ] {
+            let (value, change) = run(&current, args);
+            assert_eq!(value["ok"], true, "{args}: {value}");
+            if let Some(change) = change {
+                current = change.phases;
+            }
+        }
+        assert_eq!(current[0].tasks.len(), 2);
+    }
+
+    {
+        let current = phases(&[
+            (
+                "P",
+                &[
+                    ("A", TodoStatus::InProgress),
+                    ("B", TodoStatus::InProgress),
+                    ("C", TodoStatus::Completed),
+                ],
+            ),
+            ("Q", &[("D", TodoStatus::Blocked)]),
+        ]);
+        let (value, change) = run(&current, r#"{"op":"view","task":"whatever"}"#);
+        assert_eq!(value["ok"], json!(true));
+        assert_eq!(value["op"], json!("view"));
+        assert!(change.is_none());
+        let next: Vec<TodoPhase> = serde_json::from_value(value["phases"].clone()).unwrap();
+        assert_eq!(next, current);
+        assert_eq!(status_of(&next, "B"), TodoStatus::InProgress);
+        let content = value["content"].as_str().unwrap();
+        assert!(content.contains("Overall: 1/4 done, 2 open, 1 blocked."));
+        assert!(content.contains("    - [ ] A (in progress)"));
+        assert!(content.contains("    - [ ] B (in progress)"));
+        assert!(content.contains("    - [ ] D (blocked)"));
+        let (value, change) = run(&[], r#"{"op":"view"}"#);
+        assert!(change.is_none());
+        assert!(
+            value["content"].as_str().unwrap().contains("empty"),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn todo_done_start_drop_rm_and_parallel_rules() {
+    {
+        let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
+        let (value, change) = run(&current, r#"{"op":"done","task":"B"}"#);
+        assert_eq!(value["ok"], json!(true));
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "B"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
+
+        let (value, change) = run(&next, r#"{"op":"done","task":"A"}"#);
+        assert_eq!(value["ok"], json!(true));
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "B"), TodoStatus::Completed);
+        // No active left: earliest pending starts; completed stays closed.
+        assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
+    }
+
+    {
+        let current = inited(&[("First", &["A"]), ("Second", &["C"])]);
+        let (_, change) = run(&current, r#"{"op":"done"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "C"), TodoStatus::Completed);
+
+        let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
+        let (_, change) = run(&current, r#"{"op":"done","phase":"First"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "B"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
+    }
+
+    {
+        let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
+        let (_, change) = run(&current, r#"{"op":"start","task":"C"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
+        assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
+
+        // Explicit re-open of a closed task is allowed upstream.
+        let (_, change) = run(&next, r#"{"op":"done","task":"C"}"#);
+        let next = change.unwrap().phases;
+        let (_, change) = run(&next, r#"{"op":"start","task":"C"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "C"), TodoStatus::InProgress);
+        assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
+
+        for arguments in [r#"{"op":"start"}"#, r#"{"op":"start","phase":"First"}"#] {
+            let (value, change) = run(&current, arguments);
+            assert_eq!(value["ok"], json!(false), "{value}");
+            assert!(
+                value["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Missing task content")
+            );
+            assert!(change.is_none());
+        }
+    }
+
+    {
+        let mut current = inited(&[("First", &["A", "B"]), ("Second", &["C", "D", "E"])]);
+        for task in ["B", "C", "D", "D"] {
+            let (value, change) = run(&current, &json!({"op":"start","task":task}).to_string());
+            assert_eq!(value["ok"], true);
+            current = change.unwrap().phases;
+        }
+        for task in ["A", "B", "C", "D"] {
             assert_eq!(status_of(&current, task), TodoStatus::InProgress);
         }
         assert_eq!(status_of(&current, "E"), TodoStatus::Pending);
-    }
-    assert_eq!(status_of(&current, "B"), TodoStatus::Completed);
-    assert_eq!(status_of(&current, "C"), TodoStatus::Blocked);
-    assert_eq!(blocked_reason(&current, "C").as_deref(), Some("dependency"));
-}
 
-#[test]
-fn todo_start_requires_single_task_target() {
-    let current = inited(&[("First", &["A"])]);
-    for arguments in [r#"{"op":"start"}"#, r#"{"op":"start","phase":"First"}"#] {
-        let (value, change) = run(&current, arguments);
-        assert_eq!(value["ok"], json!(false), "{value}");
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .contains("Missing task content")
-        );
-        assert!(change.is_none());
-    }
-}
-
-#[test]
-fn todo_drop_abandons_and_counts_closed() {
-    let current = inited(&[("First", &["A", "B"])]);
-    let (value, change) = run(&current, r#"{"op":"drop","task":"B"}"#);
-    assert_eq!(value["ok"], json!(true));
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "B"), TodoStatus::Abandoned);
-    let content = value["content"].as_str().unwrap();
-    assert!(content.contains("Overall: 1/2 done, 1 open."));
-    assert!(content.contains("    - [ ] B (dropped)"));
-}
-
-#[test]
-fn todo_rm_clears_tasks_but_keeps_phase_objects() {
-    let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
-    let (_, change) = run(&current, r#"{"op":"rm","phase":"First"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(next.len(), 2);
-    assert!(next[0].tasks.is_empty());
-    assert_eq!(next[1].tasks.len(), 1);
-
-    let (_, change) = run(&next, r#"{"op":"rm"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(next.len(), 2);
-    assert!(next.iter().all(|phase| phase.tasks.is_empty()));
-    // Empty after mutation reads as cleared.
-    assert_eq!(next.len(), 2);
-    let (value, change) = run(&next, r#"{"op":"view"}"#);
-    assert_eq!(value["content"], json!("Todo list is empty."));
-    assert!(change.is_none());
-}
-
-#[test]
-fn todo_block_rules() {
-    let current = inited(&[("Tasks", &["A", "B"])]);
-    // Whitespace runs collapse; the blocker note rides on one line.
-    let (value, change) = run(
-        &current,
-        r#"{"op":"block","task":"B","reason":"wait\n  on\tx"}"#,
-    );
-    assert_eq!(value["ok"], json!(true));
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "B"), TodoStatus::Blocked);
-    assert_eq!(blocked_reason(&next, "B").as_deref(), Some("wait on x"));
-    // Active task untouched by blocking another.
-    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
-
-    // Completing the active task does not auto-start the blocked one.
-    let (_, change) = run(&next, r#"{"op":"done","task":"A"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "B"), TodoStatus::Blocked);
-
-    // Re-blocking a blocked task refines its note.
-    let (_, change) = run(
-        &next,
-        r#"{"op":"block","task":"B","reason":"still waiting"}"#,
-    );
-    let next = change.unwrap().phases;
-    assert_eq!(blocked_reason(&next, "B").as_deref(), Some("still waiting"));
-
-    // Blocking without a reason clears an existing note (upstream keeps).
-    let (_, change) = run(&next, r#"{"op":"block","task":"B"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(blocked_reason(&next, "B"), None);
-
-    // Unblock returns pending and the cleared task becomes active.
-    let (_, change) = run(&next, r#"{"op":"unblock","task":"B"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "B"), TodoStatus::InProgress);
-    assert_eq!(blocked_reason(&next, "B"), None);
-}
-
-#[test]
-fn todo_block_phase_never_reopens_closed_tasks() {
-    let current = inited(&[("First", &["A", "B"])]);
-    let (_, change) = run(&current, r#"{"op":"done","task":"A"}"#);
-    let next = change.unwrap().phases;
-    let (_, change) = run(&next, r#"{"op":"block","phase":"First","reason":"halt"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
-    assert_eq!(status_of(&next, "B"), TodoStatus::Blocked);
-}
-
-#[test]
-fn todo_unblock_touches_only_blocked_tasks() {
-    let current = phases(&[(
-        "Tasks",
-        &[("A", TodoStatus::InProgress), ("B", TodoStatus::Blocked)],
-    )]);
-    let (_, change) = run(&current, r#"{"op":"unblock","phase":"Tasks"}"#);
-    let next = change.unwrap().phases;
-    assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
-    assert_eq!(status_of(&next, "B"), TodoStatus::Pending);
-    assert_eq!(blocked_reason(&next, "B"), None);
-}
-
-#[test]
-fn todo_block_unblock_require_target() {
-    let current = inited(&[("Tasks", &["A"])]);
-    for arguments in [r#"{"op":"block"}"#, r#"{"op":"unblock"}"#] {
-        let (value, change) = run(&current, arguments);
-        assert_eq!(value["ok"], json!(false), "{value}");
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .ends_with("requires a task or phase target")
-        );
-        assert!(change.is_none());
-    }
-}
-
-#[test]
-fn todo_append_creates_phase_and_validates_batch() {
-    let current = inited(&[("First", &["A"])]);
-    let (_, change) = run(
-        &current,
-        r#"{"op":"append","phase":"Second","items":["C","D"]}"#,
-    );
-    let next = change.unwrap().phases;
-    assert_eq!(next.len(), 2);
-    assert_eq!(next[1].name, "Second");
-    assert_eq!(next[1].tasks.len(), 2);
-
-    // In-batch duplicate: whole op rejected, nothing half-applied.
-    let (value, change) = run(
-        &next,
-        r#"{"op":"append","phase":"Third","items":["X","X"]}"#,
-    );
-    assert_eq!(value["ok"], json!(false));
-    assert!(
-        value["error"]
-            .as_str()
-            .unwrap()
-            .contains("Task \"X\" already exists")
-    );
-    assert!(change.is_none());
-
-    // Existing duplicate likewise.
-    let (value, change) = run(
-        &next,
-        r#"{"op":"append","phase":"Third","items":["X","A"]}"#,
-    );
-    assert_eq!(value["ok"], json!(false));
-    assert!(
-        value["error"]
-            .as_str()
-            .unwrap()
-            .contains("Task \"A\" already exists")
-    );
-    assert!(change.is_none());
-}
-
-#[test]
-fn todo_init_rejects_duplicates_and_keeps_previous_state() {
-    let current = inited(&[("First", &["A"])]);
-    for arguments in [
-        r#"{"op":"init","list":[{"phase":"P","items":["a"]},{"phase":"P","items":["b"]}]}"#,
-        r#"{"op":"init","list":[{"phase":"P","items":["a"]},{"phase":"Q","items":["a"]}]}"#,
-    ] {
-        let (value, change) = run(&current, arguments);
-        assert_eq!(value["ok"], json!(false), "{value}");
-        assert!(value["error"].as_str().unwrap().contains("Duplicate"));
-        assert!(change.is_none());
-        assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
-    }
-}
-
-#[test]
-fn todo_init_with_empty_list_clears() {
-    let current = inited(&[("First", &["A"])]);
-    let (value, change) = run(&current, r#"{"op":"init","list":[]}"#);
-    assert_eq!(value["ok"], json!(true));
-    assert_eq!(value["content"], json!("Todo list cleared."));
-    let change = change.expect("init must return a change");
-    assert!(change.phases.is_empty());
-}
-
-#[test]
-fn todo_init_missing_list_fails_and_keeps_old_list() {
-    let current = inited(&[("First", &["A"])]);
-    let (value, change) = run(&current, r#"{"op":"init"}"#);
-    assert_eq!(value["ok"], json!(false));
-    assert_eq!(value["error"], json!("Missing list for init operation"));
-    assert!(change.is_none());
-    assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
-}
-
-#[test]
-fn todo_flat_init_targets_given_phase_or_tasks_default() {
-    let (value, change) = run(&[], r#"{"op":"init","items":["A","B"],"phase":"Custom"}"#);
-    assert_eq!(value["ok"], json!(true));
-    let next = change.unwrap().phases;
-    assert_eq!(next.len(), 1);
-    assert_eq!(next[0].name, "Custom");
-
-    let (value, change) = run(&[], r#"{"op":"init","items":["A"]}"#);
-    assert_eq!(value["ok"], json!(true));
-    let next = change.unwrap().phases;
-    assert_eq!(next[0].name, "Tasks");
-}
-
-#[test]
-fn todo_infer_missing_op() {
-    // Non-empty list → init.
-    let (value, _) = run(&[], r#"{"list":[{"phase":"P","items":["a"]}]}"#);
-    assert_eq!(value["op"], json!("init"));
-    // Bare items with nothing existing → init into Tasks.
-    let (value, change) = run(&[], r#"{"items":["a"]}"#);
-    assert_eq!(value["op"], json!("init"));
-    assert_eq!(change.unwrap().phases[0].name, "Tasks");
-    // Items + phase with existing phases → append.
-    let current = inited(&[("P", &["a"])]);
-    let (value, change) = run(&current, r#"{"items":["b"],"phase":"P"}"#);
-    assert_eq!(value["op"], json!("append"));
-    assert_eq!(change.unwrap().phases[0].tasks.len(), 2);
-    // Bare items with existing phases → no inference.
-    let (value, _) = run(&current, r#"{"items":["b"]}"#);
-    assert_eq!(value["ok"], json!(false));
-    // Task-only never infers done.
-    let (value, _) = run(&current, r#"{"task":"a"}"#);
-    assert_eq!(value["ok"], json!(false));
-    // Empty list is not an init payload.
-    let (value, _) = run(&current, r#"{"list":[]}"#);
-    assert_eq!(value["ok"], json!(false));
-}
-
-#[test]
-fn todo_schema_rejects_unknown_fields_nulls_and_types() {
-    let current = inited(&[("P", &["a"])]);
-    let cases = [
-        (r#"{"op":"view","ops":[]}"#, "unknown field \"ops\""),
-        (
-            r#"{"op":"view","task":null}"#,
-            "field \"task\" must not be null",
-        ),
-        (
-            r#"{"op":"init","list":"x"}"#,
-            "field \"list\" must be an array",
-        ),
-        (
-            r#"{"op":"init","list":[{"phase":"P","items":[]}]}"#,
-            "list[0].items must contain at least one string",
-        ),
-        (
-            r#"{"op":"init","list":[{"phase":"P","items":["a"],"extra":1}]}"#,
-            "list[0] has unknown field \"extra\"",
-        ),
-        (
-            r#"{"op":"init","list":[{"items":["a"]}]}"#,
-            "list[0] is missing field \"phase\"",
-        ),
-        (
-            r#"{"op":"done","items":"x"}"#,
-            "field \"items\" must be an array of strings",
-        ),
-        (
-            r#"{"op":"done","occurrence":0}"#,
-            "field \"occurrence\" must be an integer >= 1",
-        ),
-        (
-            r#"{"op":"done","occurrence":1.5}"#,
-            "field \"occurrence\" must be an integer >= 1",
-        ),
-        (
-            r#"{"op":"done","occurrence":true}"#,
-            "field \"occurrence\" must be an integer >= 1",
-        ),
-        (r#"{"op":"explode"}"#, "field \"op\" must be one of"),
-        (r#"{"op":null}"#, "field \"op\" must not be null"),
-        (r#"{"op":5}"#, "field \"op\" must be a string"),
-        (r#"["op"]"#, "expected a single todo operation object"),
-        (r#"not json"#, "Invalid todo arguments"),
-    ];
-    for (arguments, expected) in cases {
-        let (value, change) = run(&current, arguments);
-        assert_eq!(value["ok"], json!(false), "{arguments}: {value}");
-        assert!(change.is_none(), "{arguments}");
-        let error = value["error"].as_str().unwrap();
-        assert!(error.contains(expected), "{arguments}: {error}");
-        // Schema failures echo the error text as content.
-        assert_eq!(value["content"], value["error"], "{arguments}");
-        // Pre-call state survives.
-        assert_eq!(
-            value["phases"],
-            serde_json::to_value(&current).unwrap(),
-            "{arguments}"
-        );
-    }
-    // Known op is attached when the raw arguments name one.
-    let (value, _) = run(&current, r#"{"op":"view","task":null}"#);
-    assert_eq!(value["op"], json!("view"));
-    let (value, _) = run(&current, r#"{"op":"explode"}"#);
-    assert!(value.get("op").is_none());
-}
-
-#[test]
-fn todo_init_append_and_view_accept_unused_occurrence() {
-    let mut current = Vec::new();
-    for args in [
-        r#"{"op":"init","items":["a"],"occurrence":1}"#,
-        r#"{"op":"append","phase":"Tasks","items":["b"],"occurrence":1}"#,
-        r#"{"op":"view","occurrence":1}"#,
-    ] {
-        let (value, change) = run(&current, args);
-        assert_eq!(value["ok"], true, "{args}: {value}");
-        if let Some(change) = change {
-            current = change.phases;
+        // 完成、阻塞及追加操作均不撤销其他并发项，也不提前启动后续工作。
+        for args in [
+            r#"{"op":"done","task":"B"}"#,
+            r#"{"op":"block","task":"C","reason":"dependency"}"#,
+            r#"{"op":"append","phase":"Second","items":["F"]}"#,
+        ] {
+            let (value, change) = run(&current, args);
+            assert_eq!(value["ok"], true);
+            current = change.unwrap().phases;
+            for task in ["A", "D"] {
+                assert_eq!(status_of(&current, task), TodoStatus::InProgress);
+            }
+            assert_eq!(status_of(&current, "E"), TodoStatus::Pending);
         }
+        assert_eq!(status_of(&current, "B"), TodoStatus::Completed);
+        assert_eq!(status_of(&current, "C"), TodoStatus::Blocked);
+        assert_eq!(blocked_reason(&current, "C").as_deref(), Some("dependency"));
     }
-    assert_eq!(current[0].tasks.len(), 2);
-}
 
-#[test]
-fn todo_occurrence_targets_all_plain_task_operations_after_phase_filter() {
-    let current = phases(&[
-        ("First", &[("same", TodoStatus::InProgress)]),
-        (
-            "Second",
-            &[("same", TodoStatus::Pending), ("same", TodoStatus::Pending)],
-        ),
-    ]);
-    let (value, change) = run(&current, r#"{"op":"done","task":"same","occurrence":2}"#);
-    assert_eq!(value["ok"], true, "{value}");
-    let next = change.unwrap().phases;
-    assert_eq!(next[0], current[0]);
-    assert_eq!(next[1].tasks[0].status, TodoStatus::Completed);
-    assert_eq!(next[1].tasks[1], current[1].tasks[1]);
-    for (op, status) in [
-        ("start", TodoStatus::InProgress),
-        ("done", TodoStatus::Completed),
-        ("drop", TodoStatus::Abandoned),
-        ("block", TodoStatus::Blocked),
-        ("unblock", TodoStatus::Pending),
-        ("rm", TodoStatus::Pending),
-    ] {
-        let mut before = current.clone();
-        if op == "unblock" {
-            before[1].tasks[1].status = TodoStatus::Blocked;
-            before[1].tasks[1].blocker = Some("waiting".into());
-        }
-        let args = json!({"op":op,"task":"same","phase":"Second","occurrence":2});
-        let (value, change) = run(&before, &args.to_string());
-        assert_eq!(value["ok"], true, "{args}: {value}");
+    {
+        let current = inited(&[("First", &["A", "B"])]);
+        let (value, change) = run(&current, r#"{"op":"drop","task":"B"}"#);
+        assert_eq!(value["ok"], json!(true));
         let next = change.unwrap().phases;
-        assert_eq!(next[1].tasks[0], before[1].tasks[0], "{op}");
-        if op == "rm" {
-            assert_eq!(next[1].tasks.len(), 1);
-        } else {
-            assert_eq!(next[1].tasks[1].status, status, "{op}");
-            assert!(next[1].tasks[1].blocker.is_none() || op == "block");
+        assert_eq!(status_of(&next, "B"), TodoStatus::Abandoned);
+        let content = value["content"].as_str().unwrap();
+        assert!(content.contains("Overall: 1/2 done, 1 open."));
+        assert!(content.contains("    - [ ] B (dropped)"));
+
+        let current = inited(&[("First", &["A", "B"]), ("Second", &["C"])]);
+        let (_, change) = run(&current, r#"{"op":"rm","phase":"First"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(next.len(), 2);
+        assert!(next[0].tasks.is_empty());
+        assert_eq!(next[1].tasks.len(), 1);
+
+        let (_, change) = run(&next, r#"{"op":"rm"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(next.len(), 2);
+        assert!(next.iter().all(|phase| phase.tasks.is_empty()));
+        let (value, change) = run(&next, r#"{"op":"view"}"#);
+        assert_eq!(value["content"], json!("Todo list is empty."));
+        assert!(change.is_none());
+    }
+}
+
+#[test]
+fn todo_block_unblock_and_append_rules() {
+    {
+        let current = inited(&[("Tasks", &["A", "B"])]);
+        let (value, change) = run(
+            &current,
+            r#"{"op":"block","task":"B","reason":"wait\n  on\tx"}"#,
+        );
+        assert_eq!(value["ok"], json!(true));
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "B"), TodoStatus::Blocked);
+        assert_eq!(blocked_reason(&next, "B").as_deref(), Some("wait on x"));
+        assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
+
+        let (_, change) = run(&next, r#"{"op":"done","task":"A"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "B"), TodoStatus::Blocked);
+
+        let (_, change) = run(
+            &next,
+            r#"{"op":"block","task":"B","reason":"still waiting"}"#,
+        );
+        let next = change.unwrap().phases;
+        assert_eq!(blocked_reason(&next, "B").as_deref(), Some("still waiting"));
+
+        let (_, change) = run(&next, r#"{"op":"block","task":"B"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(blocked_reason(&next, "B"), None);
+
+        let (_, change) = run(&next, r#"{"op":"unblock","task":"B"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "B"), TodoStatus::InProgress);
+        assert_eq!(blocked_reason(&next, "B"), None);
+    }
+
+    {
+        let current = inited(&[("First", &["A", "B"])]);
+        let (_, change) = run(&current, r#"{"op":"done","task":"A"}"#);
+        let next = change.unwrap().phases;
+        let (_, change) = run(&next, r#"{"op":"block","phase":"First","reason":"halt"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "A"), TodoStatus::Completed);
+        assert_eq!(status_of(&next, "B"), TodoStatus::Blocked);
+
+        let current = phases(&[(
+            "Tasks",
+            &[("A", TodoStatus::InProgress), ("B", TodoStatus::Blocked)],
+        )]);
+        let (_, change) = run(&current, r#"{"op":"unblock","phase":"Tasks"}"#);
+        let next = change.unwrap().phases;
+        assert_eq!(status_of(&next, "A"), TodoStatus::InProgress);
+        assert_eq!(status_of(&next, "B"), TodoStatus::Pending);
+        assert_eq!(blocked_reason(&next, "B"), None);
+
+        let current = inited(&[("Tasks", &["A"])]);
+        for arguments in [r#"{"op":"block"}"#, r#"{"op":"unblock"}"#] {
+            let (value, change) = run(&current, arguments);
+            assert_eq!(value["ok"], json!(false), "{value}");
+            assert!(
+                value["error"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("requires a task or phase target")
+            );
+            assert!(change.is_none());
+        }
+    }
+
+    {
+        let current = inited(&[("First", &["A"])]);
+        let (_, change) = run(
+            &current,
+            r#"{"op":"append","phase":"Second","items":["C","D"]}"#,
+        );
+        let next = change.unwrap().phases;
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[1].name, "Second");
+        assert_eq!(next[1].tasks.len(), 2);
+
+        for (items_json, expected) in [
+            (r#"["X","X"]"#, "Task \"X\" already exists"),
+            (r#"["X","A"]"#, "Task \"A\" already exists"),
+        ] {
+            let (value, change) = run(
+                &next,
+                &format!(r#"{{"op":"append","phase":"Third","items":{items_json}}}"#),
+            );
+            assert_eq!(value["ok"], json!(false));
+            assert!(value["error"].as_str().unwrap().contains(expected));
+            assert!(change.is_none());
+        }
+    }
+
+    {
+        let (_, change) = run(&[], r#"{"op":"init","items":["t1","t2","t3"]}"#);
+        let mut phases = change.unwrap().phases;
+        for (task, op, status) in [
+            ("t1", "start", TodoStatus::InProgress),
+            ("t2", "done", TodoStatus::Completed),
+            ("t3", "drop", TodoStatus::Abandoned),
+        ] {
+            phases = run(
+                &phases,
+                &json!({"op":"block","task":task,"reason":"wait"}).to_string(),
+            )
+            .1
+            .unwrap()
+            .phases;
+            phases = run(&phases, &json!({"op":op,"task":task}).to_string())
+                .1
+                .unwrap()
+                .phases;
+            let idx = task.strip_prefix('t').unwrap().parse::<usize>().unwrap() - 1;
+            assert_eq!(phases[0].tasks[idx].status, status);
+            assert_eq!(phases[0].tasks[idx].blocker, None);
         }
     }
 }
 
 #[test]
-fn todo_invalid_occurrence_target_keeps_plain_state() {
-    let current = inited(&[("First", &["a"]), ("Second", &["b"])]);
-    for args in [
-        r#"{"op":"done","task":"a","occurrence":2}"#,
-        r#"{"op":"start","task":"a","occurrence":18446744073709551615}"#,
-        r#"{"op":"done","task":"a","phase":"Second","occurrence":1}"#,
-        r#"{"op":"done","occurrence":1}"#,
-        r#"{"op":"rm","task":"","occurrence":1}"#,
-    ] {
-        let (value, change) = run(&current, args);
-        assert_eq!(value["ok"], false, "{args}: {value}");
-        assert!(change.is_none(), "{args}");
-        assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
+fn todo_schema_and_op_inference() {
+    {
+        let (value, _) = run(&[], r#"{"list":[{"phase":"P","items":["a"]}]}"#);
+        assert_eq!(value["op"], json!("init"));
+        let (value, change) = run(&[], r#"{"items":["a"]}"#);
+        assert_eq!(value["op"], json!("init"));
+        assert_eq!(change.unwrap().phases[0].name, "Tasks");
+
+        let current = inited(&[("P", &["a"])]);
+        let (value, change) = run(&current, r#"{"items":["b"],"phase":"P"}"#);
+        assert_eq!(value["op"], json!("append"));
+        assert_eq!(change.unwrap().phases[0].tasks.len(), 2);
+        for payload in [r#"{"items":["b"]}"#, r#"{"task":"a"}"#, r#"{"list":[]}"#] {
+            let (value, _) = run(&current, payload);
+            assert_eq!(value["ok"], json!(false), "{payload}");
+        }
+    }
+
+    {
+        let current = inited(&[("P", &["a"])]);
+        let cases = [
+            (r#"{"op":"view","ops":[]}"#, "unknown field \"ops\""),
+            (
+                r#"{"op":"view","task":null}"#,
+                "field \"task\" must not be null",
+            ),
+            (
+                r#"{"op":"init","list":"x"}"#,
+                "field \"list\" must be an array",
+            ),
+            (
+                r#"{"op":"init","list":[{"phase":"P","items":[]}]}"#,
+                "list[0].items must contain at least one string",
+            ),
+            (
+                r#"{"op":"init","list":[{"phase":"P","items":["a"],"extra":1}]}"#,
+                "list[0] has unknown field \"extra\"",
+            ),
+            (
+                r#"{"op":"init","list":[{"items":["a"]}]}"#,
+                "list[0] is missing field \"phase\"",
+            ),
+            (
+                r#"{"op":"done","items":"x"}"#,
+                "field \"items\" must be an array of strings",
+            ),
+            (
+                r#"{"op":"done","occurrence":0}"#,
+                "field \"occurrence\" must be an integer >= 1",
+            ),
+            (
+                r#"{"op":"done","occurrence":1.5}"#,
+                "field \"occurrence\" must be an integer >= 1",
+            ),
+            (
+                r#"{"op":"done","occurrence":true}"#,
+                "field \"occurrence\" must be an integer >= 1",
+            ),
+            (r#"{"op":"explode"}"#, "field \"op\" must be one of"),
+            (r#"{"op":null}"#, "field \"op\" must not be null"),
+            (r#"{"op":5}"#, "field \"op\" must be a string"),
+            (r#"["op"]"#, "expected a single todo operation object"),
+            (r#"not json"#, "Invalid todo arguments"),
+        ];
+        for (arguments, expected) in cases {
+            let (value, change) = run(&current, arguments);
+            assert_eq!(value["ok"], json!(false), "{arguments}: {value}");
+            assert!(change.is_none(), "{arguments}");
+            let error = value["error"].as_str().unwrap();
+            assert!(error.contains(expected), "{arguments}: {error}");
+            assert_eq!(value["content"], value["error"], "{arguments}");
+            assert_eq!(
+                value["phases"],
+                serde_json::to_value(&current).unwrap(),
+                "{arguments}"
+            );
+        }
+        let (value, _) = run(&current, r#"{"op":"view","task":null}"#);
+        assert_eq!(value["op"], json!("view"));
+        let (value, _) = run(&current, r#"{"op":"explode"}"#);
+        assert!(value.get("op").is_none());
     }
 }
 
 #[test]
-fn todo_view_borrows_and_never_normalizes() {
-    let current = phases(&[
-        (
-            "P",
-            &[
-                ("A", TodoStatus::InProgress),
-                ("B", TodoStatus::InProgress),
-                ("C", TodoStatus::Completed),
-            ],
-        ),
-        ("Q", &[("D", TodoStatus::Blocked)]),
-    ]);
-    let (value, change) = run(&current, r#"{"op":"view","task":"whatever"}"#);
-    assert_eq!(value["ok"], json!(true));
-    assert_eq!(value["op"], json!("view"));
-    assert!(change.is_none());
-    let next: Vec<TodoPhase> = serde_json::from_value(value["phases"].clone()).unwrap();
-    assert_eq!(next, current);
-    assert_eq!(status_of(&next, "B"), TodoStatus::InProgress);
-    let content = value["content"].as_str().unwrap();
-    assert!(content.contains("Overall: 1/4 done, 2 open, 1 blocked."));
-    assert!(content.contains("    - [ ] A (in progress)"));
-    assert!(content.contains("    - [ ] B (in progress)"));
-    assert!(content.contains("    - [ ] D (blocked)"));
-    // 空列表同样走 view：返回空清单提示，不产生变更。
-    let (value, change) = run(&[], r#"{"op":"view"}"#);
-    assert!(change.is_none());
-    assert!(
-        value["content"].as_str().unwrap().contains("empty"),
-        "{value}"
-    );
-}
+fn todo_target_occurrence_exact_match_and_diagnostics() {
+    {
+        let current = phases(&[
+            ("First", &[("same", TodoStatus::InProgress)]),
+            (
+                "Second",
+                &[("same", TodoStatus::Pending), ("same", TodoStatus::Pending)],
+            ),
+        ]);
+        let (value, change) = run(&current, r#"{"op":"done","task":"same","occurrence":2}"#);
+        assert_eq!(value["ok"], true, "{value}");
+        let next = change.unwrap().phases;
+        assert_eq!(next[0], current[0]);
+        assert_eq!(next[1].tasks[0].status, TodoStatus::Completed);
+        assert_eq!(next[1].tasks[1], current[1].tasks[1]);
+        for (op, status) in [
+            ("start", TodoStatus::InProgress),
+            ("done", TodoStatus::Completed),
+            ("drop", TodoStatus::Abandoned),
+            ("block", TodoStatus::Blocked),
+            ("unblock", TodoStatus::Pending),
+            ("rm", TodoStatus::Pending),
+        ] {
+            let mut before = current.clone();
+            if op == "unblock" {
+                before[1].tasks[1].status = TodoStatus::Blocked;
+                before[1].tasks[1].blocker = Some("waiting".into());
+            }
+            let args = json!({"op":op,"task":"same","phase":"Second","occurrence":2});
+            let (value, change) = run(&before, &args.to_string());
+            assert_eq!(value["ok"], true, "{args}: {value}");
+            let next = change.unwrap().phases;
+            assert_eq!(next[1].tasks[0], before[1].tasks[0], "{op}");
+            if op == "rm" {
+                assert_eq!(next[1].tasks.len(), 1);
+            } else {
+                assert_eq!(next[1].tasks[1].status, status, "{op}");
+                assert!(next[1].tasks[1].blocker.is_none() || op == "block");
+            }
+        }
+    }
 
-#[test]
-fn todo_exact_matching_no_trim_or_folding() {
-    let current = inited(&[("P", &["Fix bug"])]);
-    for probe in ["fix bug", "Fix Bug", " fix bug", "Fix bug "] {
-        let (value, change) = run(&current, &json!({"op": "done", "task": probe}).to_string());
-        assert_eq!(value["ok"], json!(false), "{probe}");
-        assert!(change.is_none());
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .starts_with(&format!("Task \"{probe}\" not found"))
+    {
+        let current = inited(&[("First", &["a"]), ("Second", &["b"])]);
+        for args in [
+            r#"{"op":"done","task":"a","occurrence":2}"#,
+            r#"{"op":"start","task":"a","occurrence":18446744073709551615}"#,
+            r#"{"op":"done","task":"a","phase":"Second","occurrence":1}"#,
+            r#"{"op":"done","occurrence":1}"#,
+            r#"{"op":"rm","task":"","occurrence":1}"#,
+        ] {
+            let (value, change) = run(&current, args);
+            assert_eq!(value["ok"], false, "{args}: {value}");
+            assert!(change.is_none(), "{args}");
+            assert_eq!(value["phases"], serde_json::to_value(&current).unwrap());
+        }
+    }
+
+    {
+        let current = inited(&[("P", &["Fix bug"])]);
+        for probe in ["fix bug", "Fix Bug", " fix bug", "Fix bug "] {
+            let (value, change) = run(&current, &json!({"op": "done", "task": probe}).to_string());
+            assert_eq!(value["ok"], json!(false), "{probe}");
+            assert!(change.is_none());
+            assert!(
+                value["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("Task \"{probe}\" not found"))
+            );
+        }
+
+        let current = inited(&[("P", &["a"])]);
+        let empty = Vec::new();
+        for (state, arguments, task, hint) in [
+            (
+                &current,
+                r#"{"op":"done","task":"task-1"}"#,
+                "task-1",
+                "not by IDs",
+            ),
+            (&empty, r#"{"op":"done","task":"x"}"#, "x", "empty"),
+        ] {
+            let (value, _) = run(state, arguments);
+            let error = value["error"].as_str().unwrap();
+            assert!(
+                error.starts_with(&format!("Task \"{task}\" not found")),
+                "{arguments}: {error}"
+            );
+            assert!(error.contains(hint), "{arguments}: {error}");
+        }
+
+        let (value, change) = run(&current, r#"{"op":"done","phase":""}"#);
+        assert_eq!(value["ok"], json!(true));
+        assert_eq!(
+            status_of(&change.unwrap().phases, "a"),
+            TodoStatus::Completed
         );
+        let (value, _) = run(&current, r#"{"op":"done","phase":"Nope"}"#);
+        assert_eq!(value["error"], json!("Phase \"Nope\" not found"));
     }
-}
-
-#[test]
-fn todo_not_found_diagnostics_distinguish_id_misuse_and_empty_list() {
-    let current = inited(&[("P", &["a"])]);
-    let empty = Vec::new();
-    for (state, arguments, task, hint) in [
-        (
-            &current,
-            r#"{"op":"done","task":"task-1"}"#,
-            "task-1",
-            "not by IDs",
-        ),
-        (&empty, r#"{"op":"done","task":"x"}"#, "x", "empty"),
-    ] {
-        let (value, _) = run(state, arguments);
-        let error = value["error"].as_str().unwrap();
-        assert!(
-            error.starts_with(&format!("Task \"{task}\" not found")),
-            "{arguments}: {error}"
-        );
-        assert!(error.contains(hint), "{arguments}: {error}");
-    }
-}
-
-#[test]
-fn todo_phase_diagnostics() {
-    let current = inited(&[("P", &["a"])]);
-    // Upstream truthiness: an empty phase string selects nothing and
-    // falls through to every task, so done succeeds with no error.
-    let (value, change) = run(&current, r#"{"op":"done","phase":""}"#);
-    assert_eq!(value["ok"], json!(true));
-    assert_eq!(
-        status_of(&change.unwrap().phases, "a"),
-        TodoStatus::Completed
-    );
-    let (value, _) = run(&current, r#"{"op":"done","phase":"Nope"}"#);
-    assert_eq!(value["error"], json!("Phase \"Nope\" not found"));
 }
 
 #[test]
@@ -733,30 +687,4 @@ fn plan_todo_projection_preserves_ordinals_and_markdown_authority() {
             .to_string(),
         "Plan tasks changed; re-plan before completing."
     );
-}
-
-#[test]
-fn todo_clears_blocker_on_start_done_and_drop() {
-    let (_, change) = run(&[], r#"{"op":"init","items":["t1","t2","t3"]}"#);
-    let phases = change.unwrap().phases;
-    let (_, change) = run(&phases, r#"{"op":"block","task":"t1","reason":"wait"}"#);
-    let phases = change.unwrap().phases;
-    let (_, change) = run(&phases, r#"{"op":"start","task":"t1"}"#);
-    let phases = change.unwrap().phases;
-    assert_eq!(phases[0].tasks[0].status, TodoStatus::InProgress);
-    assert_eq!(phases[0].tasks[0].blocker, None);
-
-    let (_, change) = run(&phases, r#"{"op":"block","task":"t2","reason":"wait"}"#);
-    let phases = change.unwrap().phases;
-    let (_, change) = run(&phases, r#"{"op":"done","task":"t2"}"#);
-    let phases = change.unwrap().phases;
-    assert_eq!(phases[0].tasks[1].status, TodoStatus::Completed);
-    assert_eq!(phases[0].tasks[1].blocker, None);
-
-    let (_, change) = run(&phases, r#"{"op":"block","task":"t3","reason":"wait"}"#);
-    let phases = change.unwrap().phases;
-    let (_, change) = run(&phases, r#"{"op":"drop","task":"t3"}"#);
-    let phases = change.unwrap().phases;
-    assert_eq!(phases[0].tasks[2].status, TodoStatus::Abandoned);
-    assert_eq!(phases[0].tasks[2].blocker, None);
 }

@@ -194,49 +194,90 @@ fn model_switch_response_batches_interleaved_text_refusal_and_calls() {
 }
 
 #[test]
-fn model_switch_rejects_nontext_or_missing_call_id_without_mutating_source() {
-    let source = response(vec![
-        easy_message(r::Role::User, "preserved".into()),
-        r::InputItem::EasyMessage(r::EasyInputMessage {
-            role: r::Role::User,
-            content: r::EasyInputContent::ContentList(vec![
-                text_part("text"),
-                r::InputContent::InputImage(r::InputImageContent::default()),
-            ]),
-            ..Default::default()
-        }),
-    ]);
-    let Session::Response(original) = &source else {
-        panic!()
-    };
-    let snapshot = original.clone();
-    for protocol in [Protocol::Completion, Protocol::Response] {
-        let error = convert(&source, "new".into(), protocol, EditMode::Replace)
-            .err()
-            .unwrap();
-        assert_eq!(error.to_string(), UNSUPPORTED);
+fn model_switch_rejects_nontext_and_missing_call_id_without_mutating_source() {
+    {
+        let source = response(vec![
+            easy_message(r::Role::User, "preserved".into()),
+            r::InputItem::EasyMessage(r::EasyInputMessage {
+                role: r::Role::User,
+                content: r::EasyInputContent::ContentList(vec![
+                    text_part("text"),
+                    r::InputContent::InputImage(r::InputImageContent::default()),
+                ]),
+                ..Default::default()
+            }),
+        ]);
         let Session::Response(original) = &source else {
             panic!()
         };
-        assert_eq!(original, &snapshot);
+        let snapshot = original.clone();
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let error = convert(&source, "new".into(), protocol, EditMode::Replace)
+                .err()
+                .unwrap();
+            assert_eq!(error.to_string(), UNSUPPORTED);
+            let Session::Response(original) = &source else {
+                panic!()
+            };
+            assert_eq!(original, &snapshot);
+        }
+        let mut invalid = output("a");
+        let r::InputItem::Item(r::Item::FunctionCallOutput(output)) = &mut invalid else {
+            panic!()
+        };
+        output.call_id = None;
+        assert_eq!(
+            convert(
+                &response(vec![invalid]),
+                "new".into(),
+                Protocol::Completion,
+                EditMode::Replace,
+            )
+            .err()
+            .unwrap()
+            .to_string(),
+            UNSUPPORTED
+        );
     }
-    let mut invalid = output("a");
-    let r::InputItem::Item(r::Item::FunctionCallOutput(output)) = &mut invalid else {
-        panic!()
-    };
-    output.call_id = None;
-    assert_eq!(
-        convert(
-            &response(vec![invalid]),
-            "new".into(),
+
+    {
+        let mut source = Session::new(
+            "old".into(),
             Protocol::Completion,
+            "system".into(),
             EditMode::Replace,
-        )
-        .err()
-        .unwrap()
-        .to_string(),
-        UNSUPPORTED
-    );
+        );
+        let Session::Completion(request) = &mut source else {
+            panic!()
+        };
+        request.messages.push(c::ChatCompletionRequestMessage::User(
+            c::ChatCompletionRequestUserMessage {
+                content: c::ChatCompletionRequestUserMessageContent::Array(vec![
+                    c::ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                        c::ChatCompletionRequestMessageContentPartImage::default(),
+                    ),
+                ]),
+                ..Default::default()
+            },
+        ));
+        let snapshot = request.clone();
+        assert_eq!(
+            convert(
+                &source,
+                "response".into(),
+                Protocol::Response,
+                EditMode::Replace
+            )
+            .err()
+            .unwrap()
+            .to_string(),
+            UNSUPPORTED
+        );
+        let Session::Completion(request) = &source else {
+            panic!()
+        };
+        assert_eq!(request, &snapshot);
+    }
 }
 
 #[test]
@@ -417,44 +458,4 @@ fn model_switch_text_arrays_and_tool_arguments_survive_round_trip() {
     };
     assert_eq!(round_trip.instructions, request.instructions);
     assert_eq!(round_trip.input, request.input);
-}
-
-#[test]
-fn model_switch_completion_rejects_nontext_without_mutating_source() {
-    let mut source = Session::new(
-        "old".into(),
-        Protocol::Completion,
-        "system".into(),
-        EditMode::Replace,
-    );
-    let Session::Completion(request) = &mut source else {
-        panic!()
-    };
-    request.messages.push(c::ChatCompletionRequestMessage::User(
-        c::ChatCompletionRequestUserMessage {
-            content: c::ChatCompletionRequestUserMessageContent::Array(vec![
-                c::ChatCompletionRequestUserMessageContentPart::ImageUrl(
-                    c::ChatCompletionRequestMessageContentPartImage::default(),
-                ),
-            ]),
-            ..Default::default()
-        },
-    ));
-    let snapshot = request.clone();
-    assert_eq!(
-        convert(
-            &source,
-            "response".into(),
-            Protocol::Response,
-            EditMode::Replace
-        )
-        .err()
-        .unwrap()
-        .to_string(),
-        UNSUPPORTED
-    );
-    let Session::Completion(request) = &source else {
-        panic!()
-    };
-    assert_eq!(request, &snapshot);
 }

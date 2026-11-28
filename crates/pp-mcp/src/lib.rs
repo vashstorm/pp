@@ -337,7 +337,7 @@ mod fixtures {
 }
 
 #[cfg(test)]
-mod tests {
+mod integration {
     use super::*;
     use crate::client::{ConnectionSlot, stop_connection};
     use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
@@ -348,79 +348,77 @@ mod tests {
     use super::fixtures::{plan_server_config, plan_spawn_client};
 
     #[test]
-    fn mcp_spawn_refuses_after_cleanup_marks_slot_closing() {
-        let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
-            child: None,
-            remote: None,
-            closing: true,
-        }));
-        let config = ServerConfig {
-            transport: TransportConfig::Stdio(StdioConfig {
-                command: "bash".into(),
-                args: vec!["-c".into(), "sleep 30".into()],
-                env: BTreeMap::new(),
-                cwd: None,
-            }),
-            timeout_seconds: 1,
-            timeout_millis: None,
-            read_only_tools: BTreeSet::new(),
-        };
-        let error = Client::spawn(&config, Path::new("."), process)
-            .err()
+    fn mcp_client_spawn_guards_and_stop_reclaim() {
+        {
+            let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
+                child: None,
+                remote: None,
+                closing: true,
+            }));
+            let config = ServerConfig {
+                transport: TransportConfig::Stdio(StdioConfig {
+                    command: "bash".into(),
+                    args: vec!["-c".into(), "sleep 30".into()],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                }),
+                timeout_seconds: 1,
+                timeout_millis: None,
+                read_only_tools: BTreeSet::new(),
+            };
+            let error = Client::spawn(&config, Path::new("."), process)
+                .err()
+                .unwrap();
+            assert_eq!(format!("{error:#}"), "MCP is shutting down");
+        }
+        {
+            let child = Command::new("bash")
+                .args(["-c", "sleep 30"])
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
+                child: Some(child),
+                remote: None,
+                closing: false,
+            }));
+            let config = ServerConfig {
+                transport: TransportConfig::Stdio(StdioConfig {
+                    command: "bash".into(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                }),
+                timeout_seconds: 1,
+                timeout_millis: None,
+                read_only_tools: BTreeSet::new(),
+            };
+            let error = Client::spawn(&config, Path::new("."), process.clone())
+                .err()
+                .unwrap();
+            assert_eq!(format!("{error:#}"), "MCP process is still running");
+            stop_connection(&process).unwrap();
+            assert!(process.lock().unwrap().child.is_none());
+        }
+        {
+            let (mut client, process) = plan_spawn_client(&plan_server_config(&["-c", "true"]));
+            let pid = process.lock().unwrap().child.as_ref().unwrap().id() as i32;
+            waitid(
+                WaitId::Pid(Pid::from_raw(pid).expect("test child has a pid")),
+                WaitIdOptions::EXITED,
+            )
             .unwrap();
-        assert_eq!(format!("{error:#}"), "MCP is shutting down");
-    }
+            assert!(client.stop().is_err());
+            assert!(!client.stopped);
+            // 停止失败保留未回收句柄，重试不假成功。
+            assert!(process.lock().unwrap().is_live());
+            assert!(client.stop().is_err());
 
-    #[test]
-    fn mcp_spawn_refuses_to_replace_unreaped_process() {
-        let child = Command::new("bash")
-            .args(["-c", "sleep 30"])
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
-            child: Some(child),
-            remote: None,
-            closing: false,
-        }));
-        let config = ServerConfig {
-            transport: TransportConfig::Stdio(StdioConfig {
-                command: "bash".into(),
-                args: vec![],
-                env: BTreeMap::new(),
-                cwd: None,
-            }),
-            timeout_seconds: 1,
-            timeout_millis: None,
-            read_only_tools: BTreeSet::new(),
-        };
-        let error = Client::spawn(&config, Path::new("."), process.clone())
-            .err()
-            .unwrap();
-        assert_eq!(format!("{error:#}"), "MCP process is still running");
-        stop_connection(&process).unwrap();
-        assert!(process.lock().unwrap().child.is_none());
-    }
-
-    #[test]
-    fn plan_mcp_client_stop_stays_unstopped_until_reclaim_succeeds() {
-        let (mut client, process) = plan_spawn_client(&plan_server_config(&["-c", "true"]));
-        let pid = process.lock().unwrap().child.as_ref().unwrap().id() as i32;
-        waitid(
-            WaitId::Pid(Pid::from_raw(pid).expect("test child has a pid")),
-            WaitIdOptions::EXITED,
-        )
-        .unwrap();
-        assert!(client.stop().is_err());
-        assert!(!client.stopped);
-        // 停止失败保留未回收句柄，重试不假成功。
-        assert!(process.lock().unwrap().is_live());
-        assert!(client.stop().is_err());
-
-        // 回收成功后 stopped 才置位，重复 stop 幂等成功。
-        process.lock().unwrap().child.take();
-        client.stop().unwrap();
-        assert!(client.stopped);
-        assert!(client.stop().is_ok());
+            // 回收成功后 stopped 才置位，重复 stop 幂等成功。
+            process.lock().unwrap().child.take();
+            client.stop().unwrap();
+            assert!(client.stopped);
+            assert!(client.stop().is_ok());
+        }
     }
 }

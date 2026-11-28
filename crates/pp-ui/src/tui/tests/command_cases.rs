@@ -48,24 +48,22 @@ fn task_cancel_idle_menu_repeat_and_modified_escape_do_not_cancel() {
 }
 
 #[test]
-fn bang_shell_input_consumes_only_mode_prefix() {
+fn bang_shell_input_history_exits_and_cleanup_failure() {
     let mut app = app();
     app.state = State::Ready;
     let (commands, requests) = mpsc::channel();
     app.commands = Some(commands);
     let mut dirty = false;
     app.handle(key(KeyCode::Char('!')), &mut dirty);
-    assert!(app.shell_mode);
-    assert_eq!(app.input.lines(), &[""]);
+    assert!(app.shell_mode && app.input.lines() == [""]);
     assert!(
         draw_buffer(&mut app, 100, 30)
             .content
             .iter()
-            .any(|cell| { cell.symbol() == "─" && cell.fg == statusline::shell_mode() })
+            .any(|cell| cell.symbol() == "─" && cell.fg == statusline::shell_mode())
     );
     app.submit(PendingKind::Steering);
     assert!(requests.try_recv().is_err());
-
     app.handle(key(KeyCode::Char('!')), &mut dirty);
     app.handle(Event::Paste(" false".into()), &mut dirty);
     assert_eq!(app.input.lines(), &["! false"]);
@@ -75,76 +73,59 @@ fn bang_shell_input_consumes_only_mode_prefix() {
     };
     assert_eq!(command, "! false");
     assert_eq!(app.input_history, ["!! false"]);
-    assert!(!app.shell_mode);
-    assert_eq!(app.input.lines(), &[""]);
-}
+    assert!(!app.shell_mode && app.input.lines() == [""]);
 
-#[test]
-fn bang_shell_paste_history_and_picker_preserve_mode() {
-    let mut app = app();
-    app.state = State::Ready;
-    let mut dirty = false;
-    app.handle(
+    let mut paste = super::app();
+    paste.state = State::Ready;
+    paste.handle(
         Event::Paste("  !printf '你好!'\n! false".into()),
         &mut dirty,
     );
-    assert!(app.shell_mode);
-    assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
-    assert_eq!(app.input.cursor(), ratatui_textarea::DataCursor(1, 7));
-    assert!(app.input.undo());
-    assert_eq!(app.input.lines(), &[""]);
-    assert!(app.input.redo());
-    assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
-    app.input_history.push("ordinary prompt".into());
-    app.navigate_history(true);
-    assert!(!app.shell_mode);
-    app.navigate_history(false);
-    assert!(app.shell_mode);
-    assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
-    app.open_model_picker();
-    assert!(!app.shell_mode);
-    app.close_model_panel();
-    assert!(app.shell_mode);
-    app.remember_input();
-    app.clear_input();
-    app.navigate_history(true);
-    assert!(app.shell_mode);
-    assert_eq!(app.input.lines(), &["  printf '你好!'", "! false"]);
-}
+    assert!(paste.shell_mode && paste.input.lines() == ["  printf '你好!'", "! false"]);
+    assert_eq!(paste.input.cursor(), ratatui_textarea::DataCursor(1, 7));
+    assert!(paste.input.undo() && paste.input.lines() == [""]);
+    assert!(paste.input.redo() && paste.input.lines() == ["  printf '你好!'", "! false"]);
+    paste.input_history.push("ordinary prompt".into());
+    paste.navigate_history(true);
+    assert!(!paste.shell_mode);
+    paste.navigate_history(false);
+    assert!(paste.shell_mode && paste.input.lines() == ["  printf '你好!'", "! false"]);
+    paste.open_model_picker();
+    assert!(!paste.shell_mode);
+    paste.close_model_panel();
+    assert!(paste.shell_mode);
+    paste.remember_input();
+    paste.clear_input();
+    paste.navigate_history(true);
+    assert!(paste.shell_mode && paste.input.lines() == ["  printf '你好!'", "! false"]);
 
-#[test]
-fn bang_shell_input_exits_mode_and_suppresses_menus() {
-    let mut app = app();
-    app.state = State::Ready;
-    let mut dirty = false;
-    app.handle(key(KeyCode::Char('!')), &mut dirty);
-    app.handle(key(KeyCode::Backspace), &mut dirty);
-    assert!(!app.shell_mode);
-    app.handle(Event::Paste("!/model @file".into()), &mut dirty);
-    assert!(app.shell_mode);
-    assert!(app.menu.is_none());
-    assert!(app.model_panel.is_none());
-    assert!(app.file_query.is_none());
-    app.handle(key(KeyCode::Esc), &mut dirty);
-    assert!(!app.shell_mode);
-    assert_eq!(app.input.lines(), &["/model @file"]);
-    app.clear_input();
-    app.handle(Event::Paste("!echo ok".into()), &mut dirty);
-    app.handle(control('a'), &mut dirty);
-    app.handle(control('k'), &mut dirty);
-    assert!(!app.shell_mode);
-    assert_eq!(app.input.lines(), &[""]);
-}
+    let mut exits = super::app();
+    exits.state = State::Ready;
+    exits.handle(key(KeyCode::Char('!')), &mut dirty);
+    exits.handle(key(KeyCode::Backspace), &mut dirty);
+    assert!(!exits.shell_mode);
+    exits.handle(Event::Paste("!/model @file".into()), &mut dirty);
+    assert!(
+        exits.shell_mode
+            && exits.menu.is_none()
+            && exits.model_panel.is_none()
+            && exits.file_query.is_none()
+    );
+    exits.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(!exits.shell_mode && exits.input.lines() == ["/model @file"]);
+    exits.clear_input();
+    exits.handle(Event::Paste("!echo ok".into()), &mut dirty);
+    exits.handle(control('a'), &mut dirty);
+    exits.handle(control('k'), &mut dirty);
+    assert!(!exits.shell_mode && exits.input.lines() == [""]);
 
-#[test]
-fn bang_shell_cleanup_failure_disables_future_execution() {
-    let mut app = app();
-    app.state = State::RunningShell;
-    app.input.insert_str("draft remains");
+    let mut cleanup = super::app();
+    cleanup.state = State::RunningShell;
+    cleanup.input.insert_str("draft remains");
     let (commands, requests) = mpsc::channel();
     let (events, receiver) = mpsc::channel();
-    app.commands = Some(commands);
-    app.events = Some(receiver);
+    cleanup.commands = Some(commands);
+    cleanup.events = Some(receiver);
     events
         .send(WorkerEvent::ShellCompleted(Err(
             pp_core::cancellation::CleanupError(anyhow::anyhow!("process group still alive"))
@@ -152,15 +133,15 @@ fn bang_shell_cleanup_failure_disables_future_execution() {
         )))
         .unwrap();
     drop(events);
-    app.receive();
-    assert!(matches!(app.state, State::Unavailable));
-    assert_eq!(app.input.lines(), &["draft remains"]);
+    cleanup.receive();
+    assert!(matches!(cleanup.state, State::Unavailable));
+    assert_eq!(cleanup.input.lines(), &["draft remains"]);
     assert_eq!(
-        app.unavailable.as_deref(),
+        cleanup.unavailable.as_deref(),
         Some("Execution unavailable: shell cleanup failed; restart pp.")
     );
-    assert!(draw(&mut app, 100, 30).contains("process group still alive"));
-    app.submit(PendingKind::Steering);
+    assert!(draw(&mut cleanup, 100, 30).contains("process group still alive"));
+    cleanup.submit(PendingKind::Steering);
     assert!(requests.try_recv().is_err());
 }
 
@@ -268,7 +249,7 @@ fn test_web_search_dispatches_cancels_and_restores_state() {
 }
 
 #[test]
-fn completed_turn_uses_worker_timing_and_preserves_draft() {
+fn turn_completion_timing_and_cancel_failure_summary() {
     use chrono::TimeZone;
 
     for (seconds, duration) in [(0, "0s"), (5, "5s"), (65, "1m 5s"), (3725, "1h 2m 5s")] {
@@ -308,10 +289,7 @@ fn completed_turn_uses_worker_timing_and_preserves_draft() {
         assert_eq!(draw(&mut app, 100, 30).matches("Completed ·").count(), 1);
         assert!(draw(&mut app, 35, 30).contains("Completed ·"));
     }
-}
 
-#[test]
-fn cancelled_and_failed_turns_have_no_completion_summary() {
     for result in [
         Ok(RunOutcome::Cancelled),
         Err(anyhow::anyhow!("request failed")),
@@ -335,7 +313,7 @@ fn cancelled_and_failed_turns_have_no_completion_summary() {
 }
 
 #[test]
-fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
+fn task_cancel_waits_and_committed_token_isolation() {
     let mut app = app();
     app.state = State::Ready;
     app.show_welcome = false;
@@ -389,40 +367,35 @@ fn task_cancel_waits_for_completed_and_preserves_editable_draft() {
     assert!(matches!(app.state, State::Ready));
     assert!(app.active_cancellation.is_none());
     assert_eq!(app.input.lines(), &["保留草新稿"]);
-}
 
-#[test]
-fn task_cancel_committed_completion_wins_and_next_token_is_independent() {
-    let mut app = app();
-    app.state = State::Ready;
-    app.show_welcome = false;
+    let mut race = super::app();
+    race.state = State::Ready;
+    race.show_welcome = false;
     let (commands, requests) = mpsc::channel();
     let (events, receiver) = mpsc::channel();
-    app.commands = Some(commands);
-    app.events = Some(receiver);
-    let mut dirty = false;
-    app.input.insert_str("first task");
-    app.handle(key(KeyCode::Enter), &mut dirty);
+    race.commands = Some(commands);
+    race.events = Some(receiver);
+    race.input.insert_str("first task");
+    race.handle(key(KeyCode::Enter), &mut dirty);
     let WorkerCommand::Run {
         cancellation: old, ..
     } = requests.try_recv().unwrap()
     else {
         panic!()
     };
-    // 完成已在 worker 提交，UI 尚未接到 Completed；迟到 Esc 只取消旧 token。
     events
         .send(WorkerEvent::completed(
             Instant::now(),
             Ok(RunOutcome::Completed),
         ))
         .unwrap();
-    app.handle(key(KeyCode::Esc), &mut dirty);
+    race.handle(key(KeyCode::Esc), &mut dirty);
     assert!(old.is_cancelled());
-    app.receive();
-    app.handle(key(KeyCode::Esc), &mut dirty);
-    assert!(matches!(app.state, State::Ready));
-    app.input.insert_str("next task");
-    app.handle(key(KeyCode::Enter), &mut dirty);
+    race.receive();
+    race.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(matches!(race.state, State::Ready));
+    race.input.insert_str("next task");
+    race.handle(key(KeyCode::Enter), &mut dirty);
     let WorkerCommand::Run {
         cancellation: next, ..
     } = requests.try_recv().unwrap()
@@ -431,17 +404,16 @@ fn task_cancel_committed_completion_wins_and_next_token_is_independent() {
     };
     old.cancel();
     assert!(!next.is_cancelled());
-    app.handle(key(KeyCode::Esc), &mut dirty);
-    assert!(next.is_cancelled());
-    assert!(matches!(app.state, State::Cancelling));
-    assert!(app.handle(
+    race.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(next.is_cancelled() && matches!(race.state, State::Cancelling));
+    assert!(race.handle(
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
         &mut dirty
     ));
 }
 
 #[test]
-fn notification_task_failure_enters_transcript_without_session_noise() {
+fn notifications_task_startup_and_filtering() {
     let mut app = app();
     app.state = State::Running;
     app.show_welcome = false;
@@ -475,74 +447,40 @@ fn notification_task_failure_enters_transcript_without_session_noise() {
         .write_full_for_test(&mut scrollback, &snapshot)
         .unwrap();
     let history = String::from_utf8_lossy(&scrollback);
-    assert!(history.contains("partial answer"));
-    assert!(!history.contains("fixture-session"));
+    assert!(history.contains("partial answer") && !history.contains("fixture-session"));
     assert_eq!(history.matches("request failed").count(), 1);
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("partial answer"));
-    assert!(screen.contains("request failed"));
-    assert!(!screen.contains("Session:"));
+    assert!(
+        screen.contains("partial answer")
+            && screen.contains("request failed")
+            && !screen.contains("Session:")
+    );
     assert_eq!(app.input.lines(), &["保留草稿🙂"]);
     assert_eq!(app.input.cursor(), cursor);
-}
 
-#[test]
-fn notification_startup_and_worker_errors_remain_in_message_history() {
-    let mut app = App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap();
-    assert_notification(&mut app, Color::Rgb(224, 108, 117));
-    assert!(draw(&mut app, 100, 30).contains("fixture configuration unavailable"));
-    assert!(!app.show_welcome);
-    app.input.insert_str("草稿");
-    app.fail_worker();
-    assert_notification(&mut app, Color::Rgb(224, 108, 117));
-    assert!(draw(&mut app, 100, 30).contains("agent worker channel closed"));
-    assert!(matches!(app.state, State::Unavailable));
-    let screen = draw(&mut app, 100, 30);
-    assert!(!screen.contains("▄▄▄██▀▀██"));
-    assert!(screen.contains("configuration unavailable"));
-    assert!(screen.contains("channel closed"));
-    assert_eq!(app.input.lines(), &["草稿"]);
-}
-
-#[test]
-fn pipe_store_binding_is_idempotent_and_bumps_epoch_only_on_new_root() {
-    let mut app = app();
-    app.state = State::Ready;
-    let first = pp_bash::PipeStore::new();
-    app.receive_event_for_test(WorkerEvent::PipeStoreBound {
-        store: first.clone(),
-    });
-    assert_eq!(app.pipe_store_epoch, 1);
+    let mut unavail = App::new(Err(anyhow::anyhow!("fixture configuration unavailable"))).unwrap();
+    assert_notification(&mut unavail, Color::Rgb(224, 108, 117));
+    assert!(draw(&mut unavail, 100, 30).contains("fixture configuration unavailable"));
+    assert!(!unavail.show_welcome);
+    unavail.input.insert_str("草稿");
+    unavail.fail_worker();
+    assert_notification(&mut unavail, Color::Rgb(224, 108, 117));
+    assert!(draw(&mut unavail, 100, 30).contains("agent worker channel closed"));
+    assert!(matches!(unavail.state, State::Unavailable));
+    let screen = draw(&mut unavail, 100, 30);
     assert!(
-        app.pipe_store
-            .as_ref()
-            .is_some_and(|store| store.same_instance(&first))
+        !screen.contains("▄▄▄██▀▀██")
+            && screen.contains("configuration unavailable")
+            && screen.contains("channel closed")
     );
-    // 同一实例重复发布不产生新 epoch。
-    app.receive_event_for_test(WorkerEvent::PipeStoreBound {
-        store: first.clone(),
-    });
-    assert_eq!(app.pipe_store_epoch, 1);
-    let second = pp_bash::PipeStore::new();
-    app.receive_event_for_test(WorkerEvent::PipeStoreBound {
-        store: second.clone(),
-    });
-    assert_eq!(app.pipe_store_epoch, 2);
-    assert!(
-        app.pipe_store
-            .as_ref()
-            .is_some_and(|store| store.same_instance(&second))
-    );
-}
+    assert_eq!(unavail.input.lines(), &["草稿"]);
 
-#[test]
-fn notification_filters_routine_feedback_and_keeps_independent_errors() {
-    let mut app = app();
-    let before = draw(&mut app, 100, 30);
-    app.notify(Level::Normal, "routine success".into());
-    app.notify(Level::Error, " \n\t".into());
+    let mut filtered = super::app();
+    let before = draw(&mut filtered, 100, 30);
+    filtered.notify(Level::Normal, "routine success".into());
+    filtered.notify(Level::Error, " \n\t".into());
     let (events, receiver) = mpsc::channel();
-    app.events = Some(receiver);
+    filtered.events = Some(receiver);
     events
         .send(WorkerEvent::Progress(AgentEvent::RequestRetrying {
             reason: pp_core::events::RequestRetryReason::HttpStatus(503),
@@ -550,13 +488,12 @@ fn notification_filters_routine_feedback_and_keeps_independent_errors() {
             wait_ms: 30_000,
         }))
         .unwrap();
-    app.receive();
-    // 重试不再静默：固定信息框可见，但对话与历史不追加条目。
-    let retrying = draw(&mut app, 100, 30);
+    filtered.receive();
+    let retrying = draw(&mut filtered, 100, 30);
     assert_ne!(retrying, before);
-    assert!(retrying.contains("Retrying"), "{retrying}");
     assert!(
-        retrying.contains("attempt 1 failed: HTTP status 503; retrying in"),
+        retrying.contains("Retrying")
+            && retrying.contains("attempt 1 failed: HTTP status 503; retrying in"),
         "{retrying}"
     );
     events
@@ -566,20 +503,46 @@ fn notification_filters_routine_feedback_and_keeps_independent_errors() {
             success: false,
         }))
         .unwrap();
-    app.receive();
-    assert_eq!(draw(&mut app, 100, 30), before);
-    app.notify(Level::Error, "first failure".into());
-    app.notify(Level::Error, "second failure".into());
-    let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("first failure"));
-    assert!(screen.contains("second failure"));
+    filtered.receive();
+    assert_eq!(draw(&mut filtered, 100, 30), before);
+    filtered.notify(Level::Error, "first failure".into());
+    filtered.notify(Level::Error, "second failure".into());
+    let screen = draw(&mut filtered, 100, 30);
+    assert!(screen.contains("first failure") && screen.contains("second failure"));
 }
 
 #[test]
-fn retry_notice_counts_down_in_a_fixed_box_and_expires() {
-    let mut app = app();
+fn retry_notice_and_pipe_store_epoch() {
+    let mut pipe_app = app();
+    pipe_app.state = State::Ready;
+    let first = pp_bash::PipeStore::new();
+    pipe_app.receive_event_for_test(WorkerEvent::PipeStoreBound {
+        store: first.clone(),
+    });
+    assert_eq!(pipe_app.pipe_store_epoch, 1);
+    assert!(
+        pipe_app
+            .pipe_store
+            .as_ref()
+            .is_some_and(|s| s.same_instance(&first))
+    );
+    pipe_app.receive_event_for_test(WorkerEvent::PipeStoreBound { store: first });
+    assert_eq!(pipe_app.pipe_store_epoch, 1);
+    let second = pp_bash::PipeStore::new();
+    pipe_app.receive_event_for_test(WorkerEvent::PipeStoreBound {
+        store: second.clone(),
+    });
+    assert_eq!(pipe_app.pipe_store_epoch, 2);
+    assert!(
+        pipe_app
+            .pipe_store
+            .as_ref()
+            .is_some_and(|s| s.same_instance(&second))
+    );
+
+    let mut retry_app = app();
     let (events, receiver) = mpsc::channel();
-    app.events = Some(receiver);
+    retry_app.events = Some(receiver);
     events
         .send(WorkerEvent::Progress(AgentEvent::RequestRetrying {
             reason: pp_core::events::RequestRetryReason::HttpStatus(400),
@@ -587,30 +550,27 @@ fn retry_notice_counts_down_in_a_fixed_box_and_expires() {
             wait_ms: 60_000,
         }))
         .unwrap();
-    app.receive();
-    let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("Retrying"), "{screen}");
+    retry_app.receive();
+    let screen = draw(&mut retry_app, 100, 30);
     assert!(
-        screen.contains("attempt 3 failed: HTTP status 400; retrying in 60s"),
+        screen.contains("Retrying")
+            && screen.contains("attempt 3 failed: HTTP status 400; retrying in 60s")
+            && screen.contains("Esc cancels"),
         "{screen}"
     );
-    assert!(screen.contains("Esc cancels"), "{screen}");
-    // 同一秒内保持不变，整秒递减时才要求重绘。
     let now = Instant::now();
-    assert!(!app.retry_tick(now + Duration::from_millis(100)));
-    assert!(app.retry_tick(now + Duration::from_secs(1)));
-    assert!(draw(&mut app, 100, 30).contains("retrying in 59s"));
-    assert!(!app.retry_tick(now + Duration::from_millis(1100)));
-    assert!(app.retry_visible());
-    // 到期自动收起，不需要额外事件。
-    assert!(app.retry_tick(Instant::now() + Duration::from_secs(61)));
-    assert!(!app.retry_visible());
-    let screen = draw(&mut app, 100, 30);
-    assert!(!screen.contains("Retrying"), "{screen}");
+    assert!(!retry_app.retry_tick(now + Duration::from_millis(100)));
+    assert!(retry_app.retry_tick(now + Duration::from_secs(1)));
+    assert!(draw(&mut retry_app, 100, 30).contains("retrying in 59s"));
+    assert!(!retry_app.retry_tick(now + Duration::from_millis(1100)));
+    assert!(retry_app.retry_visible());
+    assert!(retry_app.retry_tick(Instant::now() + Duration::from_secs(61)));
+    assert!(!retry_app.retry_visible());
+    assert!(!draw(&mut retry_app, 100, 30).contains("Retrying"));
 }
 
 #[test]
-fn initial_file_command_submits_run_and_clears_input() {
+fn initial_commands_file_shell_and_parse_errors() {
     let (mut app, requests) = file_commands_app(review_files());
     assert!(!app.submit_initial_command("/review src/main.rs"));
     let WorkerCommand::Run { prompt, .. } = requests.try_recv().unwrap() else {
@@ -620,27 +580,21 @@ fn initial_file_command_submits_run_and_clears_input() {
     assert_eq!(app.input.lines(), &[""]);
     assert_eq!(app.input_history, ["/review src/main.rs"]);
     assert!(matches!(app.state, State::Running));
-}
 
-#[test]
-fn initial_parse_error_notifies_and_keeps_draft() {
-    let (mut app, requests) = file_commands_app(review_files());
-    assert!(!app.submit_initial_command("/mcp nope"));
-    assert!(requests.try_recv().is_err());
-    assert_eq!(app.input.lines(), &["/mcp nope"]);
-    assert!(draw(&mut app, 100, 30).contains("usage: /mcp"));
-    assert_notification(&mut app, Color::Rgb(224, 108, 117));
-}
+    let (mut err_app, err_req) = file_commands_app(review_files());
+    assert!(!err_app.submit_initial_command("/mcp nope"));
+    assert!(err_req.try_recv().is_err());
+    assert_eq!(err_app.input.lines(), &["/mcp nope"]);
+    assert!(draw(&mut err_app, 100, 30).contains("usage: /mcp"));
+    assert_notification(&mut err_app, Color::Rgb(224, 108, 117));
 
-#[test]
-fn initial_shell_command_consumes_mode_prefix() {
-    let (mut app, requests) = file_commands_app(review_files());
-    assert!(!app.submit_initial_command("!echo hi"));
-    let WorkerCommand::Shell { command, .. } = requests.try_recv().unwrap() else {
+    let (mut sh_app, sh_req) = file_commands_app(review_files());
+    assert!(!sh_app.submit_initial_command("!echo hi"));
+    let WorkerCommand::Shell { command, .. } = sh_req.try_recv().unwrap() else {
         panic!("启动 shell 命令应下发 WorkerCommand::Shell");
     };
     assert_eq!(command, "echo hi");
-    assert_eq!(app.input.lines(), &[""]);
+    assert_eq!(sh_app.input.lines(), &[""]);
 }
 
 #[test]
@@ -817,156 +771,161 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
 }
 
 #[test]
-fn unavailable_model_binds_configured_permission_mode_before_cycling() {
-    use pp_config::config::PermissionMode;
+fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
+    {
+        use pp_config::config::PermissionMode;
 
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let bootstrap = pp_runtime::agent::Bootstrap {
-        dir: root.clone(),
-        cwd: root.clone(),
-        skills: pp_config::skills::Skills::default().shared(),
-        prompt: pp_runtime::system_prompt::Snapshot::bundled(),
-        permission: std::sync::Arc::new(pp_permission::Gate::for_process(&root, None, false)),
-        sandbox_override: None,
-        sandbox: pp_sandbox::SharedSandbox::default(),
-        mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
-        models: pp_config::model_state::SharedModels::default(),
-        allowed_tools: None,
-        subagents_enabled: true,
-        hooks_enabled: true,
-        ephemeral: false,
-        max_turns: None,
-        output_schema: None,
-    };
-    let mut app = App::new(Err(anyhow::anyhow!("missing models.yml"))).unwrap();
-    app.bootstrap = Some(bootstrap);
-    app.bind_bootstrap_permissions();
-    assert_eq!(app.permission_mode, Some(PermissionMode::WorkspaceWrite));
-    assert_eq!(app.permission.snapshot(), PermissionMode::WorkspaceWrite);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let bootstrap = pp_runtime::agent::Bootstrap {
+            dir: root.clone(),
+            cwd: root.clone(),
+            skills: pp_config::skills::Skills::default().shared(),
+            prompt: pp_runtime::system_prompt::Snapshot::bundled(),
+            permission: std::sync::Arc::new(pp_permission::Gate::for_process(&root, None, false)),
+            sandbox_override: None,
+            sandbox: pp_sandbox::SharedSandbox::default(),
+            mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
+            models: pp_config::model_state::SharedModels::default(),
+            allowed_tools: None,
+            subagents_enabled: true,
+            hooks_enabled: true,
+            ephemeral: false,
+            max_turns: None,
+            output_schema: None,
+        };
+        let mut app = App::new(Err(anyhow::anyhow!("missing models.yml"))).unwrap();
+        app.bootstrap = Some(bootstrap);
+        app.bind_bootstrap_permissions();
+        assert_eq!(app.permission_mode, Some(PermissionMode::WorkspaceWrite));
+        assert_eq!(app.permission.snapshot(), PermissionMode::WorkspaceWrite);
 
-    // 第一次按 F6 应从默认 WorkspaceWrite 切到 AutoReview。
-    app.handle(key(KeyCode::F(6)), &mut false);
-    assert_eq!(app.permission_mode, Some(PermissionMode::AutoReview));
-    assert_eq!(app.permission.snapshot(), PermissionMode::AutoReview);
-}
+        // 第一次按 F6 应从默认 WorkspaceWrite 切到 AutoReview。
+        app.handle(key(KeyCode::F(6)), &mut false);
+        assert_eq!(app.permission_mode, Some(PermissionMode::AutoReview));
+        assert_eq!(app.permission.snapshot(), PermissionMode::AutoReview);
+    }
 
-#[test]
-fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() {
-    use pp_config::config::PermissionMode;
-    use std::os::unix::fs::PermissionsExt;
+    {
+        use pp_config::config::PermissionMode;
+        use std::os::unix::fs::PermissionsExt;
 
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let rules_path = root.join("permission.toml");
-    std::fs::write(&rules_path, "[default.tools]\nwrite = \"allow\"\n").unwrap();
-    std::fs::set_permissions(&rules_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let rules_path = root.join("permission.toml");
+        std::fs::write(&rules_path, "[default.tools]\nwrite = \"allow\"\n").unwrap();
+        std::fs::set_permissions(&rules_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    let gate = pp_permission::Gate::for_process(&root, None, false);
-    let (mut app, requests, _events) = plan_app();
-    app.permission = gate.clone();
-    app.permission_mode = Some(gate.snapshot());
-    app.state = State::Running;
+        let gate = pp_permission::Gate::for_process(&root, None, false);
+        let (mut app, requests, _events) = plan_app();
+        app.permission = gate.clone();
+        app.permission_mode = Some(gate.snapshot());
+        app.state = State::Running;
 
-    let type_text = |app: &mut App, text: &str| {
-        for ch in text.chars() {
-            app.handle(key(KeyCode::Char(ch)), &mut false);
-        }
-    };
+        let type_text = |app: &mut App, text: &str| {
+            for ch in text.chars() {
+                app.handle(key(KeyCode::Char(ch)), &mut false);
+            }
+        };
 
-    // 1. 权限确认弹窗打开时，通过真实按键 F7 -> 输入 `yolo` -> Enter 直接切换档位，不关闭底层弹窗。
-    let (_answers, _token) = ask_fixture(&mut app);
-    app.handle(key(KeyCode::F(7)), &mut false);
-    assert!(app.permission_overlay.is_some());
-    assert!(
-        draw(&mut app, 100, 30).contains("Permission mode: Ask for approval (workspace-write)")
-    );
-    type_text(&mut app, "yolo");
-    app.handle(key(KeyCode::Enter), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
-    assert_eq!(app.permission_mode, Some(PermissionMode::DangerFullAccess));
-    assert!(app.ask_panel.is_some());
-    assert!(matches!(
-        requests.try_recv(),
-        Ok(WorkerCommand::SyncPermissions)
-    ));
-    app.handle(key(KeyCode::Esc), &mut false);
-    assert!(app.permission_overlay.is_none());
-    assert!(app.ask_panel.is_some());
-    app.ask_panel = None;
-    app.ask_reply = None;
-    app.ask_id = None;
-    app.ask_cancellation = None;
+        // 1. 权限确认弹窗打开时，通过真实按键 F7 -> 输入 `yolo` -> Enter 直接切换档位，不关闭底层弹窗。
+        let (_answers, _token) = ask_fixture(&mut app);
+        app.handle(key(KeyCode::F(7)), &mut false);
+        assert!(app.permission_overlay.is_some());
+        assert!(
+            draw(&mut app, 100, 30).contains("Permission mode: Ask for approval (workspace-write)")
+        );
+        type_text(&mut app, "yolo");
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
+        assert_eq!(app.permission_mode, Some(PermissionMode::DangerFullAccess));
+        assert!(app.ask_panel.is_some());
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::SyncPermissions)
+        ));
+        app.handle(key(KeyCode::Esc), &mut false);
+        assert!(app.permission_overlay.is_none());
+        assert!(app.ask_panel.is_some());
+        app.ask_panel = None;
+        app.ask_reply = None;
+        app.ask_id = None;
+        app.ask_cancellation = None;
 
-    // 2. 在全屏模态面板（context_panel）打开时，同样可通过 F7 -> Enter 查看详情并切档。
-    app.context_panel = Some(crate::tui::context_panel::Panel::new());
-    app.handle(key(KeyCode::F(7)), &mut false);
-    app.handle(key(KeyCode::Enter), &mut false);
-    assert!(draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)"));
-    type_text(&mut app, "auto_review");
-    app.handle(key(KeyCode::Enter), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::AutoReview);
-    assert!(app.context_panel.is_some());
+        // 2. 在全屏模态面板（context_panel）打开时，同样可通过 F7 -> Enter 查看详情并切档。
+        app.context_panel = Some(crate::tui::context_panel::Panel::new());
+        app.handle(key(KeyCode::F(7)), &mut false);
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert!(
+            draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)")
+        );
+        type_text(&mut app, "auto_review");
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert_eq!(gate.snapshot(), PermissionMode::AutoReview);
+        assert!(app.context_panel.is_some());
 
-    // 3. 另一句柄持排他锁占用 permission.lock 时，`/permissions revoke` 交给独立 worker，不阻塞事件循环。
-    use std::os::fd::AsRawFd;
-    let lock_file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join("permission.lock"))
+        // 3. 另一句柄持排他锁占用 permission.lock 时，`/permissions revoke` 交给独立 worker，不阻塞事件循环。
+        use std::os::fd::AsRawFd;
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("permission.lock"))
+            .unwrap();
+        std::fs::set_permissions(
+            root.join("permission.lock"),
+            std::fs::Permissions::from_mode(0o600),
+        )
         .unwrap();
-    std::fs::set_permissions(
-        root.join("permission.lock"),
-        std::fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
-    // SAFETY: `lock_file` 在此处及后续持锁期间保持打开，fd 有效。
-    assert_eq!(
-        unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) },
-        0
-    );
+        // SAFETY: `lock_file` 在此处及后续持锁期间保持打开，fd 有效。
+        assert_eq!(
+            unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) },
+            0
+        );
 
-    type_text(&mut app, "revoke write");
-    app.handle(key(KeyCode::Enter), &mut false);
-    assert!(draw(&mut app, 100, 30).contains("Revoking saved permission rule..."));
-    // 持锁期间事件循环未被阻塞：立即按 F6 仍可实时切换内存权限档位。
-    app.handle(key(KeyCode::F(6)), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
-    assert!(draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)"));
+        type_text(&mut app, "revoke write");
+        app.handle(key(KeyCode::Enter), &mut false);
+        assert!(draw(&mut app, 100, 30).contains("Revoking saved permission rule..."));
+        // 持锁期间事件循环未被阻塞：立即按 F6 仍可实时切换内存权限档位。
+        app.handle(key(KeyCode::F(6)), &mut false);
+        assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
+        assert!(
+            draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)")
+        );
 
-    // 释放锁后后台 worker 完成撤销并回传结果。
-    drop(lock_file);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
-        assert!(Instant::now() < deadline, "revoke worker reply timed out");
-        app.receive();
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
+        // 释放锁后后台 worker 完成撤销并回传结果。
+        drop(lock_file);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
+            assert!(Instant::now() < deadline, "revoke worker reply timed out");
+            app.receive();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
 
-    // 4. 通过浮层 `/permissions allow cargo test` 添加命令级前缀规则并按 `bash:cargo test` 撤销。
-    type_text(&mut app, "allow cargo test");
-    app.handle(key(KeyCode::Enter), &mut false);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !draw(&mut app, 100, 30).contains("Saved bash permission rule: cargo test") {
-        assert!(Instant::now() < deadline, "save bash rule timed out");
-        app.receive();
-        std::thread::sleep(Duration::from_millis(10));
+        // 4. 通过浮层 `/permissions allow cargo test` 添加命令级前缀规则并按 `bash:cargo test` 撤销。
+        type_text(&mut app, "allow cargo test");
+        app.handle(key(KeyCode::Enter), &mut false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !draw(&mut app, 100, 30).contains("Saved bash permission rule: cargo test") {
+            assert!(Instant::now() < deadline, "save bash rule timed out");
+            app.receive();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            gate.list_rules()
+                .unwrap()
+                .contains("Rule (exact, allow): cargo test")
+        );
+        type_text(&mut app, "revoke bash:cargo test");
+        app.handle(key(KeyCode::Enter), &mut false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
+            assert!(Instant::now() < deadline, "revoke bash rule timed out");
+            app.receive();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
     }
-    assert!(
-        gate.list_rules()
-            .unwrap()
-            .contains("Rule (exact, allow): cargo test")
-    );
-    type_text(&mut app, "revoke bash:cargo test");
-    app.handle(key(KeyCode::Enter), &mut false);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
-        assert!(Instant::now() < deadline, "revoke bash rule timed out");
-        app.receive();
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
 }

@@ -443,164 +443,93 @@ mod tests {
     }
 
     #[test]
-    fn todo_english_question_and_cue_detected() {
-        assert!(is_awaiting_user_answer(
-            "Which file do you want me to edit?"
-        ));
-        assert!(is_awaiting_user_answer("What's next?"));
-        assert!(is_awaiting_user_answer(
-            "Done with the refactor. Let me know if you want the details."
-        ));
-        assert!(is_awaiting_user_answer(
-            "Please confirm the database credentials."
-        ));
-        assert!(is_awaiting_user_answer(
-            "So please confirm the port number."
-        ));
+    fn todo_awaiting_user_answer_positive_cases() {
+        for text in [
+            // 英文问句与明确询问 cue
+            "Which file do you want me to edit?",
+            "What's next?",
+            "Done with the refactor. Let me know if you want the details.",
+            "Please confirm the database credentials.",
+            "So please confirm the port number.",
+            // 中文问句（需带中文问号）
+            "还需要我补充测试吗？",
+            "你选哪个方案？",
+            // Q/Ask 标签
+            "Q: Should we proceed?",
+            "Ask 2: which database?",
+            "Question: what's the status?",
+            // 强调标记剥离后仍识别
+            "*Which approach should we take?*",
+            "**Should we proceed?**",
+            "***Which one do you prefer?***",
+            "__Should I continue?__",
+            "**Heads up**: Should we proceed?",
+            // Markdown 前缀剥离
+            "> - Which file do you need?",
+            "1. Should I proceed?",
+            "- Can you deploy tonight?",
+            // 选择确认问句
+            "Stick with SQLite?",
+            "Go with option B?",
+            "Proceed with the migration?",
+            // 选项列表 + 推荐方案
+            "What next?\n- A: SQLite\n- B: Postgres\nI'd recommend option A.",
+            "What next?\n- A: SQLite\n- B: Postgres\nMy recommendation: option A.",
+            // 许可请求在单行备注后保留
+            "If you confirm, I'll run the migration.",
+            "Deployment is ready.\n\nIf you approve, I'll proceed.",
+            "If you approve, I'll proceed.\n\nRepository unchanged, no commits.",
+            // 末两句规则正例
+            "We shipped the feature. Tell me if you want a follow-up.",
+            "Tell me if you want a follow-up. We shipped the feature.",
+            "Feel free to skip.\nWhich format do you prefer?",
+            // 非英文问句
+            "Хотите продолжить? Отдельно скажите, как оформить доступ.",
+        ] {
+            assert!(is_awaiting_user_answer(text), "expected awaiting: {text}");
+        }
     }
 
     #[test]
-    fn todo_plain_statements_not_awaiting() {
-        assert!(!is_awaiting_user_answer("All tasks complete."));
-        assert!(!is_awaiting_user_answer(""));
-        assert!(!is_awaiting_user_answer("   \n  "));
-        assert!(!is_awaiting_user_answer(
-            "Finally, answer validation is complete."
-        ));
-        assert!(!is_awaiting_user_answer(
-            "Finished the refactor. Build passes."
-        ));
+    fn todo_awaiting_user_answer_negative_and_boundaries() {
+        for text in [
+            // 普通陈述与空白
+            "All tasks complete.",
+            "",
+            "   \n  ",
+            "Finally, answer validation is complete.",
+            "Finished the refactor. Build passes.",
+            // 无中文问号 / 无标签问句
+            "需要我再补充一些测试吗",
+            "全部任务已完成。",
+            "Q: proceed",
+            // 代码中的 `?:`
+            "Added the field `enabled?: boolean` and ran the suite.",
+            "The type uses `retries?: number`. Tests pass.",
+            // 删除线表示已撤回
+            "~~Should we proceed?~~",
+            "Stick with SQLite.",
+            // 无推荐、单选项或自答选项
+            "What next?\n- A: SQLite\n- B: Postgres",
+            "What next?\n- A: SQLite",
+            "What next?\n- A: SQLite\n- B: Postgres\nWent with option A, committed.",
+            // 自答或多行收尾笔记覆盖前段 cue
+            "Do you need the report?\n\nNo, the report is already saved.",
+            "If you approve, I'll proceed.\n\nNotes:\n- build ok\n- tests ok",
+            // 仅看末两句 / 后句收尾覆盖前句问句
+            "The refactor is done. Tell me if you want a follow-up. We shipped the feature.",
+            "Which format do you prefer?\nFeel free to skip.",
+        ] {
+            assert!(
+                !is_awaiting_user_answer(text),
+                "unexpected awaiting: {text}"
+            );
+        }
     }
 
     #[test]
-    fn todo_chinese_question_detected_only_with_question_mark() {
-        assert!(is_awaiting_user_answer("还需要我补充测试吗？"));
-        assert!(is_awaiting_user_answer("你选哪个方案？"));
-        assert!(!is_awaiting_user_answer("需要我再补充一些测试吗"));
-        assert!(!is_awaiting_user_answer("全部任务已完成。"));
-    }
-
-    #[test]
-    fn todo_code_question_marks_excluded() {
-        // `?` 后跟 `:` 而非空白，既不断句也不构成问句。
-        assert!(!is_awaiting_user_answer(
-            "Added the field `enabled?: boolean` and ran the suite."
-        ));
-        assert!(!is_awaiting_user_answer(
-            "The type uses `retries?: number`. Tests pass."
-        ));
-    }
-
-    #[test]
-    fn todo_prompt_labels_promote_to_request() {
-        assert!(is_awaiting_user_answer("Q: Should we proceed?"));
-        assert!(is_awaiting_user_answer("Ask 2: which database?"));
-        assert!(is_awaiting_user_answer("Question: what's the status?"));
-        assert!(!is_awaiting_user_answer("Q: proceed"));
-    }
-
-    #[test]
-    fn todo_emphasis_stripped_before_detection() {
-        assert!(is_awaiting_user_answer("*Which approach should we take?*"));
-        assert!(is_awaiting_user_answer("**Should we proceed?**"));
-        assert!(is_awaiting_user_answer("***Which one do you prefer?***"));
-        assert!(is_awaiting_user_answer("__Should I continue?__"));
-        assert!(is_awaiting_user_answer("**Heads up**: Should we proceed?"));
-        // 删除线代表作者已撤回该问句，不解包。
-        assert!(!is_awaiting_user_answer("~~Should we proceed?~~"));
-    }
-
-    #[test]
-    fn todo_markdown_prefixes_stripped() {
-        assert!(is_awaiting_user_answer("> - Which file do you need?"));
-        assert!(is_awaiting_user_answer("1. Should I proceed?"));
-        assert!(is_awaiting_user_answer("- Can you deploy tonight?"));
-    }
-
-    #[test]
-    fn todo_choice_confirmation_questions() {
-        assert!(is_awaiting_user_answer("Stick with SQLite?"));
-        assert!(is_awaiting_user_answer("Go with option B?"));
-        assert!(is_awaiting_user_answer("Proceed with the migration?"));
-        assert!(!is_awaiting_user_answer("Stick with SQLite."));
-    }
-
-    #[test]
-    fn todo_options_with_recommendation_await() {
-        assert!(is_awaiting_user_answer(
-            "What next?\n- A: SQLite\n- B: Postgres\nI'd recommend option A."
-        ));
-        assert!(is_awaiting_user_answer(
-            "What next?\n- A: SQLite\n- B: Postgres\nMy recommendation: option A."
-        ));
-        // 无推荐、问句又不指向用户时不替用户作答。
-        assert!(!is_awaiting_user_answer(
-            "What next?\n- A: SQLite\n- B: Postgres"
-        ));
-        // 单个选项不构成未决选择。
-        assert!(!is_awaiting_user_answer("What next?\n- A: SQLite"));
-        // 选项后遇到普通正文即停（自答）。
-        assert!(!is_awaiting_user_answer(
-            "What next?\n- A: SQLite\n- B: Postgres\nWent with option A, committed."
-        ));
-    }
-
-    #[test]
-    fn todo_permission_cue_survives_note() {
-        assert!(is_awaiting_user_answer(
-            "If you confirm, I'll run the migration."
-        ));
-        assert!(is_awaiting_user_answer(
-            "Deployment is ready.\n\nIf you approve, I'll proceed."
-        ));
-        // 单行收尾备注不撤回前段的许可请求。
-        assert!(is_awaiting_user_answer(
-            "If you approve, I'll proceed.\n\nRepository unchanged, no commits."
-        ));
-    }
-
-    #[test]
-    fn todo_self_answered_question_not_awaiting() {
-        assert!(!is_awaiting_user_answer(
-            "Do you need the report?\n\nNo, the report is already saved."
-        ));
-        // 多行收尾使前段的 cue 规则不适用，选项走查遇到普通正文即停。
-        assert!(!is_awaiting_user_answer(
-            "If you approve, I'll proceed.\n\nNotes:\n- build ok\n- tests ok"
-        ));
-    }
-
-    #[test]
-    fn todo_only_last_two_sentences_count() {
-        assert!(is_awaiting_user_answer(
-            "We shipped the feature. Tell me if you want a follow-up."
-        ));
-        // 段首 cue 锚定整段：中段的 cue 指示被末句陈述覆盖。
-        assert!(is_awaiting_user_answer(
-            "Tell me if you want a follow-up. We shipped the feature."
-        ));
-        assert!(!is_awaiting_user_answer(
-            "The refactor is done. Tell me if you want a follow-up. We shipped the feature."
-        ));
-        // 前一句提问、后一句收尾陈述：以最后一句为准。
-        assert!(!is_awaiting_user_answer(
-            "Which format do you prefer?\nFeel free to skip."
-        ));
-        assert!(is_awaiting_user_answer(
-            "Feel free to skip.\nWhich format do you prefer?"
-        ));
-    }
-
-    #[test]
-    fn todo_foreign_question_promotes_to_request() {
-        assert!(is_awaiting_user_answer(
-            "Хотите продолжить? Отдельно скажите, как оформить доступ."
-        ));
-    }
-
-    #[test]
-    fn todo_open_todos_filters_status() {
-        let todos = vec![
+    fn todo_open_reminder_and_eligibility_gates() {
+        let filter_todos = vec![
             phase(
                 "Write",
                 vec![
@@ -617,16 +546,15 @@ mod tests {
                 ],
             ),
         ];
-        let open = open_todos(&todos);
         assert_eq!(
-            open.iter().map(|t| t.content.as_str()).collect::<Vec<_>>(),
+            open_todos(&filter_todos)
+                .iter()
+                .map(|t| t.content.as_str())
+                .collect::<Vec<_>>(),
             ["B", "C"]
         );
-    }
 
-    #[test]
-    fn todo_reminder_text_lists_open_by_phase() {
-        let todos = vec![
+        let reminder_todos = vec![
             phase(
                 "Write",
                 vec![
@@ -639,7 +567,7 @@ mod tests {
                 vec![item("Read back canary bytes.", TodoStatus::Pending)],
             ),
         ];
-        let text = reminder_text(&todos, 1);
+        let text = reminder_text(&reminder_todos, 1);
         assert!(text.starts_with("<system-reminder>\n"));
         assert!(text.contains("You stopped with 1 incomplete todo item(s):"));
         assert!(text.contains("- Verify: Read back canary bytes."));
@@ -652,10 +580,7 @@ mod tests {
         );
         assert!(text.contains("(Reminder 1/3)"));
         assert!(text.ends_with("</system-reminder>"));
-    }
 
-    #[test]
-    fn todo_eligibility_gates() {
         let open = || {
             vec![phase(
                 "Tasks",

@@ -307,72 +307,72 @@ mod tests {
 
     /// 模型费率取范围内记录的快照：一致时展示四个费率字段，缺失或漂移即为 null。
     #[test]
-    fn model_rates_show_recorded_snapshots_only_when_consistent() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        ensure_schema(&mut conn).unwrap();
-        let mut store = Store {
-            conn,
-            models_path: PathBuf::from("/nonexistent/models.yml"),
-        };
-        let rate = RateSnapshot {
-            input: 2.0,
-            cached_input: 0.2,
-            cache_write: None,
-            output: 8.0,
-        };
-        let cost = CostSnapshot {
-            input: 1.0,
-            cache_read: 0.0,
-            cache_write: 0.0,
-            output: 2.0,
-        };
-        for (key, reference, rate) in [
-            ("a", "fixture/primary", Some(rate.clone())),
-            ("b", "fixture/primary", Some(rate.clone())),
-            ("c", "fixture/missing", None),
-            ("d", "fixture/drift", Some(rate.clone())),
-            (
-                "e",
-                "fixture/drift",
-                Some(RateSnapshot {
-                    input: 3.0,
-                    ..rate.clone()
-                }),
-            ),
-        ] {
-            let cost = (key != "c").then(|| cost.clone());
-            store
-                .insert(&record(key, reference, cost, rate), &Value::Null)
-                .unwrap();
+    fn stats_analytics_model_rates_grouping_and_cost_totals() {
+        {
+            let mut conn = Connection::open_in_memory().unwrap();
+            ensure_schema(&mut conn).unwrap();
+            let mut store = Store {
+                conn,
+                models_path: PathBuf::from("/nonexistent/models.yml"),
+            };
+            let rate = RateSnapshot {
+                input: 2.0,
+                cached_input: 0.2,
+                cache_write: None,
+                output: 8.0,
+            };
+            let cost = CostSnapshot {
+                input: 1.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+                output: 2.0,
+            };
+            for (key, reference, rate) in [
+                ("a", "fixture/primary", Some(rate.clone())),
+                ("b", "fixture/primary", Some(rate.clone())),
+                ("c", "fixture/missing", None),
+                ("d", "fixture/drift", Some(rate.clone())),
+                (
+                    "e",
+                    "fixture/drift",
+                    Some(RateSnapshot {
+                        input: 3.0,
+                        ..rate.clone()
+                    }),
+                ),
+            ] {
+                let cost = (key != "c").then(|| cost.clone());
+                store
+                    .insert(&record(key, reference, cost, rate), &Value::Null)
+                    .unwrap();
+            }
+            let value = store.analytics(Range::All, 10_000).unwrap();
+            assert!(value.get("pricing_error").is_none());
+            assert!(value.get("pricing_source").is_none());
+            assert_eq!(value["summary"]["priced"], 4);
+            assert_eq!(value["summary"]["unpriced"], 1);
+            assert!((value["summary"]["cost"].as_f64().unwrap() - 12.0).abs() < 1e-12);
+            assert_eq!(
+                value["summary"]["cost_components"],
+                json!({"input":4.0,"cache_read":0.0,"cache_write":0.0,"output":8.0})
+            );
+            let models = value["models"].as_array().unwrap();
+            let rates = |key: &str| {
+                models.iter().find(|model| model["key"] == key).unwrap()["rates"].clone()
+            };
+            assert_eq!(
+                rates("fixture/primary"),
+                json!({"input":2.0,"cached_input":0.2,"cache_write":null,"output":8.0})
+            );
+            assert!(rates("fixture/missing").is_null());
+            assert!(rates("fixture/drift").is_null());
         }
-        let value = store.analytics(Range::All, 10_000).unwrap();
-        assert!(value.get("pricing_error").is_none());
-        assert!(value.get("pricing_source").is_none());
-        assert_eq!(value["summary"]["priced"], 4);
-        assert_eq!(value["summary"]["unpriced"], 1);
-        assert!((value["summary"]["cost"].as_f64().unwrap() - 12.0).abs() < 1e-12);
-        assert_eq!(
-            value["summary"]["cost_components"],
-            json!({"input":4.0,"cache_read":0.0,"cache_write":0.0,"output":8.0})
-        );
-        let models = value["models"].as_array().unwrap();
-        let rates =
-            |key: &str| models.iter().find(|model| model["key"] == key).unwrap()["rates"].clone();
-        assert_eq!(
-            rates("fixture/primary"),
-            json!({"input":2.0,"cached_input":0.2,"cache_write":null,"output":8.0})
-        );
-        assert!(rates("fixture/missing").is_null());
-        assert!(rates("fixture/drift").is_null());
-    }
-
-    #[test]
-    fn stats_analytics_groups_all_rows_and_prices_cached_input_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
-        fs::write(
-            dir.path().join("models.yml"),
-            r#"# 价格与普通模型配置共用
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+            fs::write(
+                dir.path().join("models.yml"),
+                r#"# 价格与普通模型配置共用
 providers:
   fixture:
     api_key: secret-marker-fixture-key
@@ -389,138 +389,144 @@ providers:
         model: fixture-model
         cost: {input: 0, cacheRead: 0, output: 0}
 "#,
-        )
-        .unwrap();
-        let now = 1_800_000_000_000;
-        let rates = Rates::load(&store.models_path);
-        for n in 0..2005 {
-            let mut record = fixture(&format!("priced-{n}"), now);
-            snapshot_for(&rates, &mut record);
-            store.insert(&record, &Value::Null).unwrap();
-        }
-        let mut other = fixture("other", now - 86_400_000);
-        other.provider = "other".into();
-        other.model_reference = "other/primary".into();
-        other.status = "failed".into();
-        snapshot_for(&rates, &mut other);
-        store.insert(&other, &Value::Null).unwrap();
-        let mut unknown = fixture("unknown", now);
-        unknown.cached_tokens = None;
-        unknown.ttft_ms = None;
-        unknown.status = "aborted".into();
-        snapshot_for(&rates, &mut unknown);
-        assert!(unknown.cost.is_none());
-        assert!(unknown.rates.is_some());
-        store.insert(&unknown, &Value::Null).unwrap();
-        store
-            .insert(&fixture("outside", now + 1), &Value::Null)
-            .unwrap();
-        // 配置引用了没有价格的 model 时既无费用也无费率快照。
-        let (alias_cost, alias_rate) = rates.snapshot(
-            "fixture/unpriced",
-            "fixture-model",
-            Some(100),
-            Some(20),
-            Some(80),
-            Some(0),
-        );
-        assert!(alias_cost.is_none());
-        assert!(alias_rate.is_none());
-        let result = store.analytics(Range::Day, now).unwrap();
-        let s = &result["summary"];
-        assert_eq!(s["requests"], 2007);
-        assert_eq!(s["priced"], 2006);
-        assert_eq!(s["unpriced"], 1);
-        assert_eq!(s["failed"], 1);
-        assert_eq!(s["aborted"], 1);
-        assert_eq!(result["models"].as_array().unwrap().len(), 2);
-        assert_eq!(result["providers"].as_array().unwrap().len(), 2);
-        assert_eq!(result["active_days"], 2);
-        let expected = 2005.0 * (20.0 * 2.0 + 80.0 * 0.2 + 20.0 * 8.0) / 1e6;
-        assert!((s["cost"].as_f64().unwrap() - expected).abs() < 1e-10);
-        for field in ["models", "providers", "buckets", "daily", "hours"] {
-            let rows = result[field].as_array().unwrap();
-            assert_eq!(
-                rows.iter()
-                    .map(|r| r["requests"].as_u64().unwrap())
-                    .sum::<u64>(),
-                2007
-            );
-            assert!(
-                (rows.iter().filter_map(|r| r["cost"].as_f64()).sum::<f64>() - expected).abs()
-                    < 1e-10
-            );
-        }
-        let detail = store.detail(1).unwrap().unwrap();
-        assert!((detail["request"]["cost"].as_f64().unwrap() - expected / 2005.0).abs() < 1e-10);
-        assert_eq!(result["providers"][0]["models"], 1);
-        assert_eq!(result["summary"]["avg_ttft_ms"], 500.0);
-        assert_eq!(result["models"][0]["buckets"][0]["tokens_per_second"], 10.0);
-    }
-    #[test]
-    fn stats_analytics_api_validates_ranges_and_omits_payloads() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
-        store
-            .insert(
-                &fixture("one", chrono::Utc::now().timestamp_millis()),
-                &json!({"text":"private-output"}),
             )
             .unwrap();
-        for endpoint in ["models", "providers", "costs", "projects", "tools"] {
-            for range in ["1h", "24h", "7d", "30d", "90d", "all"] {
-                let (code, _, body) =
-                    server::dispatch(&store, &format!("/api/stats/{endpoint}?range={range}"), &[]);
-                assert_eq!(code, 200);
-                assert!(!body.contains("private-output"));
-                if endpoint != "projects" {
-                    assert!(!body.contains("session_file"));
-                }
-                let value: Value = serde_json::from_str(&body).unwrap();
-                if endpoint == "tools" {
-                    assert_eq!(value["summary"]["calls"], 0);
-                    assert_eq!(value["summary"]["cost"], 0.0);
-                } else {
-                    assert_eq!(value["summary"]["requests"], 1);
-                    assert_eq!(value["summary"]["unpriced"], 1);
-                    assert!(value["summary"]["cost"].is_null());
+            let now = 1_800_000_000_000;
+            let rates = Rates::load(&store.models_path);
+            for n in 0..2005 {
+                let mut record = fixture(&format!("priced-{n}"), now);
+                snapshot_for(&rates, &mut record);
+                store.insert(&record, &Value::Null).unwrap();
+            }
+            let mut other = fixture("other", now - 86_400_000);
+            other.provider = "other".into();
+            other.model_reference = "other/primary".into();
+            other.status = "failed".into();
+            snapshot_for(&rates, &mut other);
+            store.insert(&other, &Value::Null).unwrap();
+            let mut unknown = fixture("unknown", now);
+            unknown.cached_tokens = None;
+            unknown.ttft_ms = None;
+            unknown.status = "aborted".into();
+            snapshot_for(&rates, &mut unknown);
+            assert!(unknown.cost.is_none());
+            assert!(unknown.rates.is_some());
+            store.insert(&unknown, &Value::Null).unwrap();
+            store
+                .insert(&fixture("outside", now + 1), &Value::Null)
+                .unwrap();
+            // 配置引用了没有价格的 model 时既无费用也无费率快照。
+            let (alias_cost, alias_rate) = rates.snapshot(
+                "fixture/unpriced",
+                "fixture-model",
+                Some(100),
+                Some(20),
+                Some(80),
+                Some(0),
+            );
+            assert!(alias_cost.is_none());
+            assert!(alias_rate.is_none());
+            let result = store.analytics(Range::Day, now).unwrap();
+            let s = &result["summary"];
+            assert_eq!(s["requests"], 2007);
+            assert_eq!(s["priced"], 2006);
+            assert_eq!(s["unpriced"], 1);
+            assert_eq!(s["failed"], 1);
+            assert_eq!(s["aborted"], 1);
+            assert_eq!(result["models"].as_array().unwrap().len(), 2);
+            assert_eq!(result["providers"].as_array().unwrap().len(), 2);
+            assert_eq!(result["active_days"], 2);
+            let expected = 2005.0 * (20.0 * 2.0 + 80.0 * 0.2 + 20.0 * 8.0) / 1e6;
+            assert!((s["cost"].as_f64().unwrap() - expected).abs() < 1e-10);
+            for field in ["models", "providers", "buckets", "daily", "hours"] {
+                let rows = result[field].as_array().unwrap();
+                assert_eq!(
+                    rows.iter()
+                        .map(|r| r["requests"].as_u64().unwrap())
+                        .sum::<u64>(),
+                    2007
+                );
+                assert!(
+                    (rows.iter().filter_map(|r| r["cost"].as_f64()).sum::<f64>() - expected).abs()
+                        < 1e-10
+                );
+            }
+            let detail = store.detail(1).unwrap().unwrap();
+            assert!(
+                (detail["request"]["cost"].as_f64().unwrap() - expected / 2005.0).abs() < 1e-10
+            );
+            assert_eq!(result["providers"][0]["models"], 1);
+            assert_eq!(result["summary"]["avg_ttft_ms"], 500.0);
+            assert_eq!(result["models"][0]["buckets"][0]["tokens_per_second"], 10.0);
+        }
+    }
+    #[test]
+    fn stats_analytics_api_ranges_reasoning_and_cache_hit_rate() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+            store
+                .insert(
+                    &fixture("one", chrono::Utc::now().timestamp_millis()),
+                    &json!({"text":"private-output"}),
+                )
+                .unwrap();
+            for endpoint in ["models", "providers", "costs", "projects", "tools"] {
+                for range in ["1h", "24h", "7d", "30d", "90d", "all"] {
+                    let (code, _, body) = server::dispatch(
+                        &store,
+                        &format!("/api/stats/{endpoint}?range={range}"),
+                        &[],
+                    );
+                    assert_eq!(code, 200);
+                    assert!(!body.contains("private-output"));
+                    if endpoint != "projects" {
+                        assert!(!body.contains("session_file"));
+                    }
+                    let value: Value = serde_json::from_str(&body).unwrap();
+                    if endpoint == "tools" {
+                        assert_eq!(value["summary"]["calls"], 0);
+                        assert_eq!(value["summary"]["cost"], 0.0);
+                    } else {
+                        assert_eq!(value["summary"]["requests"], 1);
+                        assert_eq!(value["summary"]["unpriced"], 1);
+                        assert!(value["summary"]["cost"].is_null());
+                    }
                 }
             }
         }
-    }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("stats.db");
+            let mut store = open_store(&path).unwrap();
+            let now = 1_800_000_000_000;
+            let session = dir.path().join("session.jsonl");
 
-    #[test]
-    fn stats_analytics_aggregates_reasoning_tokens_and_cache_hit_rate() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats.db");
-        let mut store = open_store(&path).unwrap();
-        let now = 1_800_000_000_000;
-        let session = dir.path().join("session.jsonl");
+            let mut with_reasoning = fixture("with-reasoning", now - 2000);
+            with_reasoning.session_file = Some(session.to_string_lossy().into_owned());
+            with_reasoning.input_tokens = Some(1000);
+            with_reasoning.output_tokens = Some(300);
+            with_reasoning.cached_tokens = Some(750);
+            with_reasoning.reasoning_tokens = Some(180);
+            store.insert(&with_reasoning, &Value::Null).unwrap();
 
-        let mut with_reasoning = fixture("with-reasoning", now - 2000);
-        with_reasoning.session_file = Some(session.to_string_lossy().into_owned());
-        with_reasoning.input_tokens = Some(1000);
-        with_reasoning.output_tokens = Some(300);
-        with_reasoning.cached_tokens = Some(750);
-        with_reasoning.reasoning_tokens = Some(180);
-        store.insert(&with_reasoning, &Value::Null).unwrap();
+            let mut legacy = fixture("without-reasoning", now - 1000);
+            legacy.input_tokens = Some(1000);
+            legacy.output_tokens = Some(100);
+            legacy.cached_tokens = Some(250);
+            legacy.reasoning_tokens = None;
+            store.insert(&legacy, &Value::Null).unwrap();
 
-        let mut legacy = fixture("without-reasoning", now - 1000);
-        legacy.input_tokens = Some(1000);
-        legacy.output_tokens = Some(100);
-        legacy.cached_tokens = Some(250);
-        legacy.reasoning_tokens = None;
-        store.insert(&legacy, &Value::Null).unwrap();
+            let analytics = store.analytics(Range::All, now).unwrap();
+            assert_eq!(analytics["summary"]["reasoning_tokens"], 180);
+            assert_eq!(analytics["summary"]["reasoning_known"], 1);
+            assert!((analytics["summary"]["cache_hit_rate"].as_f64().unwrap() - 0.5).abs() < 1e-12);
+            assert_eq!(analytics["models"][0]["reasoning_tokens"], 180);
+            assert_eq!(analytics["providers"][0]["reasoning_tokens"], 180);
 
-        let analytics = store.analytics(Range::All, now).unwrap();
-        assert_eq!(analytics["summary"]["reasoning_tokens"], 180);
-        assert_eq!(analytics["summary"]["reasoning_known"], 1);
-        assert!((analytics["summary"]["cache_hit_rate"].as_f64().unwrap() - 0.5).abs() < 1e-12);
-        assert_eq!(analytics["models"][0]["reasoning_tokens"], 180);
-        assert_eq!(analytics["providers"][0]["reasoning_tokens"], 180);
-
-        // 会话恢复路径同时还原 reasoning_tokens。
-        let restored = store.session_usage(&session).unwrap();
-        assert_eq!(restored.last_request.unwrap().reasoning_tokens, Some(180));
+            // 会话恢复路径同时还原 reasoning_tokens。
+            let restored = store.session_usage(&session).unwrap();
+            assert_eq!(restored.last_request.unwrap().reasoning_tokens, Some(180));
+        }
     }
 }

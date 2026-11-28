@@ -468,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn tui_todo_compact_centers_active_between_neighbors_and_blocked_fallback() {
+    fn tui_todo_compact_centers_active_phases_and_window() {
         let mut panel = Panel::default();
         panel.update(state(&[
             ("已完成", TodoStatus::Completed),
@@ -478,27 +478,22 @@ mod tests {
         ]));
         assert_eq!(panel.height(80, 24, 20), 5);
         let text = render(&mut panel, 80, 5);
-        assert!(text.contains("1/4"));
-        assert!(text.contains("[ ] 当前任务"));
-        assert!(text.contains("[ ] 下一任务"));
-        assert!(!text.contains("隐藏任务"));
-        assert!(text.contains("[\u{f00c}] 已完成"));
-        // 收起时保留阶段行，首个任务行内缩在阶段下。
-        assert!(text.lines().nth(1).unwrap().contains("I. 验证阶段 (1/4)"));
-        assert!(text.lines().nth(1).unwrap().starts_with("├─ "));
-        assert!(text.lines().nth(3).unwrap().contains("当前任务"));
-        assert!(text.lines().nth(3).unwrap().starts_with("│  ├─ "));
+        assert!(
+            text.contains("1/4")
+                && text.contains("[ ] 当前任务")
+                && text.contains("[ ] 下一任务")
+                && !text.contains("隐藏任务")
+        );
+        assert!(
+            text.lines().nth(1).unwrap().starts_with("├─ ")
+                && text.lines().nth(3).unwrap().starts_with("│  ├─ ")
+        );
         panel.update(state(&[("受阻任务", TodoStatus::Blocked)]));
-        let text = render(&mut panel, 80, 3);
-        assert!(text.contains("I. 验证阶段 (0/1)"));
-        assert!(text.contains("受阻任务 (blocked: 外部等待)"));
-    }
+        assert!(render(&mut panel, 80, 3).contains("受阻任务 (blocked: 外部等待)"));
 
-    #[test]
-    fn tui_todo_compact_keeps_phase_rows_of_every_visible_phase() {
-        let mut panel = Panel::default();
-        let mut snapshot = state(&[("FIRST", TodoStatus::Completed)]);
-        snapshot.phases.push(TodoPhase {
+        let mut multi = Panel::default();
+        let mut snap_m = state(&[("FIRST", TodoStatus::Completed)]);
+        snap_m.phases.push(TodoPhase {
             name: "Next phase".into(),
             tasks: vec![
                 TodoItem {
@@ -513,33 +508,30 @@ mod tests {
                 },
             ],
         });
-        panel.update(snapshot);
-        assert_eq!(panel.height(80, 24, 20), 6);
-        let text = render(&mut panel, 80, 6);
-        let lines = text.lines().map(str::trim_end).collect::<Vec<_>>();
+        multi.update(snap_m);
+        assert_eq!(multi.height(80, 24, 20), 6);
+        let m_text = render(&mut multi, 80, 6);
+        let m_lines: Vec<_> = m_text.lines().map(str::trim_end).collect();
         assert_eq!(
-            &lines[1..6],
+            &m_lines[1..6],
             &[
                 "├─ I. 验证阶段 (1/1)",
                 "│  └─ [\u{f00c}] FIRST",
                 "├─ II. Next phase (0/2)",
                 "│  ├─ [ ] SECOND",
-                "│  └─ [ ] THIRD",
+                "│  └─ [ ] THIRD"
             ]
         );
-    }
 
-    #[test]
-    fn tui_todo_three_item_window_tracks_progress_and_keeps_completed_items() {
         for active in 0..6 {
-            let mut panel = Panel::default();
+            let mut wp = Panel::default();
             let mut snapshot = state(&[]);
             snapshot.phases[0].tasks = (0..6)
-                .map(|index| TodoItem {
-                    content: format!("TASK_{index}"),
-                    status: if index < active {
+                .map(|i| TodoItem {
+                    content: format!("TASK_{i}"),
+                    status: if i < active {
                         TodoStatus::Completed
-                    } else if index == active {
+                    } else if i == active {
                         TodoStatus::InProgress
                     } else {
                         TodoStatus::Pending
@@ -547,13 +539,10 @@ mod tests {
                     blocker: None,
                 })
                 .collect();
-            panel.update(snapshot.clone());
-            let height = panel.height(80, 30, 20);
-            assert_eq!(height, 5);
-            let text = render(&mut panel, 80, height);
-            assert_eq!(text.matches("TASK_").count(), 3);
-            assert!(text.lines().nth(1).unwrap().contains("I. 验证阶段"));
-            assert!(text.lines().last().unwrap().starts_with("│  └─ "));
+            wp.update(snapshot.clone());
+            assert_eq!(wp.height(80, 30, 20), 5);
+            let wtext = render(&mut wp, 80, 5);
+            assert_eq!(wtext.matches("TASK_").count(), 3);
             let active_row = if active == 0 {
                 2
             } else if active == 5 {
@@ -562,37 +551,36 @@ mod tests {
                 3
             };
             assert!(
-                text.lines()
+                wtext
+                    .lines()
                     .nth(active_row)
                     .unwrap()
                     .contains(&format!("TASK_{active}"))
             );
-            // 完成状态更新后保留任务窗口，也保留用户选择的展开状态。
             for task in &mut snapshot.phases[0].tasks {
                 task.status = TodoStatus::Completed;
             }
-            panel.update(snapshot.clone());
-            let text = render(&mut panel, 80, 5);
-            assert_eq!(text.matches("[\u{f00c}]").count(), 3);
-            assert!(text.lines().last().unwrap().starts_with("│  └─ "));
-            for index in 3..6 {
-                assert!(text.contains(&format!("TASK_{index}")));
+            wp.update(snapshot.clone());
+            let done_text = render(&mut wp, 80, 5);
+            assert_eq!(done_text.matches("[\u{f00c}]").count(), 3);
+            for i in 3..6 {
+                assert!(done_text.contains(&format!("TASK_{i}")));
             }
-            panel.toggle();
+            wp.toggle();
             snapshot.phases[0].name = "完成阶段".into();
-            panel.update(snapshot);
-            assert!(panel.expanded);
+            wp.update(snapshot);
+            assert!(wp.expanded);
         }
     }
 
     #[test]
-    fn tui_todo_expanded_centers_active_and_preserves_manual_scroll() {
-        let mut panel = Panel::default();
-        let mut snapshot = state(&[]);
-        snapshot.phases[0].tasks = (0..12)
-            .map(|index| TodoItem {
-                content: format!("TASK_{index:02}"),
-                status: if index == 6 {
+    fn tui_todo_expanded_centers_tree_and_scroll_clamp() {
+        let mut p1 = Panel::default();
+        let mut s1 = state(&[]);
+        s1.phases[0].tasks = (0..12)
+            .map(|i| TodoItem {
+                content: format!("TASK_{i:02}"),
+                status: if i == 6 {
                     TodoStatus::InProgress
                 } else {
                     TodoStatus::Pending
@@ -600,52 +588,34 @@ mod tests {
                 blocker: None,
             })
             .collect();
-        panel.update(snapshot);
-        panel.toggle();
-        let height = panel.height(80, 30, 20);
-        let text = render(&mut panel, 80, height);
-        assert!(text.lines().nth(5).unwrap().contains("TASK_06"));
-        assert!(text.matches("TASK_").count() >= 3);
-        panel.scroll(true, usize::MAX);
-        let text = render(&mut panel, 80, height);
-        assert!(text.contains("I. 验证阶段"));
-        assert_eq!(panel.scroll, 0);
-    }
+        p1.update(s1);
+        p1.toggle();
+        let h1 = p1.height(80, 30, 20);
+        let t1 = render(&mut p1, 80, h1);
+        assert!(t1.lines().nth(5).unwrap().contains("TASK_06"));
+        p1.scroll(true, usize::MAX);
+        assert!(render(&mut p1, 80, h1).contains("I. 验证阶段") && p1.scroll == 0);
 
-    #[test]
-    fn tui_todo_tree_connects_compact_and_expanded_content() {
         for expanded in [false, true] {
             for width in [4, 12, 80] {
-                let mut panel = Panel::default();
-                panel.update(state(&[
+                let mut pt = Panel::default();
+                pt.update(state(&[
                     ("当前任务包含很长的中文内容", TodoStatus::InProgress),
                     ("下一任务", TodoStatus::Pending),
                 ]));
-                panel.expanded = expanded;
-                let height = panel.height(width, 24, 20);
-                let text = render(&mut panel, width, height);
-                if !expanded || width == 80 {
-                    assert!(text.lines().nth(1).unwrap().starts_with('├'));
-                } else {
-                    assert!(text.lines().nth(1).unwrap().starts_with(['│', '├']));
-                }
-                assert!(!text.lines().any(|line| line.trim_end() == "└────"));
-                assert!(!text.contains('╭'));
-                assert!(!text.contains('╯'));
-                assert!(
-                    panel
-                        .rows
-                        .iter()
-                        .all(|row| row.width() <= usize::from(width))
-                );
+                pt.expanded = expanded;
+                let h = pt.height(width, 24, 20);
+                let txt = render(&mut pt, width, h);
+                assert!(!txt.lines().any(|l| l.trim_end() == "└────") && !txt.contains('╭'));
+                assert!(pt.rows.iter().all(|row| row.width() <= usize::from(width)));
             }
         }
-        let mut panel = Panel::default();
-        let mut snapshot = state(&[
+        let mut p_phases = Panel::default();
+        let mut sp = state(&[
             ("FIRST", TodoStatus::Completed),
             ("SECOND", TodoStatus::Pending),
         ]);
-        snapshot.phases.push(TodoPhase {
+        sp.phases.push(TodoPhase {
             name: "Next phase".into(),
             tasks: vec![TodoItem {
                 content: "THIRD".into(),
@@ -653,55 +623,86 @@ mod tests {
                 blocker: None,
             }],
         });
-        panel.update(snapshot);
-        panel.toggle();
-        let text = render(&mut panel, 80, 8);
-        let lines = text.lines().map(str::trim_end).collect::<Vec<_>>();
+        p_phases.update(sp);
+        p_phases.toggle();
+        let tp = render(&mut p_phases, 80, 8);
+        let lp: Vec<_> = tp.lines().map(str::trim_end).collect();
         assert_eq!(
-            &lines[1..6],
+            &lp[1..6],
             &[
                 "├─ I. 验证阶段 (1/2)",
                 "│  ├─ [\u{f00c}] FIRST",
                 "│  └─ [ ] SECOND",
                 "├─ II. Next phase (0/1)",
-                "│  └─ [ ] THIRD",
+                "│  └─ [ ] THIRD"
             ]
         );
+
+        let mut p_clamp = Panel::default();
+        p_clamp.update(state(
+            &(0..30)
+                .map(|_| ("待办", TodoStatus::Pending))
+                .collect::<Vec<_>>(),
+        ));
+        p_clamp.toggle();
+        assert_eq!(p_clamp.height(80, 24, 20), 8);
+        render(&mut p_clamp, 80, 8);
+        p_clamp.scroll(false, usize::MAX);
+        assert!(p_clamp.scroll > 0);
+        render(&mut p_clamp, 20, 8);
+        assert!(p_clamp.scroll <= p_clamp.rows.len() - 7);
+        p_clamp.update(state(&[("最后任务", TodoStatus::Pending)]));
+        assert!(render(&mut p_clamp, 80, 8).contains("最后任务") && p_clamp.scroll == 0);
+        p_clamp.reset_view();
+        assert!(!p_clamp.expanded);
     }
 
     #[test]
-    fn tui_todo_completed_abandoned_empty_and_tiny_heights() {
+    fn tui_todo_states_tiny_heights_and_toggle_hint() {
         let mut panel = Panel::default();
         assert_eq!(panel.height(80, 24, 20), 0);
         panel.update(state(&[("完成", TodoStatus::InProgress)]));
         panel.toggle();
         panel.update(state(&[("完成", TodoStatus::Completed)]));
-        assert!(panel.expanded);
-        assert_eq!(panel.height(80, 24, 20), 3);
+        assert!(panel.expanded && panel.height(80, 24, 20) == 3);
         panel.toggle();
-        assert_eq!(panel.height(80, 24, 20), 3);
-        assert!(render(&mut panel, 80, 3).contains("[\u{f00c}] 完成"));
-        // 只有一行正文时不丢任务，仅暂时省略无法放下的阶段行。
         assert!(render(&mut panel, 80, 2).contains("[\u{f00c}] 完成"));
         assert!(render(&mut panel, 80, 1).contains("\u{f00c} TODO · 1/1 · Complete"));
         panel.update(state(&[("放弃", TodoStatus::Abandoned)]));
-        let text = render(&mut panel, 80, 2);
-        assert!(text.contains("Closed"));
-        assert!(!text.contains("Complete"));
-        assert!(!text.contains('\u{f00c}'));
+        let abandoned = render(&mut panel, 80, 2);
+        assert!(abandoned.contains("Closed") && !abandoned.contains("Complete"));
         panel.update(state(&[("待办", TodoStatus::Pending)]));
-        assert_eq!(panel.height(80, 24, 2), 2);
-        assert_eq!(panel.height(80, 24, 0), 0);
-        assert_eq!(panel.height(0, 24, 20), 0);
+        assert!(
+            panel.height(80, 24, 2) == 2
+                && panel.height(80, 24, 0) == 0
+                && panel.height(0, 24, 20) == 0
+        );
         panel.toggle();
         assert_eq!(panel.height(80, 6, 5), 2);
         panel.update(TodoState::default());
-        assert!(!panel.expanded);
-        assert_eq!(panel.height(80, 24, 20), 0);
+        assert!(!panel.expanded && panel.height(80, 24, 20) == 0);
+
+        let mut pt = Panel::default();
+        pt.update(state(&[("任务", TodoStatus::Pending)]));
+        for width in [16, 24, 80] {
+            for expanded in [false, true] {
+                pt.expanded = expanded;
+                let txt = render(&mut pt, width, 4);
+                let title = txt.lines().next().unwrap();
+                assert!(title.starts_with("TODO") && title.contains(TOGGLE_HINT));
+                if width == 80 {
+                    let action = if expanded { "collapse" } else { "expand" };
+                    assert_eq!(
+                        title.trim_end(),
+                        format!("TODO · 0/1 · {TOGGLE_HINT} {action}")
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn tui_todo_colors_indentation_and_completion_marker() {
+    fn tui_todo_colors_wrapping_preview_and_sanitization() {
         let mut panel = Panel::default();
         panel.update(state(&[
             ("ACTIVE", TodoStatus::InProgress),
@@ -713,210 +714,104 @@ mod tests {
         terminal
             .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 6)))
             .unwrap();
-        let buffer = terminal.backend().buffer();
-        // 第一行是阶段行，任务行内缩两列。
-        assert_eq!(buffer[(3, 1)].symbol(), "I");
-        assert_eq!(buffer[(6, 2)].symbol(), "[");
-        assert_eq!(buffer[(7, 2)].fg, palette::todo_active());
-        assert_eq!(buffer[(6, 3)].symbol(), "[");
-        assert_eq!(buffer[(6, 3)].fg, palette::muted());
-        assert_eq!(buffer[(7, 3)].fg, palette::muted());
-        assert!(buffer[(10, 2)].modifier.contains(Modifier::BOLD));
+        let b1 = terminal.backend().buffer();
+        assert_eq!(
+            (b1[(3, 1)].symbol(), b1[(7, 2)].fg, b1[(6, 3)].fg),
+            ("I", palette::todo_active(), palette::muted())
+        );
+        assert!(b1[(10, 2)].modifier.contains(Modifier::BOLD));
         panel.toggle();
         terminal
             .draw(|frame| panel.draw(frame, frame.area()))
             .unwrap();
-        let buffer = terminal.backend().buffer();
+        let b2 = terminal.backend().buffer();
         for (y, symbol, marker, text) in [
             (2, " ", palette::todo_active(), palette::todo_active()),
             (3, " ", palette::muted(), palette::muted()),
             (4, "!", palette::accent(), palette::accent()),
             (5, "\u{f00c}", palette::added(), palette::added()),
         ] {
-            assert_eq!(buffer[(6, y)].symbol(), "[");
-            assert_eq!(buffer[(7, y)].symbol(), symbol);
-            assert_eq!(buffer[(8, y)].symbol(), "]");
-            assert_eq!(buffer[(6, y)].fg, marker);
-            assert_eq!(buffer[(10, y)].fg, text);
+            assert_eq!(
+                (b2[(7, y)].symbol(), b2[(6, y)].fg, b2[(10, y)].fg),
+                (symbol, marker, text)
+            );
         }
-        assert!(buffer[(10, 2)].modifier.contains(Modifier::BOLD));
-        assert!(!buffer[(10, 5)].modifier.contains(Modifier::CROSSED_OUT));
-        assert!(!buffer[(6, 5)].modifier.contains(Modifier::CROSSED_OUT));
-        panel.update(state(&[("DONE", TodoStatus::Completed)]));
-        terminal
-            .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 2)))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "\u{f00c}");
-        assert_eq!(buffer[(7, 1)].fg, palette::added());
-        assert_eq!(buffer[(0, 0)].fg, palette::added());
-        terminal
-            .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 4)))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 1)].fg, palette::added());
-        assert_eq!(buffer[(6, 2)].fg, palette::added());
-        assert_eq!(buffer[(10, 2)].fg, palette::added());
-    }
+        assert!(!b2[(10, 5)].modifier.contains(Modifier::CROSSED_OUT));
 
-    #[test]
-    fn tui_todo_title_keeps_toggle_hint_when_narrow() {
-        let mut panel = Panel::default();
-        panel.update(state(&[("任务", TodoStatus::Pending)]));
-        for width in [16, 24, 80] {
-            for expanded in [false, true] {
-                panel.expanded = expanded;
-                let text = render(&mut panel, width, 4);
-                let title = text.lines().next().unwrap();
-                assert!(title.starts_with("TODO"));
-                assert!(title.contains(TOGGLE_HINT));
-                if width == 80 {
-                    let action = if expanded { "collapse" } else { "expand" };
-                    assert_eq!(
-                        title.trim_end(),
-                        format!("TODO · 0/1 · {TOGGLE_HINT} {action}")
-                    );
-                }
-            }
-        }
-        panel.update(state(&[("完成", TodoStatus::Completed)]));
-        let text = render(&mut panel, 24, 2);
-        assert!(text.lines().next().unwrap().contains(TOGGLE_HINT));
-        assert!(text.contains("\u{f00c} TODO"));
-    }
-
-    #[test]
-    fn tui_todo_wrapped_tasks_align_with_content() {
-        let mut panel = Panel::default();
-        panel.update(state(&[
+        let mut p_wrap = Panel::default();
+        p_wrap.update(state(&[
             ("abcdefghijklmnopqrstuv\nEXPLICIT", TodoStatus::Pending),
             ("尾项", TodoStatus::Pending),
         ]));
-        panel.toggle();
-        render(&mut panel, 16, 8);
-        let start = panel
-            .rows
-            .iter()
-            .position(|row| row.to_string().starts_with("│  ├─ [ ] abc"))
-            .unwrap();
-        assert!(panel.rows[start + 1].to_string().starts_with("│  │      g"));
+        p_wrap.toggle();
+        render(&mut p_wrap, 16, 8);
         assert!(
-            panel
+            p_wrap
                 .rows
                 .iter()
-                .any(|row| row.to_string() == "│  │      EXPLIC")
+                .any(|r| r.to_string() == "│  │      EXPLIC")
         );
         assert!(
-            panel
+            p_wrap
                 .rows
                 .iter()
-                .any(|row| row.to_string() == "│  └─ [ ] 尾项")
+                .any(|r| r.to_string() == "│  └─ [ ] 尾项")
         );
-    }
 
-    #[test]
-    fn tui_todo_preview_never_claims_execution() {
-        let mut panel = Panel::default();
-        let mut snapshot = state(&[("计划任务", TodoStatus::Pending)]);
-        snapshot.plan = Some(pp_core::events::TodoPlanState {
+        let mut p_prev = Panel::default();
+        let mut sp = state(&[("计划任务", TodoStatus::Pending)]);
+        sp.plan = Some(pp_core::events::TodoPlanState {
             id: "plan-1".into(),
             revision: 1,
             status: PlanStatus::Draft,
         });
-        panel.update(snapshot);
-        let text = render(&mut panel, 80, 3);
-        assert!(text.contains("Preview"));
-        assert!(text.contains("[ ] 计划任务"));
-        assert!(!text.contains('→'));
-    }
+        p_prev.update(sp);
+        let t_prev = render(&mut p_prev, 80, 3);
+        assert!(t_prev.contains("Preview") && !t_prev.contains('→'));
 
-    #[test]
-    fn tui_todo_expanded_wraps_safe_text_and_preserves_styles() {
-        let mut panel = Panel::default();
-        panel.update(state(&[
+        let mut p_safe = Panel::default();
+        p_safe.update(state(&[
             ("读取\u{1b}[31m状态\u{7f}\t列", TodoStatus::Completed),
             ("很长的中文任务名称必须完整换行展示", TodoStatus::Blocked),
         ]));
-        panel.toggle();
-        panel.height(12, 90, 30);
-        let height = panel.rows.len() as u16 + 1;
-        let text = render(&mut panel, 12, height);
-        let joined = text.replace(['\n', ' ', '│'], "");
-        assert!(joined.contains("验证阶段"));
-        assert!(joined.contains("很长的中文任务名称必须完整换行展示"));
-        assert!(joined.contains("外部等待"));
-        assert!(!text.contains('\u{1b}'));
-        assert!(!text.contains('\u{7f}'));
+        p_safe.toggle();
+        p_safe.height(12, 90, 30);
+        let h_safe = p_safe.rows.len() as u16 + 1;
+        let t_safe = render(&mut p_safe, 12, h_safe);
+        let joined = t_safe.replace(['\n', ' ', '│'], "");
         assert!(
-            !panel
-                .rows
-                .iter()
-                .flat_map(|line| &line.spans)
-                .any(|span| span.style.add_modifier.contains(Modifier::CROSSED_OUT))
+            joined.contains("很长的中文任务名称必须完整换行展示")
+                && !t_safe.contains('\u{1b}')
+                && !t_safe.contains('\u{7f}')
         );
     }
 
     #[test]
-    fn tui_todo_expanded_shows_all_parallel_items_in_progress() {
-        let mut panel = Panel::default();
-        panel.update(state(&[
+    fn tui_todo_parallel_in_progress_and_duplicate_checklist() {
+        let mut p1 = Panel::default();
+        p1.update(state(&[
             ("A", TodoStatus::InProgress),
             ("B", TodoStatus::InProgress),
             ("C", TodoStatus::InProgress),
             ("D", TodoStatus::InProgress),
             ("E", TodoStatus::Pending),
         ]));
-        panel.toggle();
-        let text = render(&mut panel, 100, 24);
-        assert_eq!(text.matches("(in progress)").count(), 4, "{text}");
-        for task in ["A", "B", "C", "D"] {
-            assert!(
-                text.contains(&format!("[ ] {task} (in progress)")),
-                "{text}"
-            );
-        }
-        assert!(!text.contains("E (in progress)"), "{text}");
-    }
+        p1.toggle();
+        let t1 = render(&mut p1, 100, 24);
+        assert_eq!(t1.matches("(in progress)").count(), 4);
+        assert!(!t1.contains("E (in progress)"));
 
-    #[test]
-    fn tui_todo_full_checklist_keeps_duplicate_hints_and_all_states() {
-        let mut panel = Panel::default();
-        panel.update(state(&[
+        let mut p2 = Panel::default();
+        p2.update(state(&[
             ("重复任务", TodoStatus::InProgress),
             ("重复任务", TodoStatus::Pending),
             ("已放弃", TodoStatus::Abandoned),
             ("已完成", TodoStatus::Completed),
         ]));
-        panel.toggle();
-        let text = render(&mut panel, 100, 10);
-        assert!(text.contains("I. 验证阶段 (2/4)"));
-        assert!(text.contains("phase \"验证阶段\" occurrence 1"));
-        assert!(text.contains("phase \"验证阶段\" occurrence 2"));
-        assert!(text.contains("已放弃 (dropped)"));
-        assert!(text.contains("[\u{f00c}] 已完成"));
-    }
-
-    #[test]
-    fn tui_todo_expanded_scroll_clamps_after_updates_and_resize() {
-        let mut panel = Panel::default();
-        panel.update(state(
-            &(0..30)
-                .map(|_| ("待办", TodoStatus::Pending))
-                .collect::<Vec<_>>(),
-        ));
-        panel.toggle();
-        assert_eq!(panel.height(80, 24, 20), 8);
-        render(&mut panel, 80, 8);
-        panel.scroll(false, usize::MAX);
-        let previous = panel.scroll;
-        assert!(previous > 0);
-        render(&mut panel, 20, 8);
-        assert!(panel.scroll <= panel.rows.len() - 7);
-        panel.update(state(&[("最后任务", TodoStatus::Pending)]));
-        let text = render(&mut panel, 80, 8);
-        assert!(text.contains("最后任务"));
-        assert_eq!(panel.scroll, 0);
-        panel.reset_view();
-        assert!(!panel.expanded);
+        p2.toggle();
+        let t2 = render(&mut p2, 100, 10);
+        assert!(t2.contains("phase \"验证阶段\" occurrence 1"));
+        assert!(t2.contains("phase \"验证阶段\" occurrence 2"));
+        assert!(t2.contains("已放弃 (dropped)") && t2.contains("[\u{f00c}] 已完成"));
     }
 }

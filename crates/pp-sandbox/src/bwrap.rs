@@ -476,163 +476,163 @@ mod tests {
     }
 
     #[test]
-    fn compile_args_orders_mounts_handles_readonly_and_special_chars() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
-        let cwd = root.join("ws \"odd\"\nname");
-        let pp = cwd.join(".pp");
-        let cache = cwd.join(".pp-cache");
-        let missing_prot = cwd.join(".git/hooks");
-        let deny_dir = root.join("home/.ssh");
-        let allow_file = deny_dir.join("known_hosts");
-        let deny_plain_dir = root.join("home/.aws");
-        let deny_file = root.join("home/.netrc");
-        let docker_sock = root.join("docker.sock");
-        std::fs::create_dir_all(&pp).unwrap();
-        std::fs::create_dir_all(&cache).unwrap();
-        std::fs::create_dir_all(&deny_dir).unwrap();
-        std::fs::create_dir_all(&deny_plain_dir).unwrap();
-        std::fs::write(&allow_file, b"ok").unwrap();
-        std::fs::write(&deny_file, b"secret").unwrap();
-        std::fs::write(&docker_sock, b"").unwrap();
+    fn compile_args_ordering_special_chars_and_deny_ancestor_notes() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let cwd = root.join("ws \"odd\"\nname");
+            let pp = cwd.join(".pp");
+            let cache = cwd.join(".pp-cache");
+            let missing_prot = cwd.join(".git/hooks");
+            let deny_dir = root.join("home/.ssh");
+            let allow_file = deny_dir.join("known_hosts");
+            let deny_plain_dir = root.join("home/.aws");
+            let deny_file = root.join("home/.netrc");
+            let docker_sock = root.join("docker.sock");
+            std::fs::create_dir_all(&pp).unwrap();
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::create_dir_all(&deny_dir).unwrap();
+            std::fs::create_dir_all(&deny_plain_dir).unwrap();
+            std::fs::write(&allow_file, b"ok").unwrap();
+            std::fs::write(&deny_file, b"secret").unwrap();
+            std::fs::write(&docker_sock, b"").unwrap();
 
-        let writable = vec![cache.clone(), cwd.clone(), root.clone()];
-        let protect = vec![pp.clone(), missing_prot];
-        let deny_read = vec![deny_dir.clone(), deny_plain_dir.clone(), deny_file.clone()];
-        let allow_read = vec![allow_file.clone(), root.join("home/.ssh/missing")];
-        let sockets = vec![docker_sock.clone(), root.join("missing.sock")];
+            let writable = vec![cache.clone(), cwd.clone(), root.clone()];
+            let protect = vec![pp.clone(), missing_prot];
+            let deny_read = vec![deny_dir.clone(), deny_plain_dir.clone(), deny_file.clone()];
+            let allow_read = vec![allow_file.clone(), root.join("home/.ssh/missing")];
+            let sockets = vec![docker_sock.clone(), root.join("missing.sock")];
 
-        let spec = BwrapSpec {
-            mode: EffectiveMode::WorkspaceWrite,
-            cwd: &cwd,
-            writable: &writable,
-            allow_write_files: &[],
-            protect: &protect,
-            immutable_protect: &[],
-            home_deny_root: None,
-            home_allow_read: &[],
-            deny_read: &deny_read,
-            allow_read: &allow_read,
-            docker_sockets: &sockets,
-            network: false,
-        };
-        let (args, notes) = compile_args(&spec).unwrap();
-        assert!(notes.is_empty(), "{notes:?}");
-        let strs = args_to_strings(&args);
+            let spec = BwrapSpec {
+                mode: EffectiveMode::WorkspaceWrite,
+                cwd: &cwd,
+                writable: &writable,
+                allow_write_files: &[],
+                protect: &protect,
+                immutable_protect: &[],
+                home_deny_root: None,
+                home_allow_read: &[],
+                deny_read: &deny_read,
+                allow_read: &allow_read,
+                docker_sockets: &sockets,
+                network: false,
+            };
+            let (args, notes) = compile_args(&spec).unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
+            let strs = args_to_strings(&args);
 
-        assert_eq!(strs.last().map(String::as_str), Some("--"));
-        assert!(strs.contains(&"--unshare-net".to_owned()));
-        assert!(strs.contains(&"--die-with-parent".to_owned()));
+            assert_eq!(strs.last().map(String::as_str), Some("--"));
+            assert!(strs.contains(&"--unshare-net".to_owned()));
+            assert!(strs.contains(&"--die-with-parent".to_owned()));
 
-        // 可写根浅到深且不丢失含引号/换行的完整路径。
-        let root_pos = strs
-            .iter()
-            .position(|s| s == &root.to_string_lossy())
-            .unwrap();
-        let cwd_pos = strs
-            .iter()
-            .position(|s| s == &cwd.to_string_lossy())
-            .unwrap();
-        let prot_pos = strs
-            .iter()
-            .position(|s| s == &pp.to_string_lossy())
-            .unwrap();
-        assert!(root_pos < cwd_pos, "{strs:?}");
-        assert!(cwd_pos < prot_pos, "{strs:?}");
-        assert!(!strs.iter().any(|s| s.ends_with(".git/hooks")));
-
-        // 含 allow_read 的 .ssh 用 0111，不含例外的 .aws 用 0000。
-        let ssh_pos = strs
-            .iter()
-            .position(|s| s == &deny_dir.to_string_lossy())
-            .unwrap();
-        assert_eq!(strs[ssh_pos - 2], "0111", "{strs:?}");
-        let aws_pos = strs
-            .iter()
-            .position(|s| s == &deny_plain_dir.to_string_lossy())
-            .unwrap();
-        assert_eq!(strs[aws_pos - 2], "0000", "{strs:?}");
-
-        // known_hosts 绑定在 .ssh tmpfs 之后、--remount-ro .ssh 之前。
-        let allow_pos = strs
-            .iter()
-            .position(|s| s == &allow_file.to_string_lossy())
-            .unwrap();
-        let remount_pos = strs
-            .windows(2)
-            .position(|w| w[0] == "--remount-ro" && w[1] == deny_dir.to_string_lossy())
-            .unwrap();
-        assert!(ssh_pos < allow_pos && allow_pos < remount_pos, "{strs:?}");
-
-        // deny_file 与 docker_sock 覆盖 /dev/null。
-        assert!(strs.windows(3).any(|w| w[0] == "--ro-bind"
-            && w[1] == "/dev/null"
-            && w[2] == deny_file.to_string_lossy()));
-        assert!(strs.windows(3).any(|w| w[0] == "--ro-bind"
-            && w[1] == "/dev/null"
-            && w[2] == docker_sock.to_string_lossy()));
-
-        // ReadOnly 模式下，落在可写 root 下的 cwd 被 --ro-bind 覆盖，子根 .pp-cache 恢复 --bind-try。
-        let ro_writable = vec![root.clone(), cache.clone()];
-        let ro_spec = BwrapSpec {
-            mode: EffectiveMode::ReadOnly,
-            cwd: &cwd,
-            writable: &ro_writable,
-            allow_write_files: &[],
-            protect: &[],
-            immutable_protect: &[],
-            home_deny_root: None,
-            home_allow_read: &[],
-            deny_read: &[],
-            allow_read: &[],
-            docker_sockets: &[],
-            network: true,
-        };
-        let (ro_args, _) = compile_args(&ro_spec).unwrap();
-        let ro_strs = args_to_strings(&ro_args);
-        assert!(!ro_strs.contains(&"--unshare-net".to_owned()));
-        let ro_cwd_pos = ro_strs
-            .windows(3)
-            .position(|w| w[0] == "--ro-bind" && w[1] == cwd.to_string_lossy())
-            .unwrap();
-        let ro_cache_pos = ro_strs
-            .windows(3)
-            .position(|w| w[0] == "--bind-try" && w[1] == cache.to_string_lossy())
-            .unwrap();
-        assert!(ro_cwd_pos < ro_cache_pos, "{ro_strs:?}");
-    }
-
-    #[test]
-    fn compile_args_skips_deny_read_ancestor_of_cwd_with_note() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(dir.path()).unwrap();
-        let cwd = root.join("sub");
-        std::fs::create_dir_all(&cwd).unwrap();
-
-        let deny = vec![root.clone()];
-        let spec = BwrapSpec {
-            mode: EffectiveMode::WorkspaceWrite,
-            cwd: &cwd,
-            writable: std::slice::from_ref(&cwd),
-            allow_write_files: &[],
-            protect: &[],
-            immutable_protect: &[],
-            home_deny_root: None,
-            home_allow_read: &[],
-            deny_read: &deny,
-            allow_read: &[],
-            docker_sockets: &[],
-            network: true,
-        };
-        let (args, notes) = compile_args(&spec).unwrap();
-        let strs = args_to_strings(&args);
-        assert!(!strs.contains(&"--tmpfs".to_owned()));
-        assert!(
-            notes
+            // 可写根浅到深且不丢失含引号/换行的完整路径。
+            let root_pos = strs
                 .iter()
-                .any(|n| n.contains("skipped denyRead ancestor of working directory")),
-            "{notes:?}"
-        );
+                .position(|s| s == &root.to_string_lossy())
+                .unwrap();
+            let cwd_pos = strs
+                .iter()
+                .position(|s| s == &cwd.to_string_lossy())
+                .unwrap();
+            let prot_pos = strs
+                .iter()
+                .position(|s| s == &pp.to_string_lossy())
+                .unwrap();
+            assert!(root_pos < cwd_pos, "{strs:?}");
+            assert!(cwd_pos < prot_pos, "{strs:?}");
+            assert!(!strs.iter().any(|s| s.ends_with(".git/hooks")));
+
+            // 含 allow_read 的 .ssh 用 0111，不含例外的 .aws 用 0000。
+            let ssh_pos = strs
+                .iter()
+                .position(|s| s == &deny_dir.to_string_lossy())
+                .unwrap();
+            assert_eq!(strs[ssh_pos - 2], "0111", "{strs:?}");
+            let aws_pos = strs
+                .iter()
+                .position(|s| s == &deny_plain_dir.to_string_lossy())
+                .unwrap();
+            assert_eq!(strs[aws_pos - 2], "0000", "{strs:?}");
+
+            // known_hosts 绑定在 .ssh tmpfs 之后、--remount-ro .ssh 之前。
+            let allow_pos = strs
+                .iter()
+                .position(|s| s == &allow_file.to_string_lossy())
+                .unwrap();
+            let remount_pos = strs
+                .windows(2)
+                .position(|w| w[0] == "--remount-ro" && w[1] == deny_dir.to_string_lossy())
+                .unwrap();
+            assert!(ssh_pos < allow_pos && allow_pos < remount_pos, "{strs:?}");
+
+            // deny_file 与 docker_sock 覆盖 /dev/null。
+            assert!(strs.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/dev/null"
+                && w[2] == deny_file.to_string_lossy()));
+            assert!(strs.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == "/dev/null"
+                && w[2] == docker_sock.to_string_lossy()));
+
+            // ReadOnly 模式下，落在可写 root 下的 cwd 被 --ro-bind 覆盖，子根 .pp-cache 恢复 --bind-try。
+            let ro_writable = vec![root.clone(), cache.clone()];
+            let ro_spec = BwrapSpec {
+                mode: EffectiveMode::ReadOnly,
+                cwd: &cwd,
+                writable: &ro_writable,
+                allow_write_files: &[],
+                protect: &[],
+                immutable_protect: &[],
+                home_deny_root: None,
+                home_allow_read: &[],
+                deny_read: &[],
+                allow_read: &[],
+                docker_sockets: &[],
+                network: true,
+            };
+            let (ro_args, _) = compile_args(&ro_spec).unwrap();
+            let ro_strs = args_to_strings(&ro_args);
+            assert!(!ro_strs.contains(&"--unshare-net".to_owned()));
+            let ro_cwd_pos = ro_strs
+                .windows(3)
+                .position(|w| w[0] == "--ro-bind" && w[1] == cwd.to_string_lossy())
+                .unwrap();
+            let ro_cache_pos = ro_strs
+                .windows(3)
+                .position(|w| w[0] == "--bind-try" && w[1] == cache.to_string_lossy())
+                .unwrap();
+            assert!(ro_cwd_pos < ro_cache_pos, "{ro_strs:?}");
+        }
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = std::fs::canonicalize(dir.path()).unwrap();
+            let cwd = root.join("sub");
+            std::fs::create_dir_all(&cwd).unwrap();
+
+            let deny = vec![root.clone()];
+            let spec = BwrapSpec {
+                mode: EffectiveMode::WorkspaceWrite,
+                cwd: &cwd,
+                writable: std::slice::from_ref(&cwd),
+                allow_write_files: &[],
+                protect: &[],
+                immutable_protect: &[],
+                home_deny_root: None,
+                home_allow_read: &[],
+                deny_read: &deny,
+                allow_read: &[],
+                docker_sockets: &[],
+                network: true,
+            };
+            let (args, notes) = compile_args(&spec).unwrap();
+            let strs = args_to_strings(&args);
+            assert!(!strs.contains(&"--tmpfs".to_owned()));
+            assert!(
+                notes
+                    .iter()
+                    .any(|n| n.contains("skipped denyRead ancestor of working directory")),
+                "{notes:?}"
+            );
+        }
     }
 
     #[test]

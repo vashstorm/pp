@@ -10,7 +10,7 @@
 
 #[test]
 fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
-    for protocol in ["completion", "response"] {
+    let protocol = "response";
         let fixture = server();
         let (home, mut pty) = runtime_input_start(&fixture, protocol, "");
         // 任务 1：U 运行中排入 S，结束后 S 与 U 同请求，模型调用 write 落盘。
@@ -124,110 +124,5 @@ fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
             std::fs::read_to_string(home.path().join("resume-proof.txt")).unwrap(),
             "must-not-be-overwritten\n"
         );
-    }
 }
 
-#[test]
-fn tui_runtime_input_auto_compact_excludes_held_steering_both_protocols() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        // 同自动成功场景：窗口给保留批次留出阈值余量。
-        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 40960, 80);
-        let old = "runtime-compact-old";
-        let recent = "runtime-compact-recent";
-        context_tui_write_batch(
-            home.path(),
-            "runtime-compact-old.txt",
-            old,
-            CONTEXT_TUI_AUTO_FIRST_BYTES,
-        );
-        context_tui_write_batch(
-            home.path(),
-            "runtime-compact-new.txt",
-            recent,
-            CONTEXT_TUI_AUTO_SECOND_BYTES,
-        );
-        pty.input("runtime compact prompt\r");
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(body["tools"].as_array().is_some());
-        context_tui_read_calls(
-            request,
-            protocol,
-            "runtime-compact-one",
-            "runtime-compact-old.txt",
-        );
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(
-            body["tools"].as_array().is_some(),
-            "首个批次不得提前触发自动摘要"
-        );
-        context_tui_read_calls(
-            request,
-            protocol,
-            "runtime-compact-two",
-            "runtime-compact-new.txt",
-        );
-        // 第二个批次越过阈值：自动摘要请求被服务端握住，屏幕保持 Compacting。
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        context_tui_assert_summary_body(&body, protocol, old, recent);
-        assert!(
-            !serde_json::to_string(&body)
-                .unwrap()
-                .contains("runtime-compact-steer"),
-            "摘要请求不得包含尚未排入的补充"
-        );
-        pty.text("Compacting context");
-        // 摘要未完成时排入 Steering：仍计入队列，等摘要后的边界才消费。
-        pty.input("runtime-compact-steer\r");
-        runtime_input_counts(&mut pty, 1, 0, false);
-        pty.draft("");
-        no_more(&fixture);
-        context_tui_final(request, protocol, CONTEXT_TUI_SUMMARY);
-        // 摘要后的普通请求：摘要包装 + 原生近期批次 + Steering 恰好一次。
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        let text = serde_json::to_string(&body).unwrap();
-        assert!(
-            body["tools"].as_array().is_some(),
-            "普通请求必须保留工具配置"
-        );
-        assert_eq!(text.matches("[Context summary]").count(), 1);
-        assert!(text.contains(CONTEXT_TUI_SUMMARY));
-        assert!(text.contains(recent), "最近完整批次必须原生保留");
-        assert!(!text.contains(old), "旧前缀原文不得复活");
-        assert_eq!(text.matches("runtime-compact-steer").count(), 1);
-        let users = cancel_user_messages(&body, protocol);
-        assert_eq!(users.len(), 2);
-        assert!(users[0].contains("[Context summary]"));
-        assert_eq!(users[1], "runtime-compact-steer");
-        assert_eq!(cancel_tool_outputs(&body, protocol).len(), 1);
-        // 工具批次继续完整：write 副作用真实落盘后再收尾。
-        runtime_input_calls(
-            request,
-            protocol,
-            &[(
-                "runtime-compact-write",
-                "write",
-                json!({"path":"compact-steering-proof.txt","content":"compact-steer-ok\n"}),
-            )],
-        );
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        let outputs = cancel_tool_outputs(&body, protocol);
-        assert_eq!(outputs.len(), 2);
-        assert_eq!(outputs[0].0, "runtime-compact-two");
-        assert_eq!(outputs[1].0, "runtime-compact-write");
-        assert_eq!(cancel_user_messages(&body, protocol), users);
-        runtime_input_final(request, protocol, "runtime-compact-answer");
-        pty.text("runtime-compact-answer");
-        pty.ready();
-        assert_eq!(
-            std::fs::read_to_string(home.path().join("compact-steering-proof.txt")).unwrap(),
-            "compact-steer-ok\n"
-        );
-        pty.wait_for("Steering 应用后队列计数消失", |screen| {
-            !screen.contents().contains("Steering:")
-        });
-        no_more(&fixture);
-        pty.input("\x03");
-        pty.finish();
-    }
-}

@@ -252,69 +252,68 @@ mod tests {
     }
 
     #[test]
-    fn progress_view_is_readonly_and_tracks_content() {
-        let mut panel = Panel::progress(document(PlanStatus::Ready, "- [ ] step"));
-        assert!(panel.token().is_none());
-        for index in 0..ACTIONS.len() {
-            assert!(!panel.action_enabled(index));
+    fn progress_degraded_focus_review_and_completed_view_invariants() {
+        {
+            let mut panel = Panel::progress(document(PlanStatus::Ready, "- [ ] step"));
+            assert!(panel.token().is_none());
+            for index in 0..ACTIONS.len() {
+                assert!(!panel.action_enabled(index));
+            }
+            let mut updated = document(PlanStatus::Executed, "- [x] step");
+            updated.revision = 2;
+            panel.set_progress(&updated);
+            assert_eq!(panel.document.revision, 2);
+            assert_eq!(panel.document.content, "- [x] step");
+            assert_eq!(task_progress(&panel.document.content), (1, 1));
         }
-        let mut updated = document(PlanStatus::Executed, "- [x] step");
-        updated.revision = 2;
-        panel.set_progress(&updated);
-        assert_eq!(panel.document.revision, 2);
-        assert_eq!(panel.document.content, "- [x] step");
-        assert_eq!(task_progress(&panel.document.content), (1, 1));
-    }
 
-    #[test]
-    fn degraded_view_hides_actions_until_safe_read_restores_token() {
-        let report = PlanReviewReport {
-            plan_id: "0123456789abcdef0123456789abcdef".into(),
-            revision: 1,
-            model_reference: "provider/model".into(),
-            content: "findings".into(),
-        };
-        let mut panel = Panel::degraded(document(PlanStatus::Ready, "- [ ] step"), report);
-        assert!(panel.token().is_none());
-        for index in 0..ACTIONS.len() {
-            assert!(!panel.action_enabled(index));
+        {
+            let report = PlanReviewReport {
+                plan_id: "0123456789abcdef0123456789abcdef".into(),
+                revision: 1,
+                model_reference: "provider/model".into(),
+                content: "findings".into(),
+            };
+            let mut panel = Panel::degraded(document(PlanStatus::Ready, "- [ ] step"), report);
+            assert!(panel.token().is_none());
+            for index in 0..ACTIONS.len() {
+                assert!(!panel.action_enabled(index));
+            }
+            // 成功的安全读取恢复 token 与操作区。
+            panel.set_review(PlanReview {
+                token: token(),
+                document: document(PlanStatus::Ready, "- [ ] step"),
+                report: None,
+            });
+            assert!(panel.token().is_some());
+            assert!(panel.action_enabled(1));
+            assert!(!panel.on_review_body());
         }
-        // 成功的安全读取恢复 token 与操作区。
-        panel.set_review(PlanReview {
-            token: token(),
-            document: document(PlanStatus::Ready, "- [ ] step"),
-            report: None,
-        });
-        assert!(panel.token().is_some());
-        assert!(panel.action_enabled(1));
-        assert!(!panel.on_review_body());
-    }
 
-    #[test]
-    fn focus_review_body_requires_a_report() {
-        let mut panel = review_panel(PlanStatus::Ready);
-        panel.focus_review_body();
-        assert!(!panel.on_review_body());
-        panel.report = Some(PlanReviewReport {
-            plan_id: panel.document.id.clone(),
-            revision: 1,
-            model_reference: "model".into(),
-            content: "report".into(),
-        });
-        panel.focus_review_body();
-        assert!(panel.on_review_body());
-    }
-
-    #[test]
-    fn plan_completed_view_never_enables_actions_or_accepts_input() {
-        let mut panel = Panel::progress(document(PlanStatus::Completed, "- [x] step"));
-        for index in 0..ACTIONS.len() {
-            assert!(!panel.action_enabled(index));
+        {
+            let mut panel = review_panel(PlanStatus::Ready);
+            panel.focus_review_body();
+            assert!(!panel.on_review_body());
+            panel.report = Some(PlanReviewReport {
+                plan_id: panel.document.id.clone(),
+                revision: 1,
+                model_reference: "model".into(),
+                content: "report".into(),
+            });
+            panel.focus_review_body();
+            assert!(panel.on_review_body());
         }
-        panel.key(key_event(KeyCode::Char('1')));
-        assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
-        assert!(panel.paste("ignored"));
-        assert!(!panel.input_focused());
-        assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
+
+        {
+            let mut panel = Panel::progress(document(PlanStatus::Completed, "- [x] step"));
+            for index in 0..ACTIONS.len() {
+                assert!(!panel.action_enabled(index));
+            }
+            panel.key(key_event(KeyCode::Char('1')));
+            assert_eq!(panel.key(key_event(KeyCode::Enter)), Action::None);
+            assert!(panel.paste("ignored"));
+            assert!(!panel.input_focused());
+            assert_eq!(panel.key(key_event(KeyCode::Esc)), Action::Close);
+        }
     }
 }

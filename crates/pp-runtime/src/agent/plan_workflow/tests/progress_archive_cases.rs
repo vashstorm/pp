@@ -1,45 +1,44 @@
 use super::*;
 
 #[test]
-fn plan_progress_refresh_keeps_verified_snapshot_when_file_becomes_unreadable() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-    agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
-    agent.workflow.mode = WorkMode::Execute;
-    write_plan_file(&agent, PLAN_CONTENT);
-    seed_session(&mut agent, EXPLORATION);
-    let progress = PLAN_CONTENT.replace("- [ ]", "- [x]");
-    write_plan_file(&agent, &progress);
-    let mut published = Vec::new();
-    agent
-        .refresh_plan_progress(&mut |event| published.push(event))
-        .unwrap();
-    assert!(
-        matches!(published.as_slice(), [pp_core::events::AgentEvent::PlanProgressUpdated { revision: 2, content, .. }] if content == &progress)
-    );
-    let previous = agent.workflow.clone();
-    let path = agent.tools.cwd().join(
+fn plan_progress_refresh_and_archive_completion() {
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+        agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
+        agent.workflow.mode = WorkMode::Execute;
+        write_plan_file(&agent, PLAN_CONTENT);
+        seed_session(&mut agent, EXPLORATION);
+        let progress = PLAN_CONTENT.replace("- [ ]", "- [x]");
+        write_plan_file(&agent, &progress);
+        let mut published = Vec::new();
         agent
-            .workflow
-            .plan
-            .as_ref()
-            .unwrap()
-            .path()
-            .expect("legacy plan has a resolved path"),
-    );
-    std::fs::remove_file(&path).unwrap();
-    published.clear();
-    let error = agent
-        .refresh_plan_progress(&mut |event| published.push(event))
-        .unwrap_err();
-    assert!(format!("{error:#}").contains("last synchronized progress retained"));
-    assert_eq!(agent.workflow, previous);
-    assert!(published.is_empty());
-    assert!(!path.exists());
-}
+            .refresh_plan_progress(&mut |event| published.push(event))
+            .unwrap();
+        assert!(
+            matches!(published.as_slice(), [pp_core::events::AgentEvent::PlanProgressUpdated { revision: 2, content, .. }] if content == &progress)
+        );
+        let previous = agent.workflow.clone();
+        let path = agent.tools.cwd().join(
+            agent
+                .workflow
+                .plan
+                .as_ref()
+                .unwrap()
+                .path()
+                .expect("legacy plan has a resolved path"),
+        );
+        std::fs::remove_file(&path).unwrap();
+        published.clear();
+        let error = agent
+            .refresh_plan_progress(&mut |event| published.push(event))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("last synchronized progress retained"));
+        assert_eq!(agent.workflow, previous);
+        assert!(published.is_empty());
+        assert!(!path.exists());
+    }
 
-#[test]
-fn plan_archive_moves_completed_plan_to_done_under_its_file_name() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let approved = vec![plan::plan_tasks(PLAN_CONTENT).remove(0).text];
@@ -98,10 +97,7 @@ fn plan_archive_moves_completed_plan_to_done_under_its_file_name() {
         );
         assert!(done.exists());
     }
-}
 
-#[test]
-fn plan_archive_succeeds_without_another_body_change() {
     // 正文已在之前的进度刷新中同步：归档不需要正文再次变化。
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
@@ -139,7 +135,7 @@ fn plan_archive_succeeds_without_another_body_change() {
 }
 
 #[test]
-fn plan_archive_rejects_incomplete_changed_or_empty_task_sets() {
+fn plan_archive_drift_rejections_and_legacy_baselines() {
     const FIRST: &str = "Create hello.txt and read back hello.";
     const SECOND: &str = "Verify the failure boundary.";
     let two_tasks = format!("# Create hello\n\n- [ ] {FIRST}\n- [ ] {SECOND}\n");
@@ -205,10 +201,7 @@ fn plan_archive_rejects_incomplete_changed_or_empty_task_sets() {
             PlanStatus::Executed
         );
     }
-}
 
-#[test]
-fn plan_legacy_executed_builds_approved_tasks_baseline_before_disk_progress() {
     // 旧 Executed 记录缺 approved_tasks：先以当前已登记正文建立一次
     // 迁移基线并持久化，再读取新的磁盘进度；磁盘勾选状态与后续普通
     // 说明变化不覆盖基线。
@@ -266,10 +259,7 @@ fn plan_legacy_executed_builds_approved_tasks_baseline_before_disk_progress() {
             PlanStatus::Completed
         );
     }
-}
 
-#[test]
-fn plan_legacy_executed_without_file_name_restores_and_archives_after_baseline() {
     // 旧记录：无 file_name、缺 approved_tasks、走 <id>.md 兜底路径。
     // 首次进度刷新先按 ID 首次登记，再以登记正文建立迁移基线，随后
     // 正常归档到 done/<id>.md。

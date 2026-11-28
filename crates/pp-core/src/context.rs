@@ -208,108 +208,106 @@ mod tests {
     use super::*;
 
     #[test]
-    fn context_read_image_estimate_excludes_base64_without_copying_history() {
-        let small = serde_json::json!({"image_url":"data:image/png;base64,AAAA"});
-        let large = serde_json::json!({"image_url":format!("data:image/png;base64,{}", "A".repeat(100_000))});
-        assert_eq!(
-            estimate_tokens(&small).unwrap(),
-            estimate_tokens(&large).unwrap()
-        );
-        assert!(estimate_tokens(&large).unwrap() >= 4096);
-        let both = serde_json::json!([small, large]);
-        assert!(estimate_tokens(&both).unwrap() >= 8192);
-    }
-
-    #[test]
-    fn context_percent_handles_overcapacity_without_overflow() {
-        let mut usage = ContextUsage {
-            estimated_tokens: u64::MAX,
-            context_window: Some(1),
-            last_request: None,
-            session_output_tokens: 0,
-            auto_compact: true,
-            threshold_percent: 80,
-        };
-        assert_eq!(usage.percent(), Some(u128::from(u64::MAX) * 100));
-        usage.context_window = None;
-        assert_eq!(usage.percent(), None);
-    }
-
-    #[test]
-    fn context_estimate_redacts_serializer_errors() {
-        struct Invalid;
-        impl Serialize for Invalid {
-            fn serialize<S: serde::Serializer>(
-                &self,
-                _: S,
-            ) -> std::result::Result<S::Ok, S::Error> {
-                Err(serde::ser::Error::custom("secret-payload"))
-            }
-        }
-        assert_eq!(
-            estimate_tokens(&Invalid).unwrap_err().to_string(),
-            "estimating context usage failed"
-        );
-    }
-
-    #[test]
-    fn message_bytes_compose_with_request_skeleton() {
-        let cases = [
-            ("empty", serde_json::json!([])),
-            (
-                "plain",
-                serde_json::json!([{"role": "user", "content": "hello"}]),
-            ),
-            (
-                "escaped",
-                serde_json::json!([{"content": "quote \" backslash \\ tab \t bell \u{7}"}]),
-            ),
-            (
-                "image",
-                serde_json::json!([{"image_url": format!("data:image/png;base64,{}", "A".repeat(5_000))}]),
-            ),
-            (
-                "mixed",
-                serde_json::json!([
-                    {"role": "user", "content": "hi"},
-                    {"image_url": "data:image/jpeg;base64,AAAA"},
-                    {"tool_call": {"id": "c1", "arguments": "{\"path\": \"a.rs\"}"}}
-                ]),
-            ),
-        ];
-        let skeleton = serde_json::json!({"model": "m", "messages": [], "tools": [{"name": "t"}]});
-        for (name, messages) in cases {
-            let items = messages.as_array().expect("case fixture is an array");
-            let full =
-                serde_json::json!({"model": "m", "messages": messages, "tools": [{"name": "t"}]});
-            let mut accumulated = MessageBytes::default();
-            for item in items {
-                accumulated.push(estimate_bytes(item).unwrap());
-            }
-            assert_eq!(accumulated.count(), items.len(), "{name}");
+    fn context_token_usage_estimation_and_error_redaction() {
+        {
+            let small = serde_json::json!({"image_url":"data:image/png;base64,AAAA"});
+            let large = serde_json::json!({"image_url":format!("data:image/png;base64,{}", "A".repeat(100_000))});
             assert_eq!(
-                estimate_bytes(&skeleton).unwrap() + accumulated.total(),
-                estimate_bytes(&full).unwrap(),
-                "{name}"
+                estimate_tokens(&small).unwrap(),
+                estimate_tokens(&large).unwrap()
+            );
+            assert!(estimate_tokens(&large).unwrap() >= 4096);
+            let both = serde_json::json!([small, large]);
+            assert!(estimate_tokens(&both).unwrap() >= 8192);
+        }
+        {
+            let mut usage = ContextUsage {
+                estimated_tokens: u64::MAX,
+                context_window: Some(1),
+                last_request: None,
+                session_output_tokens: 0,
+                auto_compact: true,
+                threshold_percent: 80,
+            };
+            assert_eq!(usage.percent(), Some(u128::from(u64::MAX) * 100));
+            usage.context_window = None;
+            assert_eq!(usage.percent(), None);
+        }
+        {
+            struct Invalid;
+            impl Serialize for Invalid {
+                fn serialize<S: serde::Serializer>(
+                    &self,
+                    _: S,
+                ) -> std::result::Result<S::Ok, S::Error> {
+                    Err(serde::ser::Error::custom("secret-payload"))
+                }
+            }
+            assert_eq!(
+                estimate_tokens(&Invalid).unwrap_err().to_string(),
+                "estimating context usage failed"
             );
         }
     }
 
     #[test]
-    fn estimate_count_matches_across_chunk_boundaries() {
-        let payload = serde_json::json!([
-            {"text": "hello \"escaped\" \\n \\\"data:image/png;base64,not_an_image\\\""},
-            {"image_url": format!("data:image/jpeg;base64,{}", "B".repeat(512))},
-            {"tail": "data:image/not_base64_prefix_then_long_text"}
-        ]);
-        let serialized = serde_json::to_vec(&payload).unwrap();
-        let baseline = estimate_tokens(&payload).unwrap();
-        for chunk_size in [1usize, 3, 7, 32] {
-            let mut count = EstimateCount::default();
-            for chunk in serialized.chunks(chunk_size) {
-                count.write_all(chunk).unwrap();
+    fn message_bytes_and_chunked_estimate_consistency() {
+        {
+            let cases = [
+                ("empty", serde_json::json!([])),
+                (
+                    "plain",
+                    serde_json::json!([{"role": "user", "content": "hello"}]),
+                ),
+                (
+                    "escaped",
+                    serde_json::json!([{"content": "quote \" backslash \\ tab \t bell \u{7}"}]),
+                ),
+                (
+                    "image",
+                    serde_json::json!([{"image_url": format!("data:image/png;base64,{}", "A".repeat(5_000))}]),
+                ),
+                (
+                    "mixed",
+                    serde_json::json!([
+                        {"role": "user", "content": "hi"},
+                        {"image_url": "data:image/jpeg;base64,AAAA"},
+                        {"tool_call": {"id": "c1", "arguments": "{\"path\": \"a.rs\"}"}}
+                    ]),
+                ),
+            ];
+            let skeleton =
+                serde_json::json!({"model": "m", "messages": [], "tools": [{"name": "t"}]});
+            for (name, messages) in cases {
+                let items = messages.as_array().expect("case fixture is an array");
+                let full = serde_json::json!({"model": "m", "messages": messages, "tools": [{"name": "t"}]});
+                let mut accumulated = MessageBytes::default();
+                for item in items {
+                    accumulated.push(estimate_bytes(item).unwrap());
+                }
+                assert_eq!(accumulated.count(), items.len(), "{name}");
+                assert_eq!(
+                    estimate_bytes(&skeleton).unwrap() + accumulated.total(),
+                    estimate_bytes(&full).unwrap(),
+                    "{name}"
+                );
             }
-            assert_eq!(count.bytes.div_ceil(3), baseline, "chunk_size={chunk_size}");
+        }
+        {
+            let payload = serde_json::json!([
+                {"text": "hello \"escaped\" \\n \\\"data:image/png;base64,not_an_image\\\""},
+                {"image_url": format!("data:image/jpeg;base64,{}", "B".repeat(512))},
+                {"tail": "data:image/not_base64_prefix_then_long_text"}
+            ]);
+            let serialized = serde_json::to_vec(&payload).unwrap();
+            let baseline = estimate_tokens(&payload).unwrap();
+            for chunk_size in [1usize, 3, 7, 32] {
+                let mut count = EstimateCount::default();
+                for chunk in serialized.chunks(chunk_size) {
+                    count.write_all(chunk).unwrap();
+                }
+                assert_eq!(count.bytes.div_ceil(3), baseline, "chunk_size={chunk_size}");
+            }
         }
     }
 }

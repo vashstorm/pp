@@ -2,7 +2,9 @@ use super::*;
 
 #[cfg(debug_assertions)]
 #[test]
-fn test_permission_previews_approval_and_closes_without_dispatch() {
+fn permission_preview_and_real_override() {
+    use pp_core::interaction::{AskArgs, AskRequest};
+
     for (state, close) in [
         (State::Ready, KeyCode::Enter),
         (State::Unavailable, KeyCode::Esc),
@@ -41,21 +43,15 @@ fn test_permission_previews_approval_and_closes_without_dispatch() {
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         assert!(app.permission_worker.is_none());
     }
-}
 
-#[cfg(debug_assertions)]
-#[test]
-fn real_permission_request_replaces_the_preview_and_receives_its_answer() {
-    use pp_core::interaction::{AskArgs, AskRequest};
-
-    let mut app = app();
-    app.submit_initial_command("/test-permission");
+    let mut override_app = app();
+    override_app.submit_initial_command("/test-permission");
     let (reply, answers) = mpsc::sync_channel(1);
     let args = AskArgs::parse(
         r#"{"questions":[{"id":"permission","question":"Real request","options":[{"label":"Deny"}]}]}"#,
     )
     .unwrap();
-    app.receive_event_for_test(WorkerEvent::Ask {
+    override_app.receive_event_for_test(WorkerEvent::Ask {
         request: AskRequest {
             call_id: "permission-dialog".into(),
             args: std::sync::Arc::new(args),
@@ -63,10 +59,12 @@ fn real_permission_request_replaces_the_preview_and_receives_its_answer() {
         reply,
         cancellation: CancellationToken::new(),
     });
-    let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("Real request"), "{screen}");
-    assert!(!screen.contains("Preview only"), "{screen}");
-    app.handle(key(KeyCode::Enter), &mut false);
+    let screen = draw(&mut override_app, 100, 30);
+    assert!(
+        screen.contains("Real request") && !screen.contains("Preview only"),
+        "{screen}"
+    );
+    override_app.handle(key(KeyCode::Enter), &mut false);
     assert_eq!(answers.try_recv().unwrap()[0].selected_options, ["Deny"]);
 }
 
@@ -110,7 +108,7 @@ fn ask_roundtrip_disconnect_and_cancelled_answer_return_typed_cancelled() {
 }
 
 #[test]
-fn ctrl_o_is_global_press_only_and_keeps_ask_and_main_draft() {
+fn ctrl_o_toggles_globally_without_stealing_menu() {
     let mut app = app();
     folding_fixture(&mut app);
     app.input.insert_str("主草稿🙂");
@@ -119,8 +117,7 @@ fn ctrl_o_is_global_press_only_and_keeps_ask_and_main_draft() {
     let (answers, token) = ask_fixture(&mut app);
     let mut dirty = false;
     app.handle(key(KeyCode::Down), &mut dirty);
-    let collapsed = draw(&mut app, 100, 100);
-    assert!(collapsed.contains("Ctrl + O to expand"));
+    assert!(draw(&mut app, 100, 100).contains("Ctrl + O to expand"));
     app.handle(control('o'), &mut dirty);
     let expanded = draw(&mut app, 100, 100);
     for expected in ["first-19", "second-19", "Postgres"] {
@@ -136,39 +133,36 @@ fn ctrl_o_is_global_press_only_and_keeps_ask_and_main_draft() {
     assert!(draw(&mut app, 100, 100).contains("to expand"));
     assert_eq!(app.input.lines(), &["主草稿🙂"]);
     assert_eq!(app.input.cursor(), cursor);
-    assert!(app.ask_panel.is_some());
-    assert!(!token.is_cancelled());
+    assert!(app.ask_panel.is_some() && !token.is_cancelled());
     assert!(matches!(answers.try_recv(), Err(TryRecvError::Empty)));
     app.handle(key(KeyCode::Enter), &mut dirty);
-    let response = answers.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert_eq!(response[0].selected_options, ["Postgres"]);
-}
+    assert_eq!(
+        answers.recv_timeout(Duration::from_secs(1)).unwrap()[0].selected_options,
+        ["Postgres"]
+    );
 
-#[test]
-fn ctrl_o_keeps_normal_menu_and_alt_o_is_not_a_toggle() {
-    let mut app = app();
-    app.state = State::Ready;
-    folding_fixture(&mut app);
-    app.input.insert_str("/");
-    app.refresh_candidates(true);
-    let mut dirty = false;
-    app.handle(key(KeyCode::Down), &mut dirty);
-    let selected = app.menu.as_ref().unwrap().selected_index();
-    let cursor = app.input.cursor();
-    app.handle(control('o'), &mut dirty);
-    assert_eq!(app.menu.as_ref().unwrap().selected_index(), selected);
-    assert_eq!(app.input.cursor(), cursor);
-    assert_eq!(app.input.lines(), &["/"]);
-    assert!(!draw(&mut app, 100, 100).contains("to expand"));
-    app.handle(
+    let mut menu_app = super::app();
+    menu_app.state = State::Ready;
+    folding_fixture(&mut menu_app);
+    menu_app.input.insert_str("/");
+    menu_app.refresh_candidates(true);
+    menu_app.handle(key(KeyCode::Down), &mut dirty);
+    let selected = menu_app.menu.as_ref().unwrap().selected_index();
+    let cursor = menu_app.input.cursor();
+    menu_app.handle(control('o'), &mut dirty);
+    assert_eq!(menu_app.menu.as_ref().unwrap().selected_index(), selected);
+    assert_eq!(menu_app.input.cursor(), cursor);
+    assert_eq!(menu_app.input.lines(), &["/"]);
+    assert!(!draw(&mut menu_app, 100, 100).contains("to expand"));
+    menu_app.handle(
         Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT)),
         &mut dirty,
     );
-    assert!(!draw(&mut app, 100, 100).contains("to expand"));
+    assert!(!draw(&mut menu_app, 100, 100).contains("to expand"));
 }
 
 #[test]
-fn ask_layout_keeps_latest_message_above_panel_on_resize() {
+fn ask_layout_focus_submit_cancel_and_late_requests() {
     let mut app = app();
     app.input.insert_str("main draft");
     for i in 0..40 {
@@ -198,15 +192,11 @@ fn ask_layout_keeps_latest_message_above_panel_on_resize() {
         let message = rows
             .iter()
             .position(|row| row.contains("latest message stays visible"))
-            .expect("最新消息不应被 ask 面板遮住");
+            .unwrap();
         let panel = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
-        assert!(message < panel, "消息 viewport 必须止于面板上方：{screen}");
+        assert!(message < panel);
         let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
-        assert_eq!(
-            bottom - panel + 1,
-            8,
-            "题干、两项选择、Other 与四行框架应占八行"
-        );
+        assert_eq!(bottom - panel + 1, 8);
         let status = rows
             .iter()
             .position(|row| {
@@ -219,64 +209,54 @@ fn ask_layout_keeps_latest_message_above_panel_on_resize() {
             .iter()
             .position(|row| row.contains("main draft"))
             .unwrap();
-        assert_eq!(bottom + 2, status, "{screen}");
-        assert!(rows[status - 1].trim().is_empty(), "{screen}");
-        assert_eq!(status + 2, input, "{screen}");
-        assert_eq!(screen.matches("Waiting for input").count(), 1, "{screen}");
+        assert_eq!(bottom + 2, status);
+        assert!(rows[status - 1].trim().is_empty() && status + 2 == input);
+        assert_eq!(screen.matches("Waiting for input").count(), 1);
     }
-}
 
-#[test]
-fn ask_focus_submission_keeps_main_draft_and_sends_once() {
-    let mut app = app();
-    app.input.insert_str("主草稿🙂");
-    app.input.move_cursor(CursorMove::Back);
-    let cursor = app.input.cursor();
-    let (answers, token) = ask_fixture(&mut app);
+    let mut focused = super::app();
+    focused.input.insert_str("主草稿🙂");
+    focused.input.move_cursor(CursorMove::Back);
+    let cursor = focused.input.cursor();
+    let (answers, token) = ask_fixture(&mut focused);
     let mut dirty = false;
-    app.handle(function_key('p'), &mut dirty);
-    app.handle(key(KeyCode::F(1)), &mut dirty);
-    app.handle(Event::Paste("must stay inside panel".into()), &mut dirty);
-    app.handle(Event::Resize(24, 10), &mut dirty);
-    draw(&mut app, 24, 10);
-    assert_eq!(app.input.lines(), &["主草稿🙂"]);
-    assert_eq!(app.input.cursor(), cursor);
+    focused.handle(function_key('p'), &mut dirty);
+    focused.handle(key(KeyCode::F(1)), &mut dirty);
+    focused.handle(Event::Paste("must stay inside panel".into()), &mut dirty);
+    focused.handle(Event::Resize(24, 10), &mut dirty);
+    draw(&mut focused, 24, 10);
+    assert_eq!(focused.input.lines(), &["主草稿🙂"]);
+    assert_eq!(focused.input.cursor(), cursor);
     assert!(matches!(answers.try_recv(), Err(TryRecvError::Empty)));
-    app.handle(key(KeyCode::Down), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
+    focused.handle(key(KeyCode::Down), &mut dirty);
+    focused.handle(key(KeyCode::Enter), &mut dirty);
     let response = answers.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(response[0].selected_options, ["Postgres"]);
-    assert!(!token.is_cancelled());
-    assert!(app.ask_panel.is_none());
+    assert!(!token.is_cancelled() && focused.ask_panel.is_none());
     assert!(matches!(
         answers.try_recv(),
         Err(TryRecvError::Disconnected)
     ));
-    assert_eq!(app.input.cursor(), cursor);
-}
+    assert_eq!(focused.input.cursor(), cursor);
 
-#[test]
-fn ask_cancel_exit_and_late_request_never_reopen_panel() {
     for exit in [false, true] {
-        let mut app = app();
-        let (answers, token) = ask_fixture(&mut app);
+        let mut late_app = super::app();
+        let (answers, token) = ask_fixture(&mut late_app);
         if exit {
-            app.close_ask_on_exit();
+            late_app.close_ask_on_exit();
         } else {
-            app.handle(key(KeyCode::Esc), &mut false);
+            late_app.handle(key(KeyCode::Esc), &mut false);
         }
-        assert!(token.is_cancelled());
-        assert!(matches!(
-            answers.try_recv(),
-            Err(TryRecvError::Disconnected)
-        ));
+        assert!(
+            token.is_cancelled() && matches!(answers.try_recv(), Err(TryRecvError::Disconnected))
+        );
         let args = pp_core::interaction::AskArgs::parse(
             r#"{"questions":[{"id":"late","question":"Late question","options":[]}]}"#,
         )
         .unwrap();
         let (reply, late) = mpsc::sync_channel(1);
         let (events, receiver) = mpsc::channel();
-        app.events = Some(receiver);
+        late_app.events = Some(receiver);
         events
             .send(WorkerEvent::Ask {
                 cancellation: CancellationToken::new(),
@@ -287,8 +267,8 @@ fn ask_cancel_exit_and_late_request_never_reopen_panel() {
                 reply,
             })
             .unwrap();
-        app.receive();
-        assert!(app.ask_panel.is_none());
+        late_app.receive();
+        assert!(late_app.ask_panel.is_none());
         assert!(matches!(late.try_recv(), Err(TryRecvError::Disconnected)));
     }
 }

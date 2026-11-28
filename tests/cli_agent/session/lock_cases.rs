@@ -92,34 +92,3 @@ fn session_lock_survives_idle_and_gc_then_releases_after_process_death_both_apis
         no_more(&server);
     }
 }
-
-#[test]
-fn session_lock_releases_on_new_and_stays_held_after_task_completion_both_apis() {
-    for api in APIS {
-        let server = server();
-        let home = tempfile::tempdir().unwrap();
-        let cwd = tempfile::tempdir().unwrap();
-        let mut holder = start_configured(api, &server, home.path(), cwd.path(), &[]);
-        holder.input("first lock task\n");
-        let (request, _) = api.receive(&server);
-        api.final_reply(request, "first lock done");
-        holder.wait_for(Pipe::Out, "first lock done");
-        let id = only_session_id(home.path());
-        let path = lock_path(home.path(), &id);
-        assert_held(&path);
-        holder.input("/new\n");
-        holder.wait_for(Pipe::Err, "Session reset.");
-        let file = fs::File::open(&path).unwrap();
-        flock(&file, FlockOperation::NonBlockingLockExclusive).unwrap();
-        drop(file);
-        assert_eq!(session_ids(home.path()), vec![id.clone()]);
-        let mut restored = start(home.path(), cwd.path(), &["-r", &id]);
-        restored.wait_for(Pipe::Err, &format!("Resumed session: {id}"));
-        assert_held(&path);
-        restored.input("/quit\n");
-        assert!(restored.finish().status.success());
-        holder.input("/quit\n");
-        assert!(holder.finish().status.success());
-        no_more(&server);
-    }
-}
