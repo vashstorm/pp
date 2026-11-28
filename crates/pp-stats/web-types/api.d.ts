@@ -12,8 +12,7 @@ export type StatsPage =
   | "tools"
   | "hooks"
   | "projects"
-  | "frustration"
-  | "gain";
+  | "frustration";
 
 export interface CostSnapshot {
   input: number;

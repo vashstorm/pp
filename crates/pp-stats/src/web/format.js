@@ -47,7 +47,6 @@ export const paths = {
   hooks: "M12 6v15 M5 13H2a10 10 0 0 0 20 0h-3 M12 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
   frustration: "M4 12a8 8 0 0 1 16 0v7h-4v-7h4 M4 12v7h4v-7z M16 19v3h-4",
   projects: "M3 7V4h6l2 3h10v8 M3 7v13h7 M16 14v8 m-4-4h8",
-  gain: "m3 17 5-6 4 3 8-10 M16 4h4v4 M5 3v4 M3 5h4 M17 17v4 M15 19h4",
   arrow: "M4 12h16 m-6-6 6 6-6 6",
   search: "m21 21-5-5 M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0",
   close: "m6 6 12 12 M6 18 18 6",

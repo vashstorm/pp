@@ -97,7 +97,6 @@ const groups = [
       ["hooks", "Hooks", "H"],
       ["frustration", "Frustration", "F"],
       ["projects", "Projects", "J"],
-      ["gain", "Gain", "G"],
     ],
   ],
 ];
