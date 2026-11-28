@@ -30,6 +30,7 @@ impl App {
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
         {
             return;
         }
@@ -50,6 +51,7 @@ impl App {
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
         {
             return;
         }
@@ -136,6 +138,7 @@ impl App {
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
             || self.plan_panel.is_some()
             || self.model_panel.is_some()
             || self.queue_menu

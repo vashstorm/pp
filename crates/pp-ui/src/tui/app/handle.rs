@@ -236,6 +236,18 @@ impl App {
             *dirty = true;
             return false;
         }
+        if let Some(panel) = &mut self.help_panel {
+            self.escape_tap.reset();
+            if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+            {
+                return matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press);
+            }
+            if matches!(panel.handle(event), crate::tui::help::Action::Close) {
+                self.close_help();
+            }
+            *dirty = true;
+            return false;
+        }
         // The abandon confirmation owns the input; paste, mouse and global shortcuts cannot
         // bypass it.
         if let Some(panel) = &mut self.plan_leave_confirmation {

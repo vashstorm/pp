@@ -101,6 +101,7 @@ impl App {
         self.settings_panel = None;
         self.roles_panel = None;
         self.context_panel = None;
+        self.help_panel = None;
         self.file_paths.clear();
         self.file_directory.clear();
         self.file_query = None;
@@ -134,6 +135,7 @@ impl App {
         self.unavailable = Some(message.into());
         self.tree_panel = None;
         self.context_panel = None;
+        self.help_panel = None;
         self.roles_panel = None;
         self.plan_list_panel = None;
         self.plan_list_pending = None;
@@ -314,6 +316,7 @@ impl App {
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
             || self.settings_panel.is_some()
@@ -627,6 +630,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
             // Keep the main screen before the read completes; no screen switch is needed when
             // the history is empty or the read failed.
             || self.tree_panel.as_ref().is_some_and(|panel| !panel.is_loading())

@@ -648,6 +648,7 @@ struct App {
     session_panel: Option<sessions::Panel>,
     tree_panel: Option<tree::Panel>,
     context_panel: Option<context_panel::Panel>,
+    help_panel: Option<help::Panel>,
     context_snapshot: Option<pp_runtime::agent::context_diagnosis::Snapshot>,
     subagent_panel: Option<subagents::Panel>,
     subagent_autowake: bool,

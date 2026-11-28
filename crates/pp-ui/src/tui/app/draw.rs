@@ -223,6 +223,12 @@ impl App {
             return;
         }
         if !self.native_render
+            && let Some(panel) = &mut self.help_panel
+        {
+            panel.draw(frame, area);
+            return;
+        }
+        if !self.native_render
             && let Some(panel) = &mut self.tree_panel
             && !panel.is_loading()
         {

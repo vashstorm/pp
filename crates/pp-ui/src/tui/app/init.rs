@@ -137,6 +137,7 @@ impl App {
             session_panel: None,
             tree_panel: None,
             context_panel: None,
+            help_panel: None,
             context_snapshot: None,
             plan_list_panel: None,
             plan_list_pending: None,

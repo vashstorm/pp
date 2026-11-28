@@ -96,6 +96,7 @@ impl App {
                     self.queue_menu = false;
                     // The interaction panel must receive keyboard input first.
                     self.plan_panel = None;
+                    self.help_panel = None;
                     self.ask_id = Some(request.call_id.clone());
                     let kind = match origin {
                         DialogOrigin::Ask => Some(desktop_notifications::Kind::Ask),

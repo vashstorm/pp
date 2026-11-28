@@ -17,7 +17,9 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     first.text("sqlite-input-accepted");
     first.ready();
     first.input("/help\r");
-    first.text("bash has no directory isolation");
+    first.text("Session & History");
+    first.input("\x1b");
+    first.text("sqlite-input-accepted");
     first.input("!printf sqlite-shell\r");
     bang_shell_wait_footer(&mut first, "SQLite shell finished normally", "Timeout:");
     bang_shell_wait_done(&mut first);
@@ -83,7 +85,9 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     let mut isolated = Pty::start_with_args(b.path(), home.path(), &[]);
     isolated.ready_model("fixture/primary");
     isolated.input("\x1b[A/help\r");
-    isolated.text("bash has no directory isolation");
+    isolated.text("Session & History");
+    isolated.input("\x1b");
+    isolated.text("▄▄▄██▀▀██");
     isolated.draft("");
     assert!(!isolated.parser.screen().contents().contains("sqlite-page-"));
     assert!(!isolated.parser.screen().contents().contains("sqlite multiline original"));

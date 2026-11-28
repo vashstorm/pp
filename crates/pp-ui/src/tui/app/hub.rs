@@ -455,6 +455,8 @@ impl App {
             && self.session_panel.is_none()
             && self.tree_panel.is_none()
             && self.mcp_panel.is_none()
+            && self.context_panel.is_none()
+            && self.help_panel.is_none()
             && !self.history_browser
     }
 

@@ -346,7 +346,7 @@ pub(super) fn paint_chrome(
                     palette::tool_border()
                 },
             )
-        } else if matches!(entry.body, EntryBody::Tips | EntryBody::Help(_)) {
+        } else if matches!(entry.body, EntryBody::Tips) {
             ("│", super::super::super::statusline::accent())
         } else {
             ("│", entry.kind.color())

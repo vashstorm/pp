@@ -154,19 +154,23 @@ fn file_and_effort_command_completion_and_diagnostics() {
     help_app.show_welcome = true;
     help_app.state = State::Ready;
     help_app.show_help();
-    let buffer = draw_buffer(&mut help_app, 100, 30);
-    let mut scrollback = Vec::new();
-    help_app
-        .conversation
-        .write_full_for_test(&mut scrollback, &buffer)
-        .unwrap();
-    let text = String::from_utf8_lossy(&scrollback);
+    assert!(help_app.help_panel.is_some());
+    assert!(help_app.needs_alternate());
+    assert!(help_app.show_welcome);
+    assert!(!help_app.conversation.has_entries());
+    let text = draw(&mut help_app, 100, 200);
     assert!(
         text.contains("Review source")
             && text.contains("Command load issues:")
             && text.contains("commands/broken.md: Invalid command metadata")
-            && text.contains("commands/dup.md: duplicate command name: /dup")
+            && text.contains("commands/dup.md: duplicate command name: /dup"),
+        "{text}"
     );
+    help_app.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(help_app.help_panel.is_none());
+    assert!(!help_app.needs_alternate());
+    assert!(help_app.show_welcome);
+    assert!(!help_app.conversation.has_entries());
 
     let mut eff = super::app();
     eff.state = State::Ready;

@@ -6,14 +6,23 @@ use anyhow::Context;
 
 impl App {
     pub(in crate::tui) fn show_help(&mut self) {
-        self.show_welcome = false;
-        self.conversation.append_help(&self.file_commands);
+        self.escape_tap.reset();
+        self.menu = None;
+        self.file_query = None;
+        self.menu_dismissed = true;
+        self.help_panel = Some(crate::tui::help::Panel::new(&self.file_commands));
+    }
+
+    pub(in crate::tui) fn close_help(&mut self) {
+        self.help_panel = None;
+        self.menu_dismissed = true;
     }
 
     pub(in crate::tui) fn shortcut_ready(&mut self) -> bool {
         if self.skills_pending
             || self.active_settings_tab().is_some()
             || self.plan_list_panel.is_some()
+            || self.help_panel.is_some()
         {
             return false;
         }
@@ -145,6 +154,7 @@ impl App {
         if self.skills_pending
             || self.skill_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
             || self.model_panel.is_some()
         {
             return false;

@@ -21,6 +21,7 @@ impl App {
             && self.session_panel.is_none()
             && self.tree_panel.is_none()
             && self.context_panel.is_none()
+            && self.help_panel.is_none()
             && self.plan_leave_confirmation.is_none()
             && (self.plan_list_panel.is_none() || self.plan_panel.is_some())
             && self.plan_panel.as_ref().is_none_or(|panel| {
@@ -829,6 +830,7 @@ impl App {
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
             || self.context_panel.is_some()
+            || self.help_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.plan_panel.is_some()
             || self.plan_leave_confirmation.is_some()

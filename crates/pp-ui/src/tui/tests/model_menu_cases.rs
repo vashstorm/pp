@@ -993,6 +993,12 @@ fn shortcuts_busy_repeats_help_and_ctrl_s_defaults() {
         let cursor = help_app.input.cursor();
         help_app.state = State::Running;
         help_app.handle(key(KeyCode::F(1)), &mut dirty);
+        assert!(help_app.help_panel.is_some());
+        assert!(help_app.needs_alternate());
+        assert!(!help_app.conversation.has_entries());
+        let top = draw(&mut help_app, 180, 40);
+        assert!(top.contains("Session & History") && top.contains("Esc close"));
+        help_app.handle(key(KeyCode::End), &mut dirty);
         let screen = draw(&mut help_app, 180, 40);
         assert!(screen.contains("Shift + Tab"));
         assert!(screen.contains(if cfg!(target_os = "macos") {
@@ -1000,6 +1006,13 @@ fn shortcuts_busy_repeats_help_and_ctrl_s_defaults() {
         } else {
             "Ctrl + P"
         }));
+        assert_eq!(help_app.input.lines(), &["未发送🙂"]);
+        assert_eq!(help_app.input.cursor(), cursor);
+        // Closing the help overlay with Esc restores the view without cancelling the running task.
+        help_app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(help_app.help_panel.is_none());
+        assert!(matches!(help_app.state, State::Running));
+        assert!(!help_app.conversation.has_entries());
         assert_eq!(help_app.input.lines(), &["未发送🙂"]);
         assert_eq!(help_app.input.cursor(), cursor);
         help_app.state = State::Ready;

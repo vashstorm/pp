@@ -153,8 +153,14 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     assert!(!pty.parser.screen().contents().contains("\u{e62a} "));
     assert!(!pty.parser.screen().contents().contains("Session reset."));
     pty.input("/help\r");
-    pty.text("bash has no directory isolation");
+    pty.text("Session & History");
+    assert!(pty.parser.screen().contents().contains("Esc close"));
     assert!(!pty.parser.screen().contents().contains("▄▄▄██▀▀██"));
+    pty.input("G");
+    pty.text("bash has no directory isolation");
+    pty.input("\x1b");
+    pty.text("▄▄▄██▀▀██");
+    assert!(!pty.parser.screen().contents().contains("Session & History"));
     pty.input("/quit\r");
     pty.finish();
     no_more(&server);

@@ -113,6 +113,9 @@ fn input_history_multiline_and_rejection() {
     rej.clear_input();
     rej.handle(Event::Paste("/help".into()), &mut dirty);
     rej.handle(key(KeyCode::Enter), &mut dirty);
+    assert!(rej.help_panel.is_some());
+    rej.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(rej.help_panel.is_none());
     rej.handle(Event::Paste("/new".into()), &mut dirty);
     rej.handle(key(KeyCode::Enter), &mut dirty);
     let (events, receiver) = mpsc::channel();
