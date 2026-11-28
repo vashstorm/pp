@@ -1,6 +1,7 @@
 //! 页签／高度计算与标题、选中摘要等纯布局辅助。
 
 use super::*;
+use crate::tui::transcript_style::tool_icon;
 
 impl Panel {
     pub(super) fn has_review(&self) -> bool {
@@ -12,13 +13,14 @@ impl Panel {
     }
 
     pub(super) fn title(&self) -> String {
-        match self.page {
+        let title = match self.page {
             Page::Question(index) if self.questions.questions.len() > 1 => {
                 format!("Ask · {}/{}", index + 1, self.questions.questions.len())
             }
             Page::Question(_) => "Ask".into(),
             Page::Review => "Ask · Submit".into(),
-        }
+        };
+        format!("{} {title}", tool_icon("ask"))
     }
 
     pub(super) fn selection_summary(&self) -> String {

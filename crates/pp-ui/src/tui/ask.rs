@@ -401,7 +401,7 @@ mod tests {
 
             let mut p2 = panel(vec![question("db", false, None, &["A", "B"])]);
             let s3 = render(&mut p2, 30, 3);
-            assert!(s3.contains("Ask") && !s3.contains("db"));
+            assert!(s3.contains("\u{f02d7} Ask") && !s3.contains("db"));
             assert!(render(&mut p2, 30, 1).starts_with('A'));
 
             let mut sq = question("confirm_commit", false, None, &["yes", "no"]);
@@ -412,14 +412,17 @@ mod tests {
             assert!(!screen.contains("confirm_commit") && !screen.contains("Tab/←/→"));
             assert_eq!(p3.overlay.unwrap().height, 8);
             let rows: Vec<_> = screen.lines().collect();
-            let title = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
+            let title = rows
+                .iter()
+                .position(|row| row.contains("╭ \u{f02d7} Ask"))
+                .unwrap();
             assert!(rows[title + 1].contains("Commit the changes?"));
             assert!(rows[title + 2].contains("󰐽 yes"));
 
             let mut custom_only = panel(vec![question("custom", false, None, &[])]);
             let cs = render(&mut custom_only, 80, 24);
             assert_eq!(custom_only.overlay.unwrap().height, 6);
-            assert!(cs.contains(OTHER_LABEL) && cs.contains("╭ Ask"));
+            assert!(cs.contains(OTHER_LABEL) && cs.contains("╭ \u{f02d7} Ask"));
         }
 
         {

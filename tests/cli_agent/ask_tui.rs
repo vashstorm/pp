@@ -193,14 +193,14 @@ fn ask_tui_start(server: &TestServer, home: &Path, project: &Path, protocol: &st
 fn ask_wait_panel(pty: &mut Pty, _question: &str) {
     pty.wait_for("ask panel opened", |screen| {
         let text = screen.contents();
-        text.contains("Other (type your own)") && text.contains("╭ Ask")
+        text.contains("Other (type your own)") && text.contains("╭ \u{f02d7} Ask")
     });
 }
 
 fn ask_wait_review(pty: &mut Pty) {
     pty.wait_for("ask review page", |screen| {
         let text = screen.contents();
-        text.contains("Submit")
+        text.contains("╭ \u{f02d7} Ask · Submit")
             && text.contains("Enter submit · Tab questions · Esc cancel")
     });
 }
@@ -230,7 +230,7 @@ fn ask_panel_find(screen: &vt100::Screen, needle: &str) -> (u16, u16) {
 }
 
 fn ask_page_active(screen: &vt100::Screen, index: usize, total: usize) -> bool {
-    screen.contents().contains(&format!("╭ Ask · {index}/{total} "))
+    screen.contents().contains(&format!("╭ \u{f02d7} Ask · {index}/{total} "))
 }
 
 fn ask_clear_draft(pty: &mut Pty) {
@@ -277,8 +277,8 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
                 "recommendation must be a display badge only\n{text}"
             );
             assert!(
-                text.contains("╭ Ask · 1/2 "),
-                "多题进度应显示在 Ask 标题中\n{text}"
+                ask_page_active(pty.parser.screen(), 1, 2),
+                "Ask 标题应显示图标与多题进度\n{text}"
             );
         }
 

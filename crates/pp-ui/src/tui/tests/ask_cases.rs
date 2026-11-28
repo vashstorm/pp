@@ -193,7 +193,10 @@ fn ask_layout_focus_submit_cancel_and_late_requests() {
             .iter()
             .position(|row| row.contains("latest message stays visible"))
             .unwrap();
-        let panel = rows.iter().position(|row| row.contains("╭ Ask")).unwrap();
+        let panel = rows
+            .iter()
+            .position(|row| row.contains("╭ \u{f02d7} Ask"))
+            .unwrap();
         assert!(message < panel);
         let bottom = rows.iter().position(|row| row.contains('╰')).unwrap();
         assert_eq!(bottom - panel + 1, 8);
