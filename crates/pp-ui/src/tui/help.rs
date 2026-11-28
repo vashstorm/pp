@@ -1,8 +1,8 @@
 use super::statusline::accent;
 use crate::{
     commands::{
-        CommandCategory, FileCommands, HELP_USAGE_COLUMN, SHELL_COMMAND_DESCRIPTION,
-        SHELL_COMMAND_USAGE, category_specs,
+        BASH_DISPLAY_INTRO, BASH_DISPLAY_ROWS, BASH_DISPLAY_TITLE, CommandCategory, FileCommands,
+        HELP_USAGE_COLUMN, SHELL_COMMAND_DESCRIPTION, SHELL_COMMAND_USAGE, category_specs,
     },
     shortcuts::platform_text,
 };
@@ -246,6 +246,15 @@ pub(super) fn lines(width: u16, block: &HelpBlock) -> Vec<Line<'static>> {
         }
     }
 
+    push_section_header(&mut lines, BASH_DISPLAY_TITLE, first(), width);
+    lines.push(Line::styled(
+        BASH_DISPLAY_INTRO,
+        Style::default().fg(muted()),
+    ));
+    for &(display, meaning) in BASH_DISPLAY_ROWS {
+        push_command_row(&mut lines, display, meaning, width);
+    }
+
     if !block.entries.is_empty() {
         push_section_header(&mut lines, "Custom Commands", first(), width);
         for (usage, description) in &block.entries {
@@ -311,6 +320,7 @@ mod tests {
             "Models & Thinking",
             "Workflow & Execution",
             "Settings & Extensions",
+            "Bash Command Display",
             "Custom Commands",
             "Command load issues:",
             "Keybindings",
@@ -362,6 +372,11 @@ mod tests {
             narrow_text
                 .iter()
                 .any(|line| line.starts_with("/new — Reset the session"))
+        );
+        assert!(
+            narrow_text
+                .iter()
+                .any(|line| line.starts_with("⇡ first 10 — | head -n 10 "))
         );
     }
 }

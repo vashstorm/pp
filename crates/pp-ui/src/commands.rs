@@ -720,6 +720,71 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
 pub(crate) const SHELL_COMMAND_USAGE: &str = "!command";
 pub(crate) const SHELL_COMMAND_DESCRIPTION: &str =
     "Run a local shell command without sending it to the model";
+pub(crate) const BASH_DISPLAY_TITLE: &str = "Bash Command Display";
+pub(crate) const BASH_DISPLAY_INTRO: &str = "The Bash tool card uses these display shortcuts. Enter commands using the Bash syntax shown here.";
+pub(crate) const BASH_DISPLAY_ROWS: &[(&str, &str)] = &[
+    ("and", "&& runs the next command only on success"),
+    ("or", "|| runs the next command only on failure"),
+    ("not", "! inverts the exit status or test result"),
+    ("spawn", "& runs the command in the background"),
+    ("may fail", "|| true or || : supplies a successful fallback"),
+    ("→", "| pipes stdout to the next command"),
+    ("→&", "2>&1 | pipes stdout and stderr to the next command"),
+    ("⇡ first 10", "| head -n 10 keeps the first 10 lines"),
+    ("⇣ last 10", "| tail -n 10 keeps the last 10 lines"),
+    (
+        "+err",
+        "2>&1 sends stderr to the same destination as stdout",
+    ),
+    (
+        "> / >> / <",
+        "Redirect stdout to a file, append to a file, or read stdin from a file",
+    ),
+    (
+        "󱙍 / 󱒼 / 󰖁",
+        ">/dev/null, 2>/dev/null, and &>/dev/null discard stdout, stderr, or both",
+    ),
+    (
+        "⟵ … ↓",
+        "<<EOF reads a here-document shown below the command",
+    ),
+    (
+        "‹…› / ⟦… ↓⟧",
+        "A highlighted argument shown inline or below the command",
+    ),
+    ("«EOF»", "The delimiter of a here-document"),
+    (
+        "timed / ⏱ 5s",
+        "time measures runtime, and timeout 5 limits it",
+    ),
+    ("print(…)", "echo or printf writes output"),
+    ("cwd DIR", "cd DIR changes the working directory"),
+    (
+        "is_file(…) / is_dir(…)",
+        "test -f or test -d checks for a regular file or directory",
+    ),
+    (
+        "== / != / < / <= / > / >=",
+        "Numeric test operators -eq, -ne, -lt, -le, -gt, and -ge",
+    ),
+    (
+        "f\"{name}\" / capture(…)",
+        "Variable interpolation such as \"$name\" or command substitution with $(…)",
+    ),
+    (
+        "▶ / ×",
+        "A running command or a failure marker beside a command or pipeline stage",
+    ),
+    ("↻ N", "The number of loop iterations"),
+    (
+        "⇅ / ✎ / ×",
+        "Badges for network access, changes, or potentially destructive commands",
+    ),
+    (
+        "⇪ / ⇉ / ◆",
+        "Badges for privilege or permission changes, Docker operations, or credential access",
+    ),
+];
 pub(crate) const HELP_USAGE_COLUMN: usize = 28;
 
 fn spec_order(name: &str) -> usize {
@@ -772,8 +837,7 @@ fn format_help_row(usage: &str, description: &str) -> String {
     }
 }
 
-/// Command listing: `COMMANDS` is already trimmed per build, so non-dev/test builds
-/// contain no `/test-*` entries.
+/// Line-mode help. The command list is already trimmed per build.
 pub(crate) fn help(files: &FileCommands) -> String {
     let mut lines = vec!["Help:".to_owned()];
     for &category in CommandCategory::ALL {
@@ -792,6 +856,12 @@ pub(crate) fn help(files: &FileCommands) -> String {
                 SHELL_COMMAND_DESCRIPTION,
             ));
         }
+    }
+    lines.push(String::new());
+    lines.push(BASH_DISPLAY_TITLE.to_owned());
+    lines.push(format!("  {BASH_DISPLAY_INTRO}"));
+    for &(display, meaning) in BASH_DISPLAY_ROWS {
+        lines.push(format_help_row(display, meaning));
     }
     if !files.entries.is_empty() {
         lines.push(String::new());

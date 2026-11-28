@@ -324,9 +324,15 @@ fn slash_help_and_think_sandbox_dump_args() {
         "Models & Thinking",
         "Workflow & Execution",
         "Settings & Extensions",
+        "Bash Command Display",
     ] {
         assert!(lines.contains(&title), "missing section {title}\n{text}");
     }
+    assert!(lines.iter().any(|line| {
+        line.trim_start()
+            .strip_prefix("and ")
+            .is_some_and(|meaning| meaning.trim_start().starts_with("&& "))
+    }));
     for name in TEST_COMMAND_NAMES
         .iter()
         .copied()
