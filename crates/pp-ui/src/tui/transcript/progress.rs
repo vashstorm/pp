@@ -30,7 +30,6 @@ impl Transcript {
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
-                | AgentEvent::ToolPipelineSnapshot { .. }
                 | AgentEvent::ToolShellSnapshot { .. }
                 | AgentEvent::SubagentResultsInjected { .. }
                 | AgentEvent::FileChanged { .. }
@@ -478,38 +477,9 @@ impl Transcript {
                     }
                 }
             }
-            AgentEvent::ToolPipelineSnapshot { id, pipes, preview } => {
-                if let Some(index) = self.tool_index(&id) {
-                    let replaying = self.replaying;
-                    let entry = &mut self.entries[index];
-                    if entry.kind == EntryKind::Bash && entry.result.is_none() {
-                        if entry.pipeline_preview != preview {
-                            entry.pipeline_preview = preview;
-                            entry.layout = None;
-                        }
-                        let badge =
-                            pp_workspace::output::pipes_status(&pipes).map(|status| PipesBadge {
-                                status,
-                                restored: replaying,
-                            });
-                        if entry.pipes_badge != badge {
-                            entry.pipes_badge = badge;
-                            entry.update_bash_footer(
-                                entry
-                                    .started
-                                    .filter(|_| !replaying)
-                                    .map(|started| started.elapsed()),
-                            );
-                            entry.layout = None;
-                            entry.display_title = None;
-                        }
-                    }
-                }
-            }
             AgentEvent::ToolOutput { id, stream, text } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
-                    entry.pipeline_preview = None;
                     if entry.kind == EntryKind::Bash && entry.result.is_some() {
                         // Background snapshots replace the accumulated output instead of appending a duplicate of the previous body.
                         entry.text.clear();
@@ -528,7 +498,6 @@ impl Transcript {
             AgentEvent::ToolOutputSnapshot { id, output } => {
                 if let Some(index) = self.tool_index(&id) {
                     let entry = &mut self.entries[index];
-                    entry.pipeline_preview = None;
                     if entry.tool.as_deref() == Some("wait") {
                         if let Ok(mut snapshot) = serde_json::from_str::<Value>(&output) {
                             mark_injected_jobs(&mut snapshot, &self.injected_subagent_runs);
@@ -584,7 +553,6 @@ impl Transcript {
                     }
                     entry.stdout.clear();
                     entry.stderr.clear();
-                    entry.pipeline_preview = None;
                     if entry.tool.as_deref() == Some("lsp") {
                         // The tool result is the inline authority; structured diagnostics render directly,
                         // so the readable body of the same content is not repeated; other actions show content.
@@ -655,8 +623,6 @@ impl Transcript {
                     }
                     entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {
-                        // The final result wins over in-flight snapshots; clear the entry when there is no real pipeline.
-                        entry.sync_pipes_badge(self.replaying);
                         entry.update_bash_footer(
                             entry
                                 .started

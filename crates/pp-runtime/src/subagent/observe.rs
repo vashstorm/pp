@@ -49,9 +49,7 @@ pub struct HubAgent {
 pub struct HubSnapshot {
     #[serde(skip)]
     pub output_previews: Vec<ObservedRecord>,
-    /// Most recent pipeline stage preview per subagent; bounded separately from the main output preview.
-    #[serde(skip)]
-    pub pipeline_previews: Vec<ObservedRecord>,
+    /// Most recent command display per subagent, kept independently of its main output.
     #[serde(skip)]
     pub shell_previews: Vec<ObservedRecord>,
     pub agents: Vec<HubAgent>,
@@ -410,13 +408,10 @@ impl Inner {
             return;
         }
         if let Some(
-            event @ (AgentEvent::ToolOutputSnapshot { .. }
-            | AgentEvent::ToolPipelineSnapshot { .. }
-            | AgentEvent::ToolShellSnapshot { .. }),
+            event @ (AgentEvent::ToolOutputSnapshot { .. } | AgentEvent::ToolShellSnapshot { .. }),
         ) = event
         {
             let previews = match event {
-                AgentEvent::ToolPipelineSnapshot { .. } => &self.pipeline_previews,
                 AgentEvent::ToolShellSnapshot { .. } => &self.shell_previews,
                 _ => &self.output_previews,
             };
@@ -441,7 +436,6 @@ impl Inner {
             Some(AgentEvent::ToolStarted { .. } | AgentEvent::ToolFinished { .. })
         ) {
             lock(&self.output_previews).remove(agent_id);
-            lock(&self.pipeline_previews).remove(agent_id);
             lock(&self.shell_previews).remove(agent_id);
         }
         let gate = self.append_lock(agent_id);
@@ -589,10 +583,6 @@ impl Binding {
             .collect();
         HubSnapshot {
             output_previews: lock(&self.inner.output_previews)
-                .values()
-                .cloned()
-                .collect(),
-            pipeline_previews: lock(&self.inner.pipeline_previews)
                 .values()
                 .cloned()
                 .collect(),

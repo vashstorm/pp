@@ -281,7 +281,6 @@ impl Projection {
             AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ToolOutputSnapshot { .. }
-            | AgentEvent::ToolPipelineSnapshot { .. }
             | AgentEvent::ToolShellSnapshot { .. }
             | AgentEvent::AutoReviewStarted { .. }
             | AgentEvent::AutoReviewFinished { .. } => {}

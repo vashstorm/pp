@@ -37,9 +37,7 @@ mod integration {
                 }
                 seed_session(&mut agent, "second history boundary");
                 let source = agent.workflow.todo_plan_id.clone();
-                let before_navigation = agent.pipe_store();
                 agent.navigate_tree(&target).unwrap();
-                assert!(!before_navigation.same_instance(&agent.pipe_store()));
                 if plan_bound {
                     assert_eq!(agent.workflow.todo_plan_id, source);
                     assert_eq!(
@@ -69,9 +67,6 @@ mod integration {
                         TodoStatus::InProgress
                     );
                 }
-                let before_reset = agent.pipe_store();
-                agent.reset();
-                assert!(!before_reset.same_instance(&agent.pipe_store()));
             }
         }
 

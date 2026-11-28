@@ -640,9 +640,6 @@ impl Agent {
         self.tools.permission.clear_session();
         self.journal = journal;
         self.tools.artifacts = Default::default();
-        // The restored session is the new effective root; no promise is made that old temporary
-        // pipe bodies exist across a restore.
-        self.tools.reset_pipe_store();
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }

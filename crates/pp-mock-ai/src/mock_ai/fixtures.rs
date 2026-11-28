@@ -21,7 +21,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::MockEndpoint;
-use pp_bash::PipeStore;
 use pp_runtime::{agent::Agent, subagent::Binding};
 use pp_tools::Tools;
 
@@ -94,7 +93,6 @@ pub struct MockTestSnapshot {
     pub default_think_level: ThinkLevel,
     pub usage: ContextUsage,
     pub subagent_control: Arc<Mutex<Option<Binding>>>,
-    pub pipe_store: PipeStore,
 }
 
 pub enum MockTestEvent {
@@ -364,7 +362,6 @@ fn run_scenario(
                 default_think_level: agent.default_think_level(),
                 usage: agent.context_usage()?,
                 subagent_control: Arc::clone(&agent.subagent_control),
-                pipe_store: agent.pipe_store(),
             }));
             match agent.run(&scenario.prompt, cancellation, None, &mut |event| {
                 emit(MockTestEvent::Progress(event))

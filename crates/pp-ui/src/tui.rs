@@ -24,7 +24,6 @@ mod mock_test;
 mod model;
 mod notification;
 mod permissions;
-mod pipes;
 mod plan;
 mod plan_leave;
 mod plan_list;
@@ -52,7 +51,7 @@ mod welcome;
 mod worker_bridge;
 
 use worker_bridge::{
-    ModelListing, ResumeState, WorkerCommand, WorkerEvent, publish_pipe_store, publish_prepared,
+    ModelListing, ResumeState, WorkerCommand, WorkerEvent, publish_prepared,
     publish_transition_failure, push_runtime_snapshot, push_workflow_snapshot, request_ask,
     usage_snapshot,
 };
@@ -668,17 +667,6 @@ struct App {
     hub_preload_error: Option<String>,
     hub_sends: BTreeMap<u64, app::hub::HubSend>,
     child_drafts: subagents::Drafts,
-    /// Temp pipe registry of the root session most recently published by the worker;
-    /// the panel uses it to detect a root switch.
-    pipe_store: Option<pp_bash::PipeStore>,
-    /// Root session instance generation; increments whenever `same_instance` reports a
-    /// root switch.
-    pipe_store_epoch: u64,
-    pipes_panel: Option<pipes::Panel>,
-    pipes_worker: Option<pipes::Worker>,
-    /// Panel view generation; increments when a run/stream is selected or the panel
-    /// closes, and stale replies are dropped immediately.
-    pipes_view_epoch: u64,
     plan_list_panel: Option<plan_list::Panel>,
     // The follow-up step a list action runs after reading the selection.
     plan_list_pending: Option<plan_list::PendingOp>,

@@ -1,4 +1,4 @@
-//! Tool-side runtime handles (LSP, background cleanup, temporary pipes) and the user shell entry point.
+//! Tool-side runtime handles (LSP and background cleanup) and the user shell entry point.
 use super::Agent;
 use anyhow::{Result, ensure};
 use pp_core::cancellation::CancellationToken;
@@ -90,11 +90,6 @@ impl Agent {
 
     pub fn background_cleanup(&self) -> pp_bash::BackgroundCleanup {
         self.tools.background_cleanup()
-    }
-
-    /// Temporary pipe registry of the root session; subagents share the same instance.
-    pub fn pipe_store(&self) -> pp_bash::PipeStore {
-        self.tools.pipe_store()
     }
 
     pub fn workflow(&self) -> &pp_core::plan::WorkflowState {

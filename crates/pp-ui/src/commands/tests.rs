@@ -315,7 +315,7 @@ fn slash_debug_mock_and_web_search_commands_parse() {
 }
 
 #[test]
-fn slash_help_and_think_pipes_sandbox_dump_args() {
+fn slash_help_and_think_sandbox_dump_args() {
     let text = help(&FileCommands::default());
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.first().copied(), Some("Help:"));
@@ -391,31 +391,7 @@ fn slash_help_and_think_pipes_sandbox_dump_args() {
     ] {
         assert!(parse(input, &files).is_err());
     }
-    for input in ["/pipes", " /pipes  ", "/pipes\t"] {
-        assert_eq!(
-            parse(input, &files).unwrap(),
-            Some(Command::Pipes(None)),
-            "{input}"
-        );
-    }
-    let run = "0123456789abcdef0123456789abcdef";
-    assert_eq!(
-        parse(&format!(" /pipes {run} "), &files).unwrap(),
-        Some(Command::Pipes(Some(run)))
-    );
-    for input in [
-        "/pipes 0123456789ABCDEF0123456789abcdef",
-        "/pipes 0123456789abcdef0123456789abcde",
-        "/pipes 0123456789abcdef0123456789abcdef0",
-        "/pipes 0123456789abcdef0123456789abcdeg",
-        "/pipes two ids",
-    ] {
-        assert_eq!(
-            parse(input, &files).unwrap_err().to_string(),
-            "usage: /pipes [run-id]",
-            "{input}"
-        );
-    }
+    assert_eq!(parse("/pipes", &files).unwrap(), Some(Command::Unknown));
     assert_eq!(
         parse("/sandbox", &files).unwrap(),
         Some(Command::Sandbox(None))

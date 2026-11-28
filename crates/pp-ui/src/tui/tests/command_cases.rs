@@ -512,34 +512,7 @@ fn notifications_task_startup_and_filtering() {
 }
 
 #[test]
-fn retry_notice_and_pipe_store_epoch() {
-    let mut pipe_app = app();
-    pipe_app.state = State::Ready;
-    let first = pp_bash::PipeStore::new();
-    pipe_app.receive_event_for_test(WorkerEvent::PipeStoreBound {
-        store: first.clone(),
-    });
-    assert_eq!(pipe_app.pipe_store_epoch, 1);
-    assert!(
-        pipe_app
-            .pipe_store
-            .as_ref()
-            .is_some_and(|s| s.same_instance(&first))
-    );
-    pipe_app.receive_event_for_test(WorkerEvent::PipeStoreBound { store: first });
-    assert_eq!(pipe_app.pipe_store_epoch, 1);
-    let second = pp_bash::PipeStore::new();
-    pipe_app.receive_event_for_test(WorkerEvent::PipeStoreBound {
-        store: second.clone(),
-    });
-    assert_eq!(pipe_app.pipe_store_epoch, 2);
-    assert!(
-        pipe_app
-            .pipe_store
-            .as_ref()
-            .is_some_and(|s| s.same_instance(&second))
-    );
-
+fn retry_notice() {
     let mut retry_app = app();
     let (events, receiver) = mpsc::channel();
     retry_app.events = Some(receiver);

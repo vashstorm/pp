@@ -171,188 +171,63 @@ fn bash_footer_timeout_and_elapsed_border() {
 }
 
 #[test]
-fn bash_pipeline_fragments_update_card_and_final_output_replaces_preview() {
+fn bash_footer_tracks_pipeline_failures_in_live_replayed_and_background_results() {
+    let failures = json!({"count":1,"stages":[{"pipeline":1,"stage":1,"status":7}]});
     let mut transcript = Transcript::new();
     tool(
         &mut transcript,
         "p",
         "bash",
-        json!({"command":"work | tail -30"}),
+        json!({"command":"work | tail -n 1"}),
     );
-    for preview in ["growth", "growth-two", "growth-three"] {
-        transcript.progress(AgentEvent::ToolPipelineSnapshot {
-            id: "p".into(),
-            pipes: json!({}),
-            preview: Some(preview.into()),
-        });
-        let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
-        assert_eq!(text.matches(preview).count(), 1, "{text}");
-        assert_eq!(transcript.entries[0].status, EntryStatus::Running);
-    }
     transcript.progress(AgentEvent::ToolOutputSnapshot {
         id: "p".into(),
-        output: "real-output".into(),
-    });
-    let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
-    assert!(
-        text.contains("real-output") && !text.contains("growth-three"),
-        "{text}"
-    );
-    transcript.progress(AgentEvent::ToolPipelineSnapshot {
-        id: "p".into(),
-        pipes: json!({}),
-        preview: Some("keep-growing".into()),
-    });
-    let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
-    assert!(text.contains("keep-growing"), "{text}");
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "p".into(),
-        result: json!({"ok":true,"exit_code":0,"output":"final-result\n"}),
-    });
-    transcript.progress(AgentEvent::ToolPipelineSnapshot {
-        id: "p".into(),
-        pipes: json!({}),
-        preview: Some("late-fragment".into()),
-    });
-    let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
-    assert!(text.contains("final-result"), "{text}");
-    assert!(
-        !text.contains("keep-growing") && !text.contains("late-fragment"),
-        "{text}"
-    );
-}
-
-#[test]
-fn bash_footer_tracks_pipes_restored_and_background_results() {
-    const RUN: &str = "0123456789abcdef0123456789abcdef";
-    let mut transcript = Transcript::new();
-    tool(
-        &mut transcript,
-        "p",
-        "bash",
-        json!({"command":"{ printf 'hidden\\nvisible\\n'; exit 7; } | tail -n 1"}),
-    );
-    transcript.progress(AgentEvent::ToolPipelineSnapshot {
-        id: "p".into(),
-        preview: None,
-        pipes: json!({
-            "run_id": RUN,
-            "uri": format!("pipe://{RUN}"),
-            "pipelines": [{"id": 1, "status": null, "stages": []}],
-            "streams": [],
-            "nonzero_stages": 1,
-            "incomplete": false,
-        }),
-    });
-    let buffer = render(&mut transcript, 120, 20);
-    let text = screen(&buffer);
-    assert!(text.contains("Non-zero stage results: 1"), "{text}");
-    assert!(text.contains("Pipes: /pipes (F8)"), "{text}");
-    let entry = &transcript.entries[0];
-    assert!(!entry.text.contains("Non-zero") && !entry.text.contains("/pipes"));
-    assert_eq!(entry.footer_warning, "Non-zero stage results: 1");
-    let row = text
-        .lines()
-        .position(|line| line.contains("Non-zero"))
-        .unwrap() as u16;
-    let column = text
-        .lines()
-        .nth(usize::from(row))
-        .unwrap()
-        .find("Non-zero")
-        .unwrap() as u16;
-    assert_eq!(buffer[(column, row)].fg, palette::accent());
-
-    transcript.progress(AgentEvent::ToolFinished {
-        id: "p".into(),
-        result: json!({
-            "ok": true,
-            "exit_code": 0,
-            "stdout": "visible\n",
-            "pipes": {
-                "run_id": RUN,
-                "uri": format!("pipe://{RUN}"),
-                "pipelines": [{"id": 1, "status": 0, "stages": []}],
-                "nonzero_stages": 0,
-                "incomplete": false,
-            },
-        }),
+        output: "live-output".into(),
     });
     let text = screen(&render(&mut transcript, 120, 20));
-    assert!(text.contains("Pipes: /pipes (F8)"), "{text}");
-    assert!(!text.contains("Non-zero stage results"), "{text}");
-    assert!(transcript.entries[0].footer_warning.is_empty());
-    assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
+    assert!(text.contains("live-output"), "{text}");
+    assert!(!text.contains("Non-zero pipeline stages"), "{text}");
 
-    let mut plain = Transcript::new();
-    tool(&mut plain, "old", "bash", json!({"command":"echo old"}));
-    plain.progress(AgentEvent::ToolFinished {
-        id: "old".into(),
-        result: json!({"ok":true,"exit_code":0,"stdout":"old\n"}),
-    });
-    let text = screen(&render(&mut plain, 100, 20));
-    assert!(text.contains("Wall:"), "{text}");
+    let finish = AgentEvent::ToolFinished {
+        id: "p".into(),
+        result: json!({
+            "ok":true,"exit_code":0,"output":"final-output","pipeline_failures":failures
+        }),
+    };
+    transcript.progress(finish.clone());
+    let buffer = render(&mut transcript, 120, 20);
+    let text = screen(&buffer);
     assert!(
-        !text.contains("Pipes:") && !text.contains("/pipes"),
+        text.contains("final-output") && !text.contains("live-output"),
         "{text}"
     );
-    assert!(plain.entries[0].footer_warning.is_empty());
+    let (row, column) = text
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find("Non-zero pipeline stages: 1")
+                .map(|column| (row, column))
+        })
+        .expect("pipeline warning in footer");
+    assert_eq!(buffer[(column as u16, row as u16)].fg, palette::accent());
+    assert_eq!(transcript.entries[0].status, EntryStatus::Complete);
 
-    const RESTORED_RUN: &str = "fedcba9876543210fedcba9876543210";
     let mut restored = Transcript::new();
     let now = Instant::now();
     restored.progress_recorded(
         AgentEvent::ToolStarted {
-            id: "restored".into(),
+            id: "p".into(),
             name: "bash".into(),
-            arguments: json!({"command":"false | true"}).to_string(),
+            arguments: json!({"command":"work | tail -n 1"}).to_string(),
         },
         Some(1_000),
         2_000,
         now,
     );
-    restored.progress_recorded(
-        AgentEvent::ToolFinished {
-            id: "restored".into(),
-            result: json!({
-                "ok": true,
-                "exit_code": 0,
-                "stdout": "",
-                "pipes": {
-                    "run_id": RESTORED_RUN,
-                    "uri": format!("pipe://{RESTORED_RUN}"),
-                    "pipelines": [{"id": 1, "status": 0, "stages": []}],
-                    "nonzero_stages": 1,
-                    "incomplete": false,
-                },
-            }),
-        },
-        Some(1_500),
-        2_000,
-        now,
-    );
-    let entry = &restored.entries[0];
-    assert_eq!(entry.status, EntryStatus::Complete);
-    assert!(
-        entry.footer.contains("Pipes: /pipes (F8)"),
-        "{}",
-        entry.footer
-    );
-    assert_eq!(
-        entry.pipes_badge.as_ref().unwrap().status.uri,
-        format!("pipe://{RESTORED_RUN}")
-    );
-    assert!(
-        entry.footer.contains("temporary pipe bodies unavailable"),
-        "{}",
-        entry.footer
-    );
-    assert_eq!(entry.footer_warning, "Non-zero stage results: 1");
-    let text = screen(&render(&mut restored, 140, 20));
-    assert!(text.contains("Non-zero stage results: 1"), "{text}");
-    assert!(text.contains("temporary pipe bodies unavailable"), "{text}");
+    restored.progress_recorded(finish, Some(1_500), 2_000, now);
+    let text = screen(&render(&mut restored, 120, 20));
+    assert!(text.contains("Non-zero pipeline stages: 1"), "{text}");
 
-    const BG_RUN: &str = "aaaabbbbccccddddaaaabbbbccccdddd";
     let mut bg = Transcript::new();
     tool(
         &mut bg,
@@ -362,21 +237,11 @@ fn bash_footer_tracks_pipes_restored_and_background_results() {
     );
     bg.progress(AgentEvent::ToolFinished {
         id: "bg".into(),
-        result: json!({
-            "ok": true,
-            "task_id": "task-1",
-            "status": "running",
-            "exit_code": null,
-            "pipes": {
-                "run_id": BG_RUN,
-                "uri": format!("pipe://{BG_RUN}"),
-                "pipelines": [{"id": 1, "status": null, "stages": []}],
-                "nonzero_stages": 0,
-            },
-        }),
+        result: json!({"ok":true,"task_id":"task-1","status":"running","exit_code":null}),
     });
-    assert!(bg.entries[0].footer.contains("Pipes: /pipes (F8)"));
-    assert!(bg.entries[0].footer_warning.is_empty());
+    let text = screen(&render(&mut bg, 120, 20));
+    assert!(text.contains("Task task-1: running"), "{text}");
+    assert!(!text.contains("Non-zero pipeline stages"), "{text}");
 
     tool(&mut bg, "wait", "wait", json!({}));
     bg.progress(AgentEvent::ToolFinished {
@@ -384,41 +249,16 @@ fn bash_footer_tracks_pipes_restored_and_background_results() {
         result: json!({
             "ok": true,
             "background_results": [{
-                "task_id": "task-1",
-                "status": "exited",
-                "exit_code": 0,
-                "output": "last\n",
-                "pipes": {
-                    "run_id": BG_RUN,
-                    "uri": format!("pipe://{BG_RUN}"),
-                    "pipelines": [{"id": 1, "status": 0, "stages": []}],
-                    "nonzero_stages": 1,
-                    "incomplete": true,
-                },
+                "task_id":"task-1","status":"exited","exit_code":0,"output":"last",
+                "pipeline_failures":failures,
             }],
         }),
     });
-    assert_eq!(
-        bg.entries[0].footer_warning,
-        "Non-zero stage results: 1 · stage output incomplete"
+    let text = screen(&render(&mut bg, 120, 20));
+    assert!(
+        text.contains("Non-zero pipeline stages: 1") && text.contains("last"),
+        "{text}"
     );
-    assert!(bg.entries[0].footer.contains("Task task-1"));
-    assert!(!bg.entries[0].text.contains("/pipes"));
-
-    let mut plain_bg = Transcript::new();
-    tool(
-        &mut plain_bg,
-        "bg",
-        "bash",
-        json!({"command":"serve","mode":"background"}),
-    );
-    plain_bg.progress(AgentEvent::ToolFinished {
-        id: "bg".into(),
-        result: json!({"ok":true,"task_id":"task-1","status":"running","exit_code":null}),
-    });
-    let text = screen(&render(&mut plain_bg, 80, 20));
-    assert!(text.contains("Task task-1: running"));
-    assert!(!text.contains("Timeout:") && !text.contains("Exit:"));
 }
 
 #[test]

@@ -87,9 +87,14 @@ impl Target {
 
     pub(in crate::tools) fn local_path(&self, cwd: &Path) -> Option<PathBuf> {
         let resource = self.is_url()
-            || ["skill://", "artifact://", "pipe://", "agent://"]
-                .iter()
-                .any(|prefix| self.source.starts_with(prefix));
+            || [
+                "skill://",
+                "artifact://",
+                super::super::LEGACY_PIPE_URI,
+                "agent://",
+            ]
+            .iter()
+            .any(|prefix| self.source.starts_with(prefix));
         if resource {
             return None;
         }
@@ -111,7 +116,7 @@ impl Target {
         if !web
             && !path.starts_with("skill://")
             && !path.starts_with("artifact://")
-            && !path.starts_with("pipe://")
+            && !path.starts_with(super::super::LEGACY_PIPE_URI)
             && !path.starts_with("agent://")
             && cwd.join(path).symlink_metadata().is_ok()
         {

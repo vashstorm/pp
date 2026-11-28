@@ -5,7 +5,7 @@
 //! supervised by [`super::supervisor::Supervisor`]; this module only owns the logical shell, the
 //! temporary directory, logical FDs and output draining.
 
-use super::streams::{PipeRun, RunEnd};
+use super::observation::Observer;
 use super::supervisor::Supervisor;
 use anyhow::{Context, Result};
 use brush_builtins::{BuiltinSet, default_builtins};
@@ -57,7 +57,7 @@ pub(crate) struct HostConfig<'a> {
     /// `Stopped`.
     pub(crate) stop: &'a CancellationToken,
     pub(crate) umask: u32,
-    pub(crate) pipes: &'a PipeRun,
+    pub(crate) observer: &'a Arc<Observer>,
     pub(crate) sandbox: Option<&'a Arc<Policy>>,
 }
 
@@ -160,10 +160,10 @@ pub(crate) fn run_host(
     sink: Arc<Mutex<OutputSink>>,
     emit: Option<&mut dyn FnMut(AgentEvent)>,
 ) -> Result<HostOutcome> {
-    let pipes = config.pipes.clone();
+    let observer = config.observer;
     let result = run_host_inner(config, sink, emit);
-    if result.is_err() && !pipes.is_finished() {
-        pipes.finish(RunEnd::interrupted("host_setup_failed"));
+    if result.is_err() {
+        observer.shell.finish();
     }
     result
 }
@@ -271,14 +271,8 @@ fn run_host_inner(
             None => anyhow::Error::new(cleanup),
         });
     }
-    let run_end = match termination {
-        Termination::Exited => RunEnd::exited(exit_code),
-        Termination::TimedOut => RunEnd::interrupted("timed_out"),
-        Termination::Cancelled => RunEnd::interrupted("cancelled"),
-        Termination::Stopped => RunEnd::interrupted("stopped"),
-    };
-    config.pipes.finish(run_end);
-    if let Some(snapshot) = config.pipes.shell_snapshot()
+    config.observer.shell.finish();
+    if let Some(snapshot) = config.observer.shell.snapshot()
         && let Some(callback) = emit.as_mut()
     {
         (*callback)(AgentEvent::ToolShellSnapshot {
@@ -407,21 +401,20 @@ async fn run_interpreter(
     // The supervisor cancels this token on deadline/cancellation/explicit stop; the core exits
     // cooperatively at its boundaries.
     params.set_cancel_token(supervisor.execution_token());
-    params.set_pipeline_observer(config.pipes.observer());
+    params.set_pipeline_observer(config.observer.clone());
 
     let run_result = {
         let source = SourceInfo::from("-c");
         // tokio's select!/pin! need the macros feature; this uses time plus std::pin only.
         let mut run = std::pin::pin!(shell.run_string(config.command, &source, &params));
-        let mut last_pipe_revision = config.pipes.revision();
         let mut last_shell_revision = 0;
         loop {
             match tokio::time::timeout(PREVIEW_INTERVAL, run.as_mut()).await {
                 Ok(outcome) => break outcome,
                 Err(_) => {
-                    let shell_revision = config.pipes.shell_revision();
+                    let shell_revision = config.observer.shell.revision();
                     if shell_revision != last_shell_revision {
-                        if let Some(snapshot) = config.pipes.shell_snapshot()
+                        if let Some(snapshot) = config.observer.shell.snapshot()
                             && let Some(callback) = emit.as_mut()
                         {
                             (*callback)(AgentEvent::ToolShellSnapshot {
@@ -430,17 +423,6 @@ async fn run_interpreter(
                             });
                         }
                         last_shell_revision = shell_revision;
-                    }
-                    let pipe_revision = config.pipes.revision();
-                    if pipe_revision != last_pipe_revision {
-                        if let Some(callback) = emit.as_mut() {
-                            (*callback)(AgentEvent::ToolPipelineSnapshot {
-                                id: config.call_id.to_owned(),
-                                pipes: config.pipes.pipes_json(),
-                                preview: config.pipes.preview(),
-                            });
-                        }
-                        last_pipe_revision = pipe_revision;
                     }
                     let changed = shared.dirty.swap(false, Ordering::AcqRel);
                     if changed && emit.is_some() {

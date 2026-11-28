@@ -247,7 +247,6 @@ fn hub_shows_stable_placeholders_while_loading_and_switches_on_batch() {
     let mut drafts = Drafts::default();
     let snapshot = HubSnapshot {
         output_previews: vec![],
-        pipeline_previews: vec![],
         shell_previews: vec![],
         agents: vec![HubAgent {
             record: Record {

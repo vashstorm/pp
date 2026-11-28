@@ -18,7 +18,7 @@ MUST use edit for surgical edits. NEVER use sed, perl, or python via bash to iss
 {{#if has_writes}}write/edit are atomic per call and default to workspace paths (including `/tmp`); writing `.git`/`.agents`/`.pp` or outside cwd may require approval outside `danger-full-access`, and symlinks are rejected.{{/if}}
 {{#if has_bash}}
 Use bash for real binaries, builds, tests, lints, checks, and short pipelines—NEVER specialized-tool work.
-NEVER mask exit status of tests/builds/lints/checks with `| head`, `| tail`, `| grep`, `; true`, or `|| true`; run them bare. Read overflow `artifact://` or `pipe://` URIs with built-in read/rg—NEVER pass them to shell commands. Prefix `set -o pipefail;` when a pipeline is functionally necessary.
+NEVER mask exit status of tests/builds/lints/checks with `| head`, `| tail`, `| grep`, `; true`, or `|| true`; run them bare. Read overflow `artifact://` URIs with built-in read/rg—NEVER pass them to shell commands. Prefix `set -o pipefail;` when a pipeline is functionally necessary.
 {{#if sandbox_active}}bash runs inside a {{sandbox_platform}} {{sandbox_mode}} sandbox{{#if has_eval}} (same for eval){{/if}}: {{#if sandbox_read_only}}workspace is read-only{{else}}writes restricted to cwd/tmp, `.git`/`.agents`/`.pp` protected{{/if}}, credentials unreadable{{#unless sandbox_network}}; {{#if sandbox_network_isolated}}network access is isolated (no outbound or host network access){{else}}outbound network is blocked (loopback allowed){{/if}}{{/unless}}. Explain sandbox denials rather than bypassing them.{{else}}bash has no filesystem sandbox and may access files outside cwd.{{/if}}
 {{/if}}
 {{#if has_eval}}

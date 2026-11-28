@@ -586,7 +586,7 @@ printf ' after-close' >&2
     }
 
     #[test]
-    fn embedded_shell_exit_traps_timeout_and_pipeline_capture() {
+    fn embedded_shell_exit_traps_timeout_and_pipeline_status() {
         {
             let dir = tempfile::tempdir().unwrap();
             let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
@@ -603,26 +603,11 @@ printf ' after-close' >&2
             assert_eq!(result["exit_code"], 0, "{result}");
             assert_eq!(result["output"], "visible\n", "{result}");
 
-            let pipes = &result["pipes"];
-            let list = pipes["pipelines"]
-                .as_array()
-                .unwrap_or_else(|| panic!("missing pipeline list: {result}"));
-            assert_eq!(list.len(), 1, "{result}");
-            assert_eq!(list[0]["stage_count"], 2, "{result}");
-            assert_eq!(list[0]["stages"][0]["status"], 7, "{result}");
-            assert_eq!(list[0]["stages"][1]["status"], 0, "{result}");
-            assert_eq!(pipes["nonzero_stages"], 1, "{result}");
-
-            let streams = pipes["streams"].as_array().unwrap();
-            assert_eq!(streams.len(), 1, "{result}");
-            let stream = streams[0]["id"].as_u64().unwrap();
-            assert_eq!(streams[0]["open"], false, "{result}");
-            let run_id = pipes["run_id"].as_str().unwrap();
-            let read = tools
-                .pipe_store()
-                .read(run_id, stream, None)
-                .expect("reading the EXIT trap pipeline stream");
-            assert_eq!(read.data, b"hidden\nvisible\n");
+            assert_eq!(
+                result["pipeline_failures"],
+                json!({"count":1,"stages":[{"pipeline":1,"stage":1,"status":7}]}),
+                "{result}"
+            );
         }
 
         {

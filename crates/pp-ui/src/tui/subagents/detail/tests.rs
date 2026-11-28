@@ -118,7 +118,7 @@ fn detail_speed_timing_ticks_and_clears_on_termination() {
 }
 
 #[test]
-fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
+fn detail_task_poll_and_live_output_previews_update_cleanly() {
     {
         let mut detail = Detail::new("a1", 1, Transcript::new());
         let runs = [run("r1", "running")];
@@ -214,7 +214,6 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
     }
 
     {
-        const RUN: &str = "0123456789abcdef0123456789abcdef";
         let mut detail = Detail::new("a1", 1, Transcript::new());
         let running = run("r1", "running");
         detail.ingest(
@@ -229,30 +228,21 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
             &BTreeSet::new(),
             10_000,
         );
-        let pipeline = |nonzero: u64, revision: u64| {
-            event(
-                2 + revision,
-                "r1",
-                AgentEvent::ToolPipelineSnapshot {
-                    id: "b".into(),
-                    preview: None,
-                    pipes: json!({
-                        "run_id": RUN,
-                        "uri": format!("pipe://{RUN}"),
-                        "pipelines": [{"id": 1, "stages": []}],
-                        "streams": [],
-                        "nonzero_stages": nonzero,
-                        "incomplete": false,
-                        "revision": revision,
-                        "leak": "pipeline-secret",
-                    }),
+        let shell = event(
+            2,
+            "r1",
+            AgentEvent::ToolShellSnapshot {
+                id: "b".into(),
+                snapshot: pp_core::shell_display::ShellPresentation {
+                    version: pp_core::shell_display::VERSION,
+                    revision: 1,
+                    running: true,
+                    rows: vec![],
                 },
-            )
-            .record
-        };
-        // The preview is dropped while the page is incomplete, so the card cannot change early.
-        detail.pipeline_preview(&pipeline(1, 1));
-        assert!(!text(&mut detail.transcript).contains("Pipes: /pipes"));
+            },
+        )
+        .record;
+        detail.shell_preview(&shell);
         detail.ingest(
             &page(vec![], false),
             std::slice::from_ref(&running),
@@ -269,13 +259,9 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
         )
         .record;
         detail.output_preview(&main);
-        detail.pipeline_preview(&pipeline(1, 1));
+        detail.shell_preview(&shell);
         let screen = text(&mut detail.transcript);
-        // A stage snapshot only updates the bottom warning/entry; the main output preview remains the only body.
         assert!(screen.contains("main-preview"), "{screen}");
-        assert!(screen.contains("Pipes: /pipes (F8)"), "{screen}");
-        assert!(screen.contains("Non-zero stage results: 1"), "{screen}");
-        assert!(!screen.contains("pipeline-secret"), "{screen}");
         let latest = event(
             6,
             "r1",
@@ -286,14 +272,11 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
         )
         .record;
         detail.output_preview(&latest);
-        detail.pipeline_preview(&pipeline(2, 2));
         let screen = text(&mut detail.transcript);
         assert!(
             screen.contains("latest-preview") && !screen.contains("main-preview"),
             "{screen}"
         );
-        assert!(screen.contains("Non-zero stage results: 2"), "{screen}");
-        // When the final result has no pipes, neither the transient entry nor the warning may linger.
         detail.ingest(
             &page(
                 vec![event(
@@ -312,8 +295,6 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
         );
         let screen = text(&mut detail.transcript);
         assert!(screen.contains("final-output"), "{screen}");
-        assert!(!screen.contains("Pipes: /pipes"), "{screen}");
-        assert!(!screen.contains("Non-zero stage results"), "{screen}");
     }
 }
 

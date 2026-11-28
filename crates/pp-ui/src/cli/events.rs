@@ -88,11 +88,13 @@ pub(crate) fn cli_output_result(
         text.push_str(&notice);
         text.push('\n');
     }
-    // Stage bodies never enter the main output; only bounded status and follow-up URIs
-    // are appended here.
-    if let Some(status) = pp_workspace::output::pipes_status(&value["pipes"]) {
-        text.push_str(&status.notice());
-        text.push('\n');
+    if let Some(notice) = pp_workspace::output::pipeline_failure_notice(value) {
+        text.push('[');
+        text.push_str(&notice);
+        text.push_str(
+            "]
+",
+        );
     }
     text
 }
@@ -115,7 +117,7 @@ pub(crate) fn run_cli_shell(
             AgentEvent::ToolStarted { .. } => {
                 cli_write(stderr, "shell: running\n", &mut broken, &mut first_error)
             }
-            AgentEvent::ToolPipelineSnapshot { .. } | AgentEvent::ToolShellSnapshot { .. } => {}
+            AgentEvent::ToolShellSnapshot { .. } => {}
             AgentEvent::ToolOutputSnapshot { output, .. } => {
                 let delta = cli_output_text(&output, &mut streamed_output, false, "shell");
                 cli_write(stderr, &delta, &mut broken, &mut first_error);

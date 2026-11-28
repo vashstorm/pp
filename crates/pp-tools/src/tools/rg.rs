@@ -100,8 +100,12 @@ pub(in crate::tools) fn run_with_policy(
     let output_mode = args.output_mode;
     let head_limit = Some(count(args.head_limit, "head_limit")?).filter(|n| *n > 0);
     let ignored = std::mem::take(&mut args.ignored);
-    if args.path.as_deref().is_some_and(super::read::is_pipe_uri) {
-        anyhow::bail!("Temporary pipe streams support read only; use read with a pipe:// URI.");
+    if args
+        .path
+        .as_deref()
+        .is_some_and(|path| path.starts_with(super::LEGACY_PIPE_URI))
+    {
+        anyhow::bail!("{}", super::LEGACY_PIPE_ERROR);
     }
     let uri = args
         .path
@@ -848,7 +852,7 @@ mod pipe_stream_tests {
     use super::*;
 
     #[test]
-    fn pipeline_rg_rejects_pipe_streams_with_read_only_message() {
+    fn rg_rejects_legacy_pipe_uri() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().canonicalize().unwrap();
         let workspace = save::Workspace::open(&cwd).unwrap();
@@ -864,9 +868,6 @@ mod pipe_stream_tests {
         )
         .err()
         .unwrap();
-        assert_eq!(
-            error.to_string(),
-            "Temporary pipe streams support read only; use read with a pipe:// URI."
-        );
+        assert_eq!(error.to_string(), super::super::LEGACY_PIPE_ERROR);
     }
 }

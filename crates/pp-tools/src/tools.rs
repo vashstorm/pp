@@ -109,7 +109,6 @@ pub struct Tools {
     wait_state: RefCell<wait::State>,
     pub limits: ToolLimits,
     host_defaults: pp_workspace::host_defaults::HostDefaults,
-    pipe_store: pp_bash::PipeStore,
     sandbox: std::sync::Arc<pp_sandbox::Sandbox>,
     web_search: pp_config::config::WebSearchSettings,
 }
@@ -302,12 +301,16 @@ const PLAN_SUBMIT_DESC: &str = concat!(
     "the user reviews the plan before any execution starts. Never ask the user to approve in ",
     "chat; only plan_submit requests review.",
 );
+// Reject stale handles from old tool results before they can be interpreted as local paths.
+const LEGACY_PIPE_URI: &str = "pipe://";
+const LEGACY_PIPE_ERROR: &str = "Temporary pipe output is no longer available.";
+
 const COMMON_READ_DESC: &str = concat!(
-    "Read local text/images, static URLs, skill://, artifact://<id>, and pipe://<run>[/<stream>] URIs. ",
+    "Read local text/images, static URLs, and tool URIs (skill:// and artifact://<id>). ",
     "Pass only `path` (put inclusive ranges in `path`, never offset/limit): `file:20-60`, `:20` (from line 20), `:20+40` (40 lines), `:-30` (last 30), `:5-10,20-30`; append `:raw` for verbatim text without prefixes (`:20:raw` is one line; URL selectors go before `?`/`#`). ",
     "Use `next_path` to continue paginated reads. Skills return in full by default (`/<path>` for resources, `/.` for root listing). ",
     "PNG/JPEG/WebP/GIF (first frame) images are sent visually (<=20 MiB, <=32M px, no selectors). ",
-    "Artifacts/pipes/URLs/skills/raw have no edit snapshot. ",
+    "Artifacts/URLs/skills/raw have no edit snapshot. ",
 );
 const AGENT_READ_DESC: &str = "Use `agent://<id>` (or `agent://<id>/<run_id>`) for subagent results (paginate with `next_path`), `history://[<id>]` for event logs, and `proc://<run_id>` for run status. ";
 const HASHLINE_READ_SUFFIX: &str = "Editable local non-raw UTF-8 text starts with `[path#TAG]` and `N:text` lines; copy header into edit and re-read after every edit.";
@@ -326,7 +329,7 @@ const WRITE_DESC: &str = "Atomically create or overwrite a UTF-8 file (creating 
 const AGENT_WRITE_SUFFIX: &str = " Also accepts `agent://<id>` (`content` = follow-up message) and `proc://<run_id>/kill` (cancels a running subagent).";
 const BASH_TASK_DESC: &str = concat!(
     "Manage persistent background services started by `bash(mode=\"background\")` only (never finite builds/tests). ",
-    "`status` inspects cumulative output, `artifact://` URI, and `pipe://` metadata; `stop` terminates and cleans up idempotently. Verify readiness with real requests before stopping.",
+    "`status` inspects cumulative output and the `artifact://` URI; `stop` terminates and cleans up idempotently. Verify readiness with real requests before stopping.",
 );
 
 pub(super) fn sandbox_net_note(status: &pp_sandbox::SandboxStatus) -> &'static str {
@@ -474,7 +477,7 @@ fn bash_definition(
             "Finite commands (tests, builds, checks) MUST use foreground mode (default timeout {default_timeout}s; allowed 1-{max_timeout}s; 0 invalid). ",
             "Use `mode: \"background\"` ONLY for persistent services (returns `task_id`, managed via `bash_task`). ",
             "{sandbox_note} ",
-            "Merged stdout/stderr returns bounded preview + `artifact://<id>` overflow + `pipe://` stage mirrors; run tests/builds bare without piping to head/tail/grep."
+            "Merged stdout/stderr returns bounded preview + `artifact://<id>` overflow. Non-zero pipeline stages are reported separately. Run tests/builds bare without piping to head/tail/grep."
         ),
         default_timeout = default_timeout,
         max_timeout = max_timeout,

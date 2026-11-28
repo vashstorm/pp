@@ -24,7 +24,10 @@ impl Tools {
                 .map(|(value, change)| (value, change, None));
         }
         let args: WriteArgs = serde_json::from_str(arguments).context("invalid write arguments")?;
-        ensure!(!read::is_pipe_uri(&args.path), "pipe streams are read-only");
+        ensure!(
+            !args.path.starts_with(LEGACY_PIPE_URI),
+            "{LEGACY_PIPE_ERROR}"
+        );
         ensure!(
             !args.path.starts_with("artifact://"),
             "artifacts are read-only"

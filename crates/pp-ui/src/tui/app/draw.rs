@@ -1,6 +1,6 @@
 use crate::tui::{
     Alignment, App, Block, Borders, Color, Frame, Line, MainLayout, Rect, StatusContext, Style,
-    Transcript, menu, pipes, plan_list, platform_text, statusline, transcript_style, tree, welcome,
+    Transcript, menu, plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
 
 impl App {
@@ -231,32 +231,6 @@ impl App {
             && let Some(panel) = &mut self.context_panel
         {
             panel.draw(frame, area);
-            return;
-        }
-        if !self.native_render
-            && let Some(panel) = &mut self.pipes_panel
-        {
-            let available = area.height.saturating_sub(1);
-            let height = available.saturating_sub(1);
-            panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
-            if available > 0 {
-                frame.render_widget(
-                    Line::styled(pipes::HINT, Style::default().fg(transcript_style::muted())),
-                    Rect::new(area.x, area.y + height, area.width, 1),
-                );
-            }
-            frame.render_widget(
-                statusline::primary(
-                    self.current_model.as_ref(),
-                    self.think_level,
-                    self.workflow.mode,
-                    self.permission_mode,
-                    context,
-                    area.width,
-                ),
-                Rect::new(area.x, area.bottom() - 1, area.width, 1),
-            );
-
             return;
         }
         if !self.native_render

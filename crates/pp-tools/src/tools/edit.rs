@@ -85,8 +85,9 @@ impl Request {
         };
         ensure!(!request.path().trim().is_empty(), "path must not be blank");
         ensure!(
-            !super::read::is_pipe_uri(request.path()),
-            "pipe streams are read-only"
+            !request.path().starts_with(super::LEGACY_PIPE_URI),
+            "{}",
+            super::LEGACY_PIPE_ERROR
         );
         Ok(request)
     }
@@ -110,7 +111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pipeline_edit_rejects_pipe_streams_as_read_only() {
+    fn edit_rejects_legacy_pipe_uri() {
         let arguments = serde_json::json!({
             "path": "pipe://00112233445566778899aabbccddeeff/1",
             "edits": [{"oldText": "a", "newText": "b"}],
@@ -120,7 +121,7 @@ mod tests {
             .err()
             .unwrap()
             .to_string();
-        assert_eq!(error, "pipe streams are read-only");
+        assert_eq!(error, super::super::LEGACY_PIPE_ERROR);
     }
 
     #[test]

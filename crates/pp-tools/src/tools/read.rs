@@ -11,8 +11,6 @@ pub(crate) use dedup::{ReadDedupCache, ReadProbe};
 mod file;
 mod image;
 pub use image::decode_image;
-mod pipe;
-pub(crate) use pipe::{is_uri as is_pipe_uri, read as read_pipe};
 mod selector;
 mod text;
 mod url;

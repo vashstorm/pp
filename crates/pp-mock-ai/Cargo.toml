@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 pp-core = { path = "../pp-core" }
 pp-config = { path = "../pp-config" }
-pp-bash = { path = "../pp-bash" }
 pp-workspace = { path = "../pp-workspace" }
 pp-tools = { path = "../pp-tools" }
 pp-runtime = { path = "../pp-runtime" }

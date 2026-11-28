@@ -122,7 +122,7 @@ fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protoc
         request,
         json!([
             protocol.call("page", "read", json!({"path":"demo"})),
-            protocol.call("bad-limit", "read", json!({"path":"demo","limit":2})),
+            protocol.call("bad-limit", "read", json!({"path":"demo","limit":0})),
             protocol.call(
                 "outside",
                 "write",
@@ -159,6 +159,13 @@ fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protoc
             "{protocol:?}: {id}"
         );
     }
+    let bad_limit = protocol.tool_result(&body, "bad-limit");
+    assert!(
+        bad_limit["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("limit must be >= 1")),
+        "{bad_limit}"
+    );
     assert_eq!(
         std::fs::read(dir.path().join("demo")).unwrap(),
         b"one\ntwo\nthree\n"

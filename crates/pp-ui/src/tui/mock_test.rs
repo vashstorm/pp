@@ -13,7 +13,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use pp_bash::PipeStore;
 use pp_config::config::ModelChoice;
 use pp_core::{
     cancellation::CancellationToken,
@@ -40,7 +39,6 @@ pub(in crate::tui) struct MockUiSnapshot {
     usage: Option<ContextUsage>,
     todo_panel: todo::Panel,
     subagent_control: Arc<Mutex<Option<Binding>>>,
-    pipe_store: Option<PipeStore>,
 }
 
 impl MockUiSnapshot {
@@ -149,7 +147,6 @@ impl App {
         let snapshot = self.take_mock_snapshot();
         self.hub_bound = None;
         self.close_hub();
-        self.close_pipes();
         let worker = match Worker::start(test, endpoint) {
             Ok(worker) => worker,
             Err(error) => {
@@ -192,7 +189,6 @@ impl App {
         // Each scenario is isolated; the previous scenario's TODO must not carry over.
         self.todo_panel = Default::default();
         self.subagent_control = snapshot.subagent_control;
-        self.install_pipe_store(Some(snapshot.pipe_store));
         self.hub_sync_root();
     }
 
@@ -214,10 +210,8 @@ impl App {
         self.subagent_autowake = false;
         // mock never drains the input queue; it was confirmed pending-free before starting.
         self.queue_paused = false;
-        // A panel may be observing the mock registry; close it before restoring the binding so late replies are dropped by epoch.
         self.close_hub();
         self.hub_bound = None;
-        self.close_pipes();
         drop(self.mock_worker.take());
         match self.mock_saved.take() {
             Some(snapshot) => self.restore_mock_snapshot(snapshot),
@@ -267,7 +261,6 @@ impl App {
                 &mut self.subagent_control,
                 Arc::new(Mutex::new(None)),
             ),
-            pipe_store: self.pipe_store.take(),
         }
     }
 
@@ -281,7 +274,6 @@ impl App {
         self.usage = snapshot.usage;
         self.todo_panel = snapshot.todo_panel;
         self.subagent_control = snapshot.subagent_control;
-        self.install_pipe_store(snapshot.pipe_store);
         self.state = snapshot.state;
         self.hub_sync_root();
     }

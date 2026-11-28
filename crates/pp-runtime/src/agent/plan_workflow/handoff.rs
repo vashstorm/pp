@@ -256,7 +256,6 @@ impl Agent {
             self.tools.permission.clear_session();
             self.journal = journal;
             self.tools.artifacts = Default::default();
-            self.tools.reset_pipe_store();
             if let Some(id) = self.journal.id() {
                 let _ = self.tools.artifacts.bind(self.journal.directory(), id);
             }

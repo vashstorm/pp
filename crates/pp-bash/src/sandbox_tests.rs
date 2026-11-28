@@ -34,7 +34,6 @@ mod integration {
 
     fn run_cmd(cwd: &Path, command: &str, policy: Arc<pp_sandbox::Policy>) -> Result<Value> {
         let mut events = Vec::new();
-        let store = PipeStore::new();
         run(
             cwd,
             &cwd.join(".pp-cache"),
@@ -45,7 +44,6 @@ mod integration {
             &mut |event| events.push(event),
             OutputSink::new(Default::default(), Default::default()),
             pp_workspace::host_defaults::HostDefaults::test_default(),
-            &store,
             Some(policy),
         )
     }
@@ -213,7 +211,6 @@ mod integration {
 
             // Background tasks are sandbox-constrained too
             let manager = TaskManager::default();
-            let store = PipeStore::new();
             let bg = manager
                 .start_with_output(
                     &repo,
@@ -222,7 +219,6 @@ mod integration {
                     "test-bg-sbx",
                     &CancellationToken::new(),
                     pp_workspace::host_defaults::HostDefaults::test_default(),
-                    &store,
                     OutputSink::new(Default::default(), Default::default()),
                     Some(policy.clone()),
                 )
@@ -250,7 +246,6 @@ mod integration {
                 &mut |_| {},
                 OutputSink::new(Default::default(), Default::default()),
                 pp_workspace::host_defaults::HostDefaults::test_default(),
-                &store,
                 Some(policy),
             )
             .unwrap();

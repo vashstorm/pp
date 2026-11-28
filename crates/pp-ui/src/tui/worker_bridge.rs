@@ -175,11 +175,6 @@ pub(super) enum WorkerEvent {
         finished_at: chrono::DateTime<chrono::Local>,
     },
     SessionStarted(String),
-    /// Temporary pipe registry binding for the root session. Published at startup and after a root change; the receiver uses
-    /// `same_instance` to tell whether the root really changed and bump the epoch of an open panel.
-    PipeStoreBound {
-        store: pp_bash::PipeStore,
-    },
     // Compaction terminal state: a different discriminant from an ordinary task Completed, so no task-final display is triggered.
     Compacted(Result<CompactionOutcome>),
     SandboxStatus(Result<(pp_sandbox::SandboxStatus, bool)>),
@@ -243,15 +238,6 @@ pub(super) enum WorkerEvent {
 /// Correction snapshot after a failed switch: publishes the real workflow and model fields; shared by all Plan switch failure paths.
 pub(super) fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
     push_workflow_snapshot(agent, snapshots);
-}
-
-/// Publish the new temporary pipe registry right after a root change; the receiver filters duplicate publications by instance identity.
-pub(super) fn publish_pipe_store(events: &mpsc::SyncSender<WorkerEvent>, agent: &Agent) -> bool {
-    events
-        .send(WorkerEvent::PipeStoreBound {
-            store: agent.pipe_store(),
-        })
-        .is_ok()
 }
 
 /// Publish the workflow snapshot so the UI never keeps a stale plan/mode.

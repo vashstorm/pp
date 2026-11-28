@@ -59,24 +59,6 @@ impl App {
         None
     }
 
-    /// Installs the root-session temp pipe registry; on an instance change it bumps the epoch
-    /// and closes the old panel.
-    pub(in crate::tui) fn install_pipe_store(&mut self, store: Option<pp_bash::PipeStore>) -> bool {
-        let changed = match (&self.pipe_store, &store) {
-            (Some(current), Some(next)) => !current.same_instance(next),
-            (None, None) => false,
-            _ => true,
-        };
-        self.pipe_store = store;
-        if changed {
-            self.pipe_store_epoch = self.pipe_store_epoch.wrapping_add(1);
-            // The old panel only holds indices of the old store; close the observer thread and
-            // release the body.
-            self.close_pipes();
-        }
-        changed
-    }
-
     pub(in crate::tui) fn receive(&mut self) -> bool {
         let mut changed = self.receive_resources();
         let available = self.resource_input_available() && self.menu.is_none();
@@ -231,7 +213,6 @@ impl App {
                 }
             }
         }
-        changed |= self.pipes_tick();
         let queue_changed = self.refresh_queue() | self.dispatch_next(false);
         changed |= queue_changed;
         refresh_candidates |= queue_changed;
@@ -298,7 +279,6 @@ impl App {
             #[cfg(debug_assertions)]
             WorkerEvent::WebSearchCompleted(_) => self.on_run_event(event),
             WorkerEvent::SessionStarted(_)
-            | WorkerEvent::PipeStoreBound { .. }
             | WorkerEvent::ContextInspected(_)
             | WorkerEvent::TreeRead(_)
             | WorkerEvent::TreeNavigated(_)

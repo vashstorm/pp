@@ -69,7 +69,6 @@ fn has_important_footer(entry: &TranscriptEntry) -> bool {
     entry.footer.split(" · ").any(|seg| {
         let seg = seg.trim();
         seg.starts_with("Exit:")
-            || seg.starts_with("Pipes:")
             || seg.starts_with("Artifact:")
             || seg.starts_with("Task ")
             || seg.starts_with("Cell #")

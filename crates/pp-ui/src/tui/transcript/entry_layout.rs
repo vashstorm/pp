@@ -621,10 +621,7 @@ impl TranscriptEntry {
         let eval = self.kind == EntryKind::Eval;
         // Borrow directly when the body consists of stdout only, avoiding a copy of the whole tool output every frame.
         let joined;
-        let text: &str = if self.visible_text().is_empty()
-            && self.stderr.is_empty()
-            && self.pipeline_preview.is_none()
-        {
+        let text: &str = if self.visible_text().is_empty() && self.stderr.is_empty() {
             self.stdout.strip_suffix('\n').unwrap_or(&self.stdout)
         } else {
             let mut text = self.visible_text().to_owned();
@@ -640,9 +637,6 @@ impl TranscriptEntry {
                 }
                 text.push_str("[stderr]\n");
                 text.push_str(self.stderr.strip_suffix('\n').unwrap_or(&self.stderr));
-            }
-            if let Some(preview) = &self.pipeline_preview {
-                text.clone_from(preview);
             }
             joined = text;
             &joined

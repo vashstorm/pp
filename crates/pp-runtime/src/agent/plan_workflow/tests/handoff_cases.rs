@@ -513,7 +513,6 @@ fn plan_keep_and_fresh_approval_handoff() {
         seed_session(&mut agent, EXPLORATION);
         let planning_id = agent.session_id().unwrap().to_owned();
         let token = agent.read_plan().unwrap().token;
-        let planning_store = agent.pipe_store();
 
         let preparation = agent
             .approve_plan(
@@ -524,9 +523,7 @@ fn plan_keep_and_fresh_approval_handoff() {
                 &mut |_| {},
             )
             .unwrap();
-        // A Fresh handoff switches the session root: the planning session's temporary pipes do
         // not migrate to the execution session.
-        assert!(!planning_store.same_instance(&agent.pipe_store()));
         // A fresh session with an empty replay was handed over.
         assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
         let execution_id = preparation.session_id.clone().unwrap();
@@ -580,7 +577,6 @@ fn plan_keep_and_fresh_approval_handoff() {
         let id = agent.session_id().unwrap().to_owned();
         let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
         agent.journal.use_read_only_file(&path);
-        let planning_store = agent.pipe_store();
         let error = err_message(agent.approve_plan(
             token,
             ExecutionContext::Fresh,
@@ -597,8 +593,6 @@ fn plan_keep_and_fresh_approval_handoff() {
             PlanStatus::Ready
         );
         assert_eq!(user_texts(&agent), vec![EXPLORATION.to_owned()]);
-        // A failed handoff did not switch roots: the temporary pipe instance is unchanged.
-        assert!(planning_store.same_instance(&agent.pipe_store()));
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
         assert_eq!(
             std::fs::read(plan_path(dir.path(), &id)).unwrap(),

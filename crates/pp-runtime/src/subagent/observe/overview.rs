@@ -121,7 +121,6 @@ enum OverviewEvent {
     ToolOutputSnapshot(IgnoredAny),
     SubagentResultsInjected(IgnoredAny),
     ToolShellSnapshot(IgnoredAny),
-    ToolPipelineSnapshot(IgnoredAny),
     ToolFinished {
         id: String,
         result: serde_json::Value,
@@ -425,7 +424,6 @@ impl Binding {
                         | OverviewEvent::ModelOutputProgress(_)
                         | OverviewEvent::ToolArgumentsDelta(_)
                         | OverviewEvent::ToolOutputSnapshot(_)
-                        | OverviewEvent::ToolPipelineSnapshot(_)
                         | OverviewEvent::ToolShellSnapshot(_)
                         | OverviewEvent::TodoStateUpdated(_)
                         | OverviewEvent::TodoReminder(_)

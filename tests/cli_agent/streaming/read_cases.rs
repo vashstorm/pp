@@ -100,7 +100,11 @@ fn read_files_images_web_and_resume_send_real_content_both_protocols() {
         request,
         json!([
             protocol.call("web-next", "read", json!({"path":next})),
-            protocol.call("old-args", "read", json!({"path":"source","offset":2}))
+            protocol.call(
+                "flat-args",
+                "read",
+                json!({"path":"source","offset":2,"limit":1})
+            )
         ]),
     );
     let (request, body) = protocol.receive(&server);
@@ -108,7 +112,10 @@ fn read_files_images_web_and_resume_send_real_content_both_protocols() {
         read_value(protocol, &body, "web-next")["content"],
         "third\nfourth\n"
     );
-    assert_eq!(read_value(protocol, &body, "old-args")["ok"], false);
+    let flat = read_value(protocol, &body, "flat-args");
+    assert_eq!(flat["ok"], true);
+    assert_eq!(flat["content"], "two\r\n");
+    assert_eq!(flat["truncated"], false);
     no_more(&web);
     protocol.final_reply(request, "read complete");
     let output = cli.finish();

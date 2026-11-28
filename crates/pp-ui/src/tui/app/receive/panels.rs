@@ -13,13 +13,6 @@ impl App {
                 self.session_id = Some(id);
                 changed = true;
             }
-            WorkerEvent::PipeStoreBound { store } => {
-                // Republishing the same instance is idempotent; only a root switch bumps the
-                // epoch, and the panel drops old replies accordingly.
-                if self.install_pipe_store(Some(store)) {
-                    changed = true;
-                }
-            }
 
             WorkerEvent::ContextInspected(result) => {
                 if matches!(self.state, State::InspectingContext) {

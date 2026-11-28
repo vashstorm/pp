@@ -173,12 +173,8 @@ struct TranscriptEntry {
     layout: Option<Arc<EntryLayout>>,
     expanded: bool,
     footer: String,
-    /// Warnings such as a non-zero stage or incomplete observation, drawn as a warning-colored span on the bottom border.
+    /// Warnings such as a non-zero pipeline stage, drawn as a warning-colored span on the bottom border.
     footer_warning: String,
-    /// Keeps bounded metadata when there is a pipeline.
-    pipes_badge: Option<PipesBadge>,
-    /// In-flight stage body; independent of the real command output and dropped on completion.
-    pipeline_preview: Option<String>,
     shell: Option<pp_core::shell_display::ShellPresentation>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
@@ -192,14 +188,6 @@ struct TranscriptEntry {
     display_title: Option<Vec<Line<'static>>>,
     read_group: Vec<card::ReadItem>,
     hidden: bool,
-}
-
-/// Pipeline entry of a Bash card: bounded metadata only, no copy of the stage body.
-#[derive(Clone, PartialEq, Eq)]
-struct PipesBadge {
-    status: pp_workspace::output::PipesStatus,
-    /// Restored history results keep no transient body, only the stage state.
-    restored: bool,
 }
 
 struct Activity {

@@ -200,9 +200,6 @@ impl Agent {
         self.tools.permission.clear_session();
         self.journal = journal;
         self.tools.artifacts = Default::default();
-        // Opening an existing plan creates a candidate session root; the old root's temporary pipes do not
-        // survive the navigation.
-        self.tools.reset_pipe_store();
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }

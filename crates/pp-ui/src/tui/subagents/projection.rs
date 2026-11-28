@@ -424,7 +424,6 @@ mod fixtures {
     pub(super) fn snapshot(agents: Vec<Record>, runs: Vec<Run>) -> HubSnapshot {
         HubSnapshot {
             output_previews: Vec::new(),
-            pipeline_previews: Vec::new(),
             shell_previews: Vec::new(),
             agents: agents
                 .into_iter()

@@ -1,4 +1,4 @@
-//! `read` branch: local paged reads and `agent://`, `pipe://`, `artifact://` resources.
+//! `read` branch: local paged reads and `agent://` and `artifact://` resources.
 
 use super::*;
 
@@ -32,17 +32,10 @@ impl Tools {
             )?;
             return Ok((result, None, None));
         }
-        if read::is_pipe_uri(&args.path) {
-            return read::read_pipe(
-                &args.path,
-                &self.cwd,
-                self.limits,
-                self.edit_mode,
-                &self.pipe_store,
-                cancellation,
-            )
-            .map(|result| (result.value, None, None));
-        }
+        ensure!(
+            !args.path.starts_with(LEGACY_PIPE_URI),
+            "{LEGACY_PIPE_ERROR}"
+        );
         if args.path.starts_with("artifact://") {
             return read::artifact(
                 &args.path,

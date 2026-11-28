@@ -1,6 +1,6 @@
 //! Session-level dedup cache for local text `read`: keeps the model from re-reading the same unchanged large body and wasting tokens.
 //!
-//! It applies only to plain local text files (skipping `:raw`, URLs, `skill://`/`artifact://`/`pipe://`/`agent://`,
+//! It applies only to plain local text files (skipping `:raw`, URLs, `skill://`/`artifact://`/`agent://`,
 //! images and directories), and only once the body reaches `MIN_DEDUP_CONTENT_BYTES`.
 //! A hit requires the metadata fingerprint `(dev, ino, len, mtime)` to match exactly; in `Hashline` mode it additionally requires
 //! the matching editable snapshot to still be active, so the model never gets a stale reference it cannot edit.
@@ -205,7 +205,7 @@ pub(super) fn build_probe(
     if target.raw || target.is_url() {
         return None;
     }
-    if ["skill://", "artifact://", "pipe://", "agent://"]
+    if ["skill://", "artifact://", "agent://"]
         .iter()
         .any(|prefix| target.source.starts_with(prefix))
     {

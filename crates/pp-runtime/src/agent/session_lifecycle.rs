@@ -89,8 +89,6 @@ impl Agent {
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
         tools.configure_mcp(catalog.mcp_settings());
-        // A restore does not promise the temporary pipe bodies of the old process: switch to an empty registry explicitly.
-        tools.reset_pipe_store();
         if let Some(id) = journal.id() {
             let _ = tools.artifacts.bind(journal.directory(), id);
         }
@@ -359,8 +357,6 @@ impl Agent {
         if let Err(error) = self.tools.stop_eval() {
             tracing::warn!(error = %error, "stopping Python eval kernel on tree navigation failed");
         }
-        // Navigating to another session root: the old root's temporary pipe bodies cannot be reused across roots.
-        self.tools.reset_pipe_store();
         self.clear_session_usage();
         self.thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
         if let Some(view) = &self.task_status.view {
@@ -412,8 +408,6 @@ impl Agent {
         self.journal.reset();
         self.sync_auto_review();
         self.tools.artifacts = Default::default();
-        // /new is a new session root: old temporary pipe bodies and URIs all become invalid.
-        self.tools.reset_pipe_store();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(false);
         }

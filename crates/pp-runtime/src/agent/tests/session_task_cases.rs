@@ -231,11 +231,8 @@ mod integration {
             persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true)
                 .is_ok()
         );
-        let before_resume_store = old.pipe_store();
         old.resume(&ids[1], &CancellationToken::new()).unwrap();
         assert_eq!(old.session_id(), Some(ids[1].as_str()));
-        // A restore is a new effective session root: the temporary pipe registry gets a new instance and old URIs no longer resolve.
-        assert!(!before_resume_store.same_instance(&old.pipe_store()));
         assert!(
             persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true)
                 .is_ok()

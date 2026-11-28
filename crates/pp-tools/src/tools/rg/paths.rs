@@ -325,11 +325,9 @@ pub(in crate::tools) fn inspect_roots(cwd: &Path, arguments: &str) -> Result<Vec
     let Ok(args) = super::Args::parse(arguments) else {
         return Ok(Vec::new());
     };
-    if args
-        .path
-        .as_deref()
-        .is_some_and(|p| super::super::read::is_pipe_uri(p) || p.starts_with("artifact://"))
-    {
+    if args.path.as_deref().is_some_and(|p| {
+        p.starts_with(super::super::LEGACY_PIPE_URI) || p.starts_with("artifact://")
+    }) {
         return Ok(Vec::new());
     }
     let Ok((entries, _)) = resolve_scope_entries(cwd, args.path.as_deref().unwrap_or(".")) else {

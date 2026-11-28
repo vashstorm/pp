@@ -477,31 +477,12 @@ fn progress_scoping_and_artifact_previews() {
                 }),
                 None,
             );
-            binding.inner.observe(
-                "a1",
-                Some("r1"),
-                1,
-                Some(i + 22),
-                Some(&AgentEvent::ToolPipelineSnapshot {
-                    id: "bash".into(),
-                    pipes: serde_json::json!({"run_id":"r1","revision":i}),
-                    preview: None,
-                }),
-                None,
-            );
         }
         let snapshot = binding.hub_snapshot();
         assert_eq!(snapshot.output_previews.len(), 1);
         assert!(
             matches!(&snapshot.output_previews[0].event, Some(AgentEvent::ToolOutputSnapshot { output, .. }) if output == "current-19")
         );
-        // Stage previews are kept independently and never overwrite the main output preview.
-        assert_eq!(snapshot.pipeline_previews.len(), 1);
-        assert!(matches!(
-            &snapshot.pipeline_previews[0].event,
-            Some(AgentEvent::ToolPipelineSnapshot { pipes, .. })
-                if pipes["revision"] == 19
-        ));
         assert_eq!(read_all(&binding, "a1").len(), 1);
         binding.inner.observe(
             "a1",
@@ -516,7 +497,6 @@ fn progress_scoping_and_artifact_previews() {
         );
         let snapshot = binding.hub_snapshot();
         assert!(snapshot.output_previews.is_empty());
-        assert!(snapshot.pipeline_previews.is_empty());
         assert_eq!(read_all(&binding, "a1").len(), 2);
     }
 }

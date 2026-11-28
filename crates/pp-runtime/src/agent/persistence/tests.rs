@@ -732,18 +732,16 @@ fn replay_repair_incomplete_commit_and_transient_snapshots() {
         let id = journal.id().unwrap().to_owned();
         let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
         let before = fs::read(&path).unwrap();
-        journal.event(&AgentEvent::ToolPipelineSnapshot {
+        journal.event(&AgentEvent::ToolOutputSnapshot {
             id: "call".into(),
-            pipes: serde_json::json!({"run_id": "run"}),
-            preview: Some("transient stage body".into()),
+            output: "transient tool output".into(),
         });
         journal.event(&AgentEvent::ToolArgumentsDelta {
             tool: "edit".into(),
             index: 0,
             text: "temporary edit arguments".into(),
         });
-        // Transient previews do not enter the recoverable journal; only the pipes in the
-        // final result are authoritative.
+        // Transient previews do not enter the recoverable journal.
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 }

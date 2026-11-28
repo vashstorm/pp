@@ -78,7 +78,6 @@ impl App {
         replay: Vec<pp_runtime::agent::persistence::ReplayRecord>,
     ) -> Option<String> {
         self.close_ask_on_exit();
-        self.close_pipes();
         self.subagent_autowake = false;
         self.token_speed.clear();
         self.retry_finished();
@@ -136,7 +135,6 @@ impl App {
         self.tree_panel = None;
         self.context_panel = None;
         self.roles_panel = None;
-        self.close_pipes();
         self.plan_list_panel = None;
         self.plan_list_pending = None;
         self.plan_reenter_standby = false;
@@ -628,7 +626,6 @@ impl App {
             || self.skill_panel.is_some()
             || self.skills_pending
             || self.session_panel.is_some()
-            || self.pipes_panel.is_some()
             || self.context_panel.is_some()
             // Keep the main screen before the read completes; no screen switch is needed when
             // the history is empty or the read failed.

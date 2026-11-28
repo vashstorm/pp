@@ -97,7 +97,6 @@ impl Tools {
                 emit,
                 output::OutputSink::new(self.limits.output, self.artifacts.clone()),
                 self.host_defaults,
-                &self.pipe_store,
                 policy,
             ),
             BashMode::Background => {
@@ -108,7 +107,6 @@ impl Tools {
                     call_id,
                     cancellation,
                     self.host_defaults,
-                    &self.pipe_store,
                     output::OutputSink::new(self.limits.output, self.artifacts.clone()),
                     policy,
                 )?;

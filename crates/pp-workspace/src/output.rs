@@ -8,7 +8,7 @@ mod store;
 mod window;
 
 pub use normalize::Normalizer;
-pub use notice::{PipesStatus, notice, pipes_status};
+pub use notice::{notice, pipeline_failure_notice};
 pub use sink::OutputSink;
 pub use store::Snapshot;
 pub use store::Store;

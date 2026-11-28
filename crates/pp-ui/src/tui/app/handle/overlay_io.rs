@@ -6,24 +6,6 @@ use crate::tui::{App, Event, MOUSE_SCROLL_LINES, MouseEventKind};
 impl App {
     pub(super) fn handle_non_key_event(&mut self, event: Event, dirty: &mut bool) {
         match event {
-            Event::Paste(_) if self.pipes_panel.is_some() => {
-                *dirty = true;
-            }
-            Event::Mouse(mouse) if self.pipes_panel.is_some() => {
-                if matches!(
-                    mouse.kind,
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                ) {
-                    self.pipes_panel
-                        .as_mut()
-                        .expect("active pipes panel")
-                        .wheel(
-                            matches!(mouse.kind, MouseEventKind::ScrollUp),
-                            MOUSE_SCROLL_LINES,
-                        );
-                    *dirty = true;
-                }
-            }
             Event::Paste(_) if self.tree_panel.is_some() => {
                 *dirty = true;
             }

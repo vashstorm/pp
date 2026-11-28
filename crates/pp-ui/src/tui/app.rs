@@ -9,7 +9,6 @@ mod mcp_tip;
 mod navigation;
 mod panels;
 pub(super) mod permissions;
-mod pipes;
 mod receive;
 mod resources;
 pub(super) mod retry;

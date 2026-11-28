@@ -13,7 +13,6 @@ pp-workspace = { path = "../pp-workspace" }
 anyhow = { workspace = true }
 brush-builtins = { workspace = true }
 brush-core = { workspace = true }
-getrandom = { workspace = true }
 libc = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true }

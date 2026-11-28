@@ -76,8 +76,6 @@ impl Agent {
         let ask = self.tools.ask_handler.clone();
         let write_lock = self.tools.write_lock.clone();
         let artifacts = self.tools.artifacts.clone();
-        // Temporary pipe bodies belong to the root session: subagents only share the registry and start no tree of their own.
-        let pipe_store = self.tools.pipe_store();
         // Non-isolated subagents share the parent Registry; an isolated subagent uses the actual post-prepare cwd
         // to create a separate Registry. Both settings and user config paths are frozen from the current session.
         let lsp = self.tools.lsp.clone();
@@ -156,7 +154,6 @@ impl Agent {
                 },
             );
             tools.artifacts = artifacts.clone();
-            tools.share_pipe_store(&pipe_store);
             tools.limits = config.settings.tool_limits();
             tools.configure_eval(catalog.eval_settings());
             tools.configure_web_search(catalog.web_search_settings().clone());

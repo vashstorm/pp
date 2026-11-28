@@ -23,16 +23,6 @@ impl ModelProjection {
         if let Some(object) = value.as_object_mut() {
             let has_content = object.get("content").is_some_and(Value::is_string);
             match tool {
-                "bash" | "bash_task" => {
-                    // A running background task needs `pipes` kept even with no pipeline stages yet (it provides the `pipe://<run_id>` handle).
-                    let running = object.get("status").and_then(Value::as_str) == Some("running");
-                    if !running
-                        && object.get("pipes").is_some_and(is_empty_pipes)
-                        && let Some(pipes) = object.remove("pipes")
-                    {
-                        top_fields.push(("pipes", pipes));
-                    }
-                }
                 "write" | "edit" => {
                     // Inline LSP diagnostics are already rendered by `content`, so drop the duplicate raw structured report object.
                     if has_content && let Some(diag) = object.remove("diagnostics") {
@@ -98,29 +88,6 @@ impl ModelProjection {
     }
 }
 
-fn is_empty_pipes(pipes: &Value) -> bool {
-    let Some(object) = pipes.as_object() else {
-        return false;
-    };
-    let no_pipelines = object
-        .get("pipelines")
-        .and_then(Value::as_array)
-        .is_some_and(Vec::is_empty);
-    let no_omitted = object
-        .get("omitted_pipelines")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        == 0;
-    let no_error = object.get("capture_error").is_none_or(Value::is_null);
-    let no_nonzero = object
-        .get("nonzero_stages")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        == 0;
-    let not_incomplete = object.get("incomplete").and_then(Value::as_bool) != Some(true);
-    no_pipelines && no_omitted && no_error && no_nonzero && not_incomplete
-}
-
 /// Walks tool result objects only; same-named MCP fields do not go through this entry.
 pub(super) fn remove_shell_display(value: &mut Value) -> Vec<(Vec<String>, Value)> {
     fn walk(value: &mut Value, path: &mut Vec<String>, saved: &mut Vec<(Vec<String>, Value)>) {
@@ -183,10 +150,9 @@ mod tests {
                 json!({
                     "ok": true,
                     "output": "hi\n",
-                    "pipes": {"run_id":"r1","pipelines":[],"omitted_pipelines":0,"nonzero_stages":0,"incomplete":false},
                     "shell": {"version":1,"revision":1,"rows":[],"running":false}
                 }),
-                vec!["pipes", "shell"],
+                vec!["shell"],
                 vec!["output"],
             ),
             (
@@ -194,10 +160,10 @@ mod tests {
                 json!({
                     "ok": true,
                     "output": "hi\n",
-                    "pipes": {"run_id":"r1","pipelines":[{"id":1}],"omitted_pipelines":0,"nonzero_stages":0,"incomplete":false}
+                    "pipeline_failures": {"count":1,"stages":[{"pipeline":1,"stage":1,"status":7}]}
                 }),
                 vec![],
-                vec!["pipes", "output"],
+                vec!["pipeline_failures", "output"],
             ),
             (
                 "write",

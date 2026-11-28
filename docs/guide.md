@@ -1237,7 +1237,7 @@ pp gc [天数]
 | `pp-sandbox` / `crates/pp-sandbox/src/` | macOS Seatbelt（`sandbox-exec`）与 Linux Bubblewrap（`bwrap`）沙盒策略解析、平台探测、命令行包装与路径读写守卫。 |
 | `pp-mcp` / `crates/pp-mcp/src/` | stdio／HTTP／SSE MCP 客户端、配置发现、后台建连、生命周期管理与工具代理。 |
 | `pp-lsp` / `crates/pp-lsp/src/` | LSP 客户端注册表、stdio JSON-RPC 传输、诊断、保存联动、只读预览与 `lsp` 工具。 |
-| `pp-bash` / `crates/pp-bash/src/` | 嵌入式 Bash 宿主（`brush-core`/`brush-builtins`）、外部程序进程组监督、后台任务管理、管道流存储与 AST 命令展示。 |
+| `pp-bash` / `crates/pp-bash/src/` | 嵌入式 Bash 宿主（`brush-core`/`brush-builtins`）、外部程序进程组监督、后台任务管理、管道阶段失败诊断与 AST 命令展示。 |
 | `pp-eval` / `crates/pp-eval/src/` | 持久 Python REPL 内核宿主、探测缓存、进程组监督与双工 NDJSON 回调桥。 |
 | `pp-permission` / `crates/pp-permission/src/` | 生效权限预设、工具权限门、会话授权与用户级持久规则（`permission.toml`）。 |
 | `pp-tools` / `crates/pp-tools/src/` | 同步工具执行器、内置工具（read/rg/glob/edit/write/todo/wait/plan/permission）、分层项目指令与端口 trait（`ToolHookCall`、`PlanSubmitGate`、`SubagentHost`）。 |

@@ -84,18 +84,15 @@ impl Detail {
         }
     }
 
-    /// The pipeline stage preview and the main output snapshot arrive separately and must not replace each other.
-    pub(super) fn pipeline_preview(&mut self, record: &pp_runtime::subagent::ObservedRecord) {
+    /// The command display arrives independently of the main output.
+    pub(super) fn shell_preview(&mut self, record: &pp_runtime::subagent::ObservedRecord) {
         if self.caught_up
             && self.active_run.as_ref() == record.run_id.as_ref()
             && record
                 .run_id
                 .as_ref()
                 .is_none_or(|id| !self.terminal.contains_key(id))
-            && let Some(
-                event @ (AgentEvent::ToolPipelineSnapshot { .. }
-                | AgentEvent::ToolShellSnapshot { .. }),
-            ) = &record.event
+            && let Some(event @ AgentEvent::ToolShellSnapshot { .. }) = &record.event
         {
             self.transcript.progress(event.clone());
         }

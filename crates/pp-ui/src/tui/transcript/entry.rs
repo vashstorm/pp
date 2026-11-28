@@ -24,8 +24,6 @@ impl TranscriptEntry {
             expanded: false,
             footer: String::new(),
             footer_warning: String::new(),
-            pipes_badge: None,
-            pipeline_preview: None,
             shell: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,

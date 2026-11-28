@@ -7,7 +7,6 @@ mod execution;
 mod json;
 mod mcp_status;
 mod non_interactive;
-mod pipes;
 
 pub(crate) use banner::cli_lsp_report;
 pub use banner::prelude;
@@ -25,7 +24,6 @@ pub use non_interactive::{
     RunGuard, combine_prompt_and_stdin, load_output_schema, parse_duration, read_piped_stdin,
     write_output_file,
 };
-use pipes::cli_pipes_list;
 
 use anyhow::{Context, Result};
 use std::{
@@ -413,10 +411,6 @@ pub fn run_line_mode(
             }
         };
         match command {
-            Some(commands::Command::Pipes(run)) => {
-                let listed = cli_pipes_list(&agent.pipe_store(), run);
-                write!(stderr, "{listed}")?;
-            }
             Some(commands::Command::Shell(command)) => {
                 if let Err(error) = run_cli_shell(agent, command, &mut stderr) {
                     if error

@@ -291,7 +291,7 @@ pp stats
 | `pp-workspace` | 工作区安全保存、diff、图片编码、有界输出/artifact 存储、宿主默认值与共享工具值类型 |
 | `pp-mcp` | MCP 客户端（stdio/HTTP/SSE）、配置发现、后台建连、生命周期与工具代理 |
 | `pp-lsp` | LSP 注册表、stdio 传输、诊断、保存联动、只读修改预览与 `lsp` 工具 |
-| `pp-bash` | 嵌入式 Bash 宿主、进程组监督、后台任务管理、管道流存储与 AST 命令展示 |
+| `pp-bash` | 嵌入式 Bash 宿主、进程组监督、后台任务管理、管道阶段失败诊断与 AST 命令展示 |
 | `pp-tools` | 同步工具执行器、内置工具、分层项目指令与端口 trait |
 | `pp-runtime` | Agent 循环、子 Agent、Hooks 接线、会话与历史、模型控制和提示词 |
 | `pp-mock-ai` | 仅 debug 构建启用的本地 Responses mock 服务与内嵌调试场景（`/test-*`） |

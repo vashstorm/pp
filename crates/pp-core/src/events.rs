@@ -241,15 +241,6 @@ pub enum AgentEvent {
         id: String,
         snapshot: crate::shell_display::ShellPresentation,
     },
-    /// Preview of pipeline stages while running. The transient body only feeds the card and is
-    /// written to neither the journal nor the tool result; `result.pipes` after the call completes is
-    /// the recovery authority.
-    ToolPipelineSnapshot {
-        id: String,
-        pipes: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        preview: Option<String>,
-    },
     ToolFinished {
         id: String,
         result: serde_json::Value,

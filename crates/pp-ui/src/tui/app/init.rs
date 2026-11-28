@@ -1,7 +1,7 @@
 use crate::tui::{
     Agent, App, Context, EscapeTap, InputQueue, Instant, Level, Path, Result, ResumeState, State,
     ThinkLevel, Transcript, WorkerCommand, WorkerEvent, WorkflowState, commands, editor, files,
-    mpsc, publish_pipe_store, publish_prepared, publish_transition_failure, push_runtime_snapshot,
+    mpsc, publish_prepared, publish_transition_failure, push_runtime_snapshot,
     push_workflow_snapshot, request_ask, skills, statusline, thread, usage_snapshot,
 };
 use std::collections::BTreeMap;
@@ -170,11 +170,6 @@ impl App {
             hub_preload_error: None,
             hub_sends: BTreeMap::new(),
             child_drafts: Default::default(),
-            pipe_store: None,
-            pipe_store_epoch: 0,
-            pipes_panel: None,
-            pipes_worker: None,
-            pipes_view_epoch: 0,
             file_commands,
             file_worker: files::Worker::new(cwd)?,
             file_paths: Vec::new(),
@@ -264,11 +259,6 @@ impl App {
         self.default_model_reference = Some(agent.default_model_reference());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
-        // Startup binding: publish the root registry before any task so the panel can open while
-        // running.
-        let _ = sender.send(WorkerEvent::PipeStoreBound {
-            store: agent.pipe_store(),
-        });
         let warm_events = sender.clone();
         self.subagent_control = agent.subagent_control.clone();
         let dialog_lock = std::sync::Arc::new(pp_core::interaction::DialogQueue::default());
@@ -501,9 +491,6 @@ impl App {
                         WorkerCommand::Dump(mode) => WorkerEvent::Dumped(agent.dump(mode)),
                         WorkerCommand::Reset => {
                             agent.reset();
-                            if !publish_pipe_store(&sender, &agent) {
-                                break;
-                            }
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Reset
                         }
@@ -573,9 +560,6 @@ impl App {
                                         "failed to preload subagent root after tree navigation"
                                     );
                                 }
-                                if !publish_pipe_store(&sender, &agent) {
-                                    break;
-                                }
                                 push_runtime_snapshot(&agent, &mut snapshots);
                             }
                             WorkerEvent::TreeNavigated(result)
@@ -592,11 +576,6 @@ impl App {
                                             error = %error,
                                             "failed to preload subagent root after resume"
                                         );
-                                    }
-                                    // Resume is already the new session root: rebind the temp pipes
-                                    // first, then hand over the execution snapshot.
-                                    if !publish_pipe_store(&sender, &agent) {
-                                        break;
                                     }
                                     let prepared = publish_prepared(
                                         &sender,
@@ -638,9 +617,6 @@ impl App {
                         } => {
                             let result = agent.open_listed_plan(&selection, intent, &cancellation);
                             if result.is_ok() {
-                                if !publish_pipe_store(&sender, &agent) {
-                                    break;
-                                }
                                 push_runtime_snapshot(&agent, &mut snapshots);
                             }
                             WorkerEvent::ListedPlanOpened(result)
@@ -678,11 +654,6 @@ impl App {
                             };
                             match result {
                                 Ok(preparation) => {
-                                    // Keep does not touch the store (idempotent for the same
-                                    // instance); Fresh publishes immediately after switching roots.
-                                    if !publish_pipe_store(&sender, &agent) {
-                                        break;
-                                    }
                                     match publish_prepared(
                                         &sender,
                                         &agent,
@@ -718,12 +689,6 @@ impl App {
                                 &mut emit,
                             ) {
                                 Ok(preparation) => {
-                                    // A Fresh-approved handoff already swapped the store; the next
-                                    // task (continue execution) requires the UI to rebind first,
-                                    // while Keep is skipped by the same-instance check.
-                                    if !publish_pipe_store(&sender, &agent) {
-                                        break;
-                                    }
                                     match publish_prepared(
                                         &sender,
                                         &agent,

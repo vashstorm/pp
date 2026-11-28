@@ -1,34 +1,8 @@
-//! Plan §3 integration regression: against the real CLI, verify foreground/background pipeline stage mirroring, pipe://
-//! read-only bodies, transient stage events staying out of persistence, and a resumed session keeping only status without bodies.
-//!
-//! The cases observe only tool results, cross-process history, session/stats/artifact files and terminal output;
-//! they never assert prompt text, schema copy or source text.
+//! Pipeline output and failure diagnostics through the real CLI and both provider protocols.
 
 use super::*;
 use rusqlite::Connection;
 use std::path::Path;
-
-fn assert_pipes(result: &Value) -> &Value {
-    assert!(
-        result["pipes"].is_object(),
-        "missing pipes metadata: {result}"
-    );
-    &result["pipes"]
-}
-
-fn pipeline_run(result: &Value) -> String {
-    assert_pipes(result)["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing pipe run id: {result}"))
-        .to_owned()
-}
-
-fn pipeline_stream_uri(result: &Value, index: usize) -> String {
-    assert_pipes(result)["streams"][index]["uri"]
-        .as_str()
-        .unwrap_or_else(|| panic!("missing stream {index}: {result}"))
-        .to_owned()
-}
 
 fn session_journal(home: &Path) -> std::path::PathBuf {
     let sessions = config_path(home, "sessions");
@@ -41,19 +15,6 @@ fn session_journal(home: &Path) -> std::path::PathBuf {
     files.sort();
     assert_eq!(files.len(), 1, "expected one session journal: {files:?}");
     files.pop().unwrap()
-}
-
-fn collect_text(path: &Path, text: &mut String) {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return;
-    };
-    if metadata.is_dir() {
-        for entry in std::fs::read_dir(path).unwrap().flatten() {
-            collect_text(&entry.path(), text);
-        }
-    } else if metadata.is_file() {
-        text.push_str(&String::from_utf8_lossy(&std::fs::read(path).unwrap()));
-    }
 }
 
 fn assert_no_marker(path: &Path, marker: &str) {
@@ -103,7 +64,7 @@ fn assert_stats_have_no_marker(home: &Path, marker: &str) {
 }
 
 #[test]
-fn pipeline_foreground_stage_mirror_reads_into_model_history() {
+fn pipeline_foreground_keeps_failures_without_exposing_stage_output() {
     const MARKER: &str = "hidden-foreground-secret";
     for protocol in PROTOCOLS {
         let server = server();
@@ -135,71 +96,47 @@ fn pipeline_foreground_stage_mirror_reads_into_model_history() {
             "stage body leaked into the bash result: {result}"
         );
 
-        let pipes = assert_pipes(&result);
-        assert_eq!(pipes["nonzero_stages"], 1, "{result}");
-        assert_eq!(pipes["incomplete"], false, "{result}");
-        let pipelines = pipes["pipelines"].as_array().unwrap();
-        assert_eq!(pipelines.len(), 1, "{result}");
-        assert_eq!(pipelines[0]["stage_count"], 2, "{result}");
-        assert_eq!(pipelines[0]["stages"][0]["status"], 7, "{result}");
-        assert_eq!(pipelines[0]["stages"][1]["status"], 0, "{result}");
-
-        let uri = pipeline_stream_uri(&result, 0);
         assert_eq!(
-            uri,
-            format!("pipe://{}/1", pipeline_run(&result)),
+            result["pipeline_failures"],
+            json!({"count":1,"stages":[{"pipeline":1,"stage":1,"status":7}]}),
             "{result}"
         );
-        let total = format!("{MARKER}\nvisible-line\n").len() as u64;
-        assert_eq!(pipes["streams"][0]["open"], false, "{result}");
-        assert_eq!(pipes["streams"][0]["total_bytes"], total, "{result}");
+        assert!(result.get("pipes").is_none(), "{result}");
 
         protocol.calls_reply(
             request,
-            json!([protocol.call("pipe-read", "read", json!({"path":uri}))]),
+            json!([protocol.call(
+                "pipe-read",
+                "read",
+                json!({"path":"pipe://00112233445566778899aabbccddeeff/1"})
+            )]),
         );
         let (request, body) = protocol.receive(&server);
         let read = protocol.tool_result(&body, "pipe-read");
-        assert_eq!(read["content"], format!("{MARKER}\nvisible-line\n"));
-        assert_eq!(read["pipe"]["total_bytes"], total);
-        assert_eq!(read["pipe"]["start"], 0);
-        assert_eq!(read["pipe"]["end"], total);
-        assert_eq!(read["pipe"]["open"], false);
-        assert_eq!(read["pipe"]["prefix_evicted"], false);
-        // The read result is now part of the next model request's tool history,
-        // while the bash result still carries only bounded metadata.
+        assert_eq!(read["ok"], false, "{read}");
         assert!(
-            body.to_string().contains(MARKER),
-            "read content missing from model history: {body}"
+            read["error"]
+                .as_str()
+                .unwrap()
+                .contains("no longer available"),
+            "{read}"
         );
-        assert_eq!(
-            protocol.tool_result(&body, "pipeline")["pipes"]["run_id"],
-            pipeline_run(&result)
-        );
+        assert!(!body.to_string().contains(MARKER), "{body}");
 
         protocol.final_reply(request, "foreground pipeline verified");
         let output = cli.finish();
         assert!(output.status.success(), "{protocol:?}: {output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("[pipes: pipe://"),
-            "missing bounded pipe summary: {stderr}"
-        );
-        assert!(
-            stderr.contains("Non-zero stage results: 1"),
+            stderr.contains("Non-zero pipeline stages: 1"),
             "missing bounded stage warning: {stderr}"
         );
         assert!(
             !stderr.contains(MARKER),
             "stage body reached the CLI output: {stderr}"
         );
+        assert_no_marker(&session_journal(dir.path()), MARKER);
+        assert_stats_have_no_marker(dir.path(), MARKER);
         no_more(&server);
     }
-}
-
-fn is_subagent_request(body: &Value) -> bool {
-    body["instructions"]
-        .as_str()
-        .or_else(|| body["messages"][0]["content"].as_str())
-        .is_some_and(|text| text.contains("You are subagent"))
 }

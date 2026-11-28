@@ -34,7 +34,7 @@
 ### 4.1 `read`
 
 - 默认每页 ≤ `read_max_lines`（2000 行）且 ≤ `read_max_bytes`（65536 字节）；结果带 `truncated`／`next_offset`／`next_path`，让模型按需续读而不是一次取全量。
-- 会话级去重：普通本地文本文件、正文 ≥ 1024 B 时参与；键为规范路径 + 选择器 + 编辑模式 + 读取限额，命中要求 `(dev, ino, len, mtime)` 指纹一致（Hashline 模式还要求对应快照仍激活）。命中返回 `deduplicated:true` 短桩并保留分页元信息，最多 256 条。写入/编辑按路径失效，裁剪或压缩后整体清空；`:raw`、URL、`skill://`／`artifact://`／`pipe://`／`agent://`、图片与目录不参与。
+- 会话级去重：普通本地文本文件、正文 ≥ 1024 B 时参与；键为规范路径 + 选择器 + 编辑模式 + 读取限额，命中要求 `(dev, ino, len, mtime)` 指纹一致（Hashline 模式还要求对应快照仍激活）。命中返回 `deduplicated:true` 短桩并保留分页元信息，最多 256 条。写入/编辑按路径失效，裁剪或压缩后整体清空；`:raw`、URL、`skill://`／`artifact://`／`agent://`、图片与目录不参与。
 - URL：Readability 失败回退整页 HTML 前先剥离 `<script>`／`<style>`／`<noscript>`／`<svg>`／`<nav>`／`<footer>`／`<aside>`／`<header>` 并压缩多余空行。
 
 ### 4.2 `rg` 与 `glob`
@@ -60,7 +60,7 @@
 
 | 工具 | 剥离字段 |
 |---|---|
-| `bash`／`bash_task`／`wait` | `shell` 展示行；已结束且无管道命令的空 `pipes` |
+| `bash`／`bash_task`／`wait` | `shell` 展示行 |
 | `write`／`edit` | 已内联进 `content` 的 `diagnostics` |
 | `lsp` | 已内联的 `diagnostics`／`details` |
 | `web_search` | `details` |

@@ -183,8 +183,7 @@ struct Inner {
     lsp_cleanup: Mutex<Vec<pp_lsp::Cleanup>>,
     cleanup_errors: Mutex<Vec<anyhow::Error>>,
     output_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
-    /// Pipeline stage previews are kept apart from the main output snapshot; kinds never overwrite each other.
-    pipeline_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
+    /// Command display snapshots are kept independently of the main output.
     shell_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     model_progress: Mutex<BTreeMap<String, observe::ModelProgress>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,

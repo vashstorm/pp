@@ -15,7 +15,7 @@ use super::{
     ExecuteCall, PLAN_BASE_TOOLS, PLAN_SEARCH_TOOLS, ToolPolicy, Tools, is_plan_tool, permission,
     plan,
 };
-use pp_bash::{BackgroundCleanup, PipeStore};
+use pp_bash::BackgroundCleanup;
 use pp_workspace::{diff, save};
 
 /// Extract only the display path from model arguments, without touching the filesystem.
@@ -72,7 +72,6 @@ impl Tools {
             wait_state: RefCell::default(),
             limits: ToolLimits::default(),
             host_defaults: pp_workspace::host_defaults::current(),
-            pipe_store: PipeStore::new(),
             sandbox: std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
             web_search: pp_config::config::WebSearchSettings::default(),
         })
@@ -135,20 +134,6 @@ impl Tools {
         let mut tools = Self::new(cwd, edit_mode)?;
         tools.mcp = mcp;
         Ok(tools)
-    }
-
-    pub fn pipe_store(&self) -> PipeStore {
-        self.pipe_store.clone()
-    }
-
-    /// Replace the registry when the root changes; temporary URIs from an old session are not reused across roots.
-    pub fn reset_pipe_store(&mut self) {
-        self.pipe_store = PipeStore::new();
-    }
-
-    /// A subagent run shares the temporary body quota and lifetime with the root session.
-    pub fn share_pipe_store(&mut self, store: &PipeStore) {
-        self.pipe_store = store.clone();
     }
 
     pub fn stop_background_tasks(&self) -> Result<()> {

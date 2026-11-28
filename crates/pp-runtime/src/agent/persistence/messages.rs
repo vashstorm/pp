@@ -146,7 +146,6 @@ impl SessionJournal {
             AgentEvent::ContextUpdated { .. }
                 | AgentEvent::ToolArgumentsDelta { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
-                | AgentEvent::ToolPipelineSnapshot { .. }
                 | AgentEvent::ToolShellSnapshot { .. }
                 | AgentEvent::TodoStateUpdated { .. }
                 | AgentEvent::PlanProgressUpdated { .. }

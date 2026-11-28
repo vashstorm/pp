@@ -303,7 +303,7 @@ The repository is a Cargo workspace with thirteen packages (plus `pp-test-suppor
 | `pp-workspace` | Managed workspace safe saves, diffs, image decoding, bounded output/artifact store, host defaults, and shared tool value types |
 | `pp-mcp` | MCP clients (stdio/HTTP/SSE), configuration discovery, background connections, lifecycle, and tool proxying |
 | `pp-lsp` | LSP registry, stdio transport, diagnostics, writethrough, readonly edit preview, and the `lsp` tool |
-| `pp-bash` | Embedded Bash host, external process supervision, background task manager, pipe store, and AST shell display |
+| `pp-bash` | Embedded Bash host, external process supervision, background task manager, pipeline failure diagnostics, and AST shell display |
 | `pp-tools` | Synchronous tool executor, built-in tools, layered project instructions, and port traits (`ToolHookCall`, `PlanSubmitGate`, `SubagentHost`) |
 | `pp-runtime` | Agent loop, subagents, hooks wiring, sessions and history, model control, and prompts |
 | `pp-mock-ai` | Debug-only local Responses mock server and built-in test scenarios (`/test-*`) |

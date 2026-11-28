@@ -255,27 +255,6 @@ impl App {
                 if control && key.code == KeyCode::Char('c') {
                     return key.kind == KeyEventKind::Press;
                 }
-                // F8 is a global entry point: it rebinds to the nearest run even when a panel is
-                // already open.
-                if key.code == KeyCode::F(8)
-                    && key.modifiers.is_empty()
-                    && self.pipes_entry_allowed()
-                {
-                    if key.kind == KeyEventKind::Press {
-                        self.open_pipes(None);
-                    }
-                    *dirty = true;
-                    return false;
-                }
-                // The panel owns its keys: Esc only closes it and global keys such as Ctrl+O must
-                // not pass through.
-                if let Some(panel) = &mut self.pipes_panel {
-                    let action = panel.key(key);
-                    self.escape_tap.reset();
-                    self.apply_pipes_action(action);
-                    *dirty = true;
-                    return false;
-                }
                 // Alt+A toggles the Hub in the main view only; the empty state opens even
                 // without a binding.
                 if crate::tui::app::hub::is_hub_toggle(&Event::Key(key))

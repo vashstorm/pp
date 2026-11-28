@@ -547,7 +547,6 @@ fn run_cli_execution(
             | AgentEvent::UserInputRejected { .. }
             | AgentEvent::ProjectInstructionsLoaded { .. }
             | AgentEvent::PlanProgressUpdated { .. }
-            | AgentEvent::ToolPipelineSnapshot { .. }
             | AgentEvent::ToolShellSnapshot { .. }
             | AgentEvent::TodoStateUpdated { .. } => {}
         }

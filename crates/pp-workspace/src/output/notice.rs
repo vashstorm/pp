@@ -30,52 +30,12 @@ pub(super) fn recovery_notice(value: &Value) -> Option<String> {
     ))
 }
 
-/// Bounded stage summary of `result.pipes`; metadata only, no registry access and no stage bodies.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PipesStatus {
-    pub run_id: String,
-    pub uri: String,
-    pub nonzero_stages: u64,
-    pub incomplete: bool,
-}
-
-impl PipesStatus {
-    /// CLI trailer line: URI, non-zero stage count and the incomplete observation/retention hint.
-    pub fn notice(&self) -> String {
-        let mut status = format!("[pipes: {}", self.uri);
-        if self.nonzero_stages > 0 {
-            status.push_str(&format!(
-                " · Non-zero stage results: {}",
-                self.nonzero_stages
-            ));
-        }
-        if self.incomplete {
-            status.push_str(" · stage output incomplete");
-        }
-        status.push(']');
-        status
-    }
-}
-
-/// Extract a bounded summary from `pipes` metadata; returns `None` when there is no real pipeline and older results stay unchanged.
-pub fn pipes_status(pipes: &Value) -> Option<PipesStatus> {
-    if !pipes.is_object() {
-        return None;
-    }
-    let run_id = pipes["run_id"].as_str()?;
-    let pipelines = pipes["pipelines"].as_array().map_or(0, Vec::len);
-    if pipelines == 0 && pipes["omitted_pipelines"].as_u64().unwrap_or(0) == 0 {
-        return None;
-    }
-    Some(PipesStatus {
-        run_id: run_id.to_owned(),
-        uri: pipes["uri"]
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("pipe://{run_id}")),
-        nonzero_stages: pipes["nonzero_stages"].as_u64().unwrap_or(0),
-        incomplete: pipes["incomplete"] == true || pipes["capture_error"].is_string(),
-    })
+/// Summarize observed non-zero pipeline stages from the tool result.
+pub fn pipeline_failure_notice(value: &Value) -> Option<String> {
+    let count = value["pipeline_failures"]["count"]
+        .as_u64()
+        .or_else(|| value["pipes"]["nonzero_stages"].as_u64())?;
+    (count > 0).then(|| format!("Non-zero pipeline stages: {count}"))
 }
 
 /// Build display text from saved metadata only; the UI never touches files here.
@@ -108,44 +68,4 @@ pub fn notice(value: &Value) -> String {
         notices.push(format!("[{error}]"));
     }
     notices.join("\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pipes_status_is_bounded_and_absent_for_old_results() {
-        assert!(pipes_status(&Value::Null).is_none());
-        assert!(pipes_status(&json!({"ok":true,"stdout":"plain"})).is_none());
-        // A run without real pipelines does not use the card footer entry.
-        assert!(pipes_status(&json!({"run_id":"abc","uri":"pipe://abc"})).is_none());
-
-        let status = pipes_status(&json!({
-            "run_id":"abc",
-            "uri":"pipe://abc",
-            "pipelines":[{"id":1,"stages":[]}],
-            "streams":[{"id":0,"uri":"pipe://abc/0"}],
-            "nonzero_stages":2,
-            "incomplete":true
-        }))
-        .unwrap();
-        assert_eq!(status.uri, "pipe://abc");
-        assert_eq!(status.nonzero_stages, 2);
-        assert!(status.incomplete);
-        let notice = status.notice();
-        assert!(notice.contains("pipe://abc"), "{notice}");
-        assert!(notice.contains("Non-zero stage results: 2"), "{notice}");
-        assert!(notice.contains("stage output incomplete"), "{notice}");
-        assert!(!notice.contains("body-secret"), "{notice}");
-
-        let omitted = pipes_status(&json!({
-            "run_id":"def",
-            "pipelines":[],
-            "omitted_pipelines":3
-        }))
-        .unwrap();
-        assert_eq!(omitted.uri, "pipe://def");
-        assert!(!omitted.notice().contains("Non-zero"));
-    }
 }

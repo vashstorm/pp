@@ -1,12 +1,9 @@
 mod display;
 mod host;
-mod relay;
+mod observation;
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod sandbox_tests;
-mod streams;
 mod supervisor;
-
-pub use streams::PipeStore;
 
 use anyhow::{Context, Result};
 use pp_core::cancellation::CancellationToken;
@@ -23,19 +20,6 @@ use std::{
     time::Instant,
 };
 
-fn new_pipe_run(store: &PipeStore, owner: &str) -> Result<streams::PipeRun> {
-    let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes).context("allocating pipeline run identifier")?;
-    let mut id = String::with_capacity(32);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(id, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    store
-        .start_run(id, owner)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     cwd: &Path,
@@ -47,13 +31,11 @@ pub fn run(
     emit: &mut dyn FnMut(AgentEvent),
     sink: OutputSink,
     defaults: pp_workspace::host_defaults::HostDefaults,
-    pipe_store: &PipeStore,
     sandbox: Option<Arc<Policy>>,
 ) -> Result<Value> {
     let started = Instant::now();
-    let pipes = new_pipe_run(pipe_store, call_id)?;
-    pipes.prepare_shell(command);
-    if let Some(snapshot) = pipes.shell_snapshot() {
+    let observer = Arc::new(observation::Observer::new(command));
+    if let Some(snapshot) = observer.shell.snapshot() {
         emit(AgentEvent::ToolShellSnapshot {
             id: call_id.to_owned(),
             snapshot,
@@ -71,7 +53,7 @@ pub fn run(
             cancellation,
             stop: &stop,
             umask: defaults.umask,
-            pipes: &pipes,
+            observer: &observer,
             sandbox: sandbox.as_ref(),
         },
         sink.clone(),
@@ -79,8 +61,10 @@ pub fn run(
     )
     .context("running embedded bash")?;
     let mut result = lock(&sink).value();
-    result["pipes"] = pipes.pipes_json();
-    if let Some(snapshot) = pipes.shell_snapshot() {
+    if let Some(failures) = observer.failures() {
+        result["pipeline_failures"] = serde_json::to_value(failures)?;
+    }
+    if let Some(snapshot) = observer.shell.snapshot() {
         result["shell"] = serde_json::to_value(snapshot)?;
     }
     let (ok, timed_out, cancelled) = match outcome.termination {
@@ -182,10 +166,6 @@ struct BackgroundTask {
     started: Instant,
     stop: CancellationToken,
     sandbox: Option<Arc<Policy>>,
-    /// Handle of the live pipeline run; after the task completes it is replaced by
-    /// [`BackgroundState::final_pipes`] and released so ring buffers already evicted from the registry are
-    /// not kept strongly referenced by the task forever.
-    pipes: Mutex<Option<streams::PipeRun>>,
     state: Mutex<BackgroundState>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
 }
@@ -199,8 +179,8 @@ struct BackgroundState {
     warning: Option<String>,
     cleanup_error: Option<String>,
     sandbox_blocked: bool,
-    /// Bounded stage/stream metadata copied from the run on completion (no stage bodies).
-    final_pipes: Option<Value>,
+    observer: Option<Arc<observation::Observer>>,
+    final_failures: Option<observation::PipelineFailures>,
     final_shell: Option<pp_core::shell_display::ShellPresentation>,
 }
 
@@ -234,8 +214,14 @@ impl BackgroundTask {
         }
         let failed = state.status == "failed";
         let sandbox_blocked = state.sandbox_blocked;
-        let final_pipes = state.final_pipes.clone();
-        let final_shell = state.final_shell.clone();
+        let failures = state
+            .final_failures
+            .clone()
+            .or_else(|| state.observer.as_ref()?.failures());
+        let shell = state
+            .final_shell
+            .clone()
+            .or_else(|| state.observer.as_ref()?.shell.snapshot());
         drop(state);
         if failed
             && let Some(policy) = self.sandbox.as_deref()
@@ -246,18 +232,9 @@ impl BackgroundTask {
         {
             attach_sandbox_denial(&mut value, policy);
         }
-        // While running, read the same live run; after completion only bounded metadata is read, so the
-        // already evictable run state and ring buffers are not retained again.
-        let pipes =
-            final_pipes.or_else(|| lock(&self.pipes).as_ref().map(streams::PipeRun::pipes_json));
-        if let Some(pipes) = pipes {
-            value["pipes"] = pipes;
+        if let Some(failures) = failures {
+            value["pipeline_failures"] = serde_json::to_value(failures)?;
         }
-        let shell = final_shell.or_else(|| {
-            lock(&self.pipes)
-                .as_ref()
-                .and_then(streams::PipeRun::shell_snapshot)
-        });
         if let Some(shell) = shell {
             value["shell"] = serde_json::to_value(shell)?;
         }
@@ -332,7 +309,6 @@ impl TaskManager {
             "test-background",
             cancellation,
             pp_workspace::host_defaults::HostDefaults::test_default(),
-            &PipeStore::new(),
             OutputSink::new(Default::default(), Default::default()),
             None,
         )
@@ -347,7 +323,6 @@ impl TaskManager {
         call_id: &str,
         cancellation: &CancellationToken,
         defaults: pp_workspace::host_defaults::HostDefaults,
-        pipe_store: &PipeStore,
         sink: OutputSink,
         sandbox: Option<Arc<Policy>>,
     ) -> Result<Value> {
@@ -359,16 +334,13 @@ impl TaskManager {
             .checked_add(1)
             .context("background task ID exhausted")?;
         let id = format!("bg-{next_id}");
-        // Same as the foreground path: one run per task, sharing the root session's temporary pipe store.
-        let pipes = new_pipe_run(pipe_store, call_id)?;
-        pipes.prepare_shell(command);
+        let observer = Arc::new(observation::Observer::new(command));
         let output = Arc::new(Mutex::new(sink));
         let task = Arc::new(BackgroundTask {
             label: command.chars().take(200).collect(),
             started: Instant::now(),
             stop: CancellationToken::new(),
             sandbox: sandbox.clone(),
-            pipes: Mutex::new(Some(pipes)),
             state: Mutex::new(BackgroundState {
                 duration_ms: None,
                 status: "running",
@@ -378,7 +350,8 @@ impl TaskManager {
                 warning: None,
                 cleanup_error: None,
                 sandbox_blocked: false,
-                final_pipes: None,
+                observer: Some(observer.clone()),
+                final_failures: None,
                 final_shell: None,
             }),
             worker: Mutex::new(None),
@@ -394,20 +367,10 @@ impl TaskManager {
             cancellation: cancellation.clone(),
             sandbox,
         };
-        let worker = match thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("pp-{id}"))
-            .spawn(move || background_worker(&worker_task, &run))
-        {
-            Ok(worker) => worker,
-            Err(error) => {
-                // The interpreter never shuts down when the thread fails to start, so the run must not stay
-                // in the running state.
-                if let Some(pipes) = lock(&task.pipes).take() {
-                    pipes.finish(streams::RunEnd::interrupted("host_setup_failed"));
-                }
-                return Err(error).context("starting background executor");
-            }
-        };
+            .spawn(move || background_worker(&worker_task, &run, observer))
+            .context("starting background executor")?;
         *lock(&task.worker) = Some(worker);
         registry.next_id = next_id;
         registry.tasks.insert(id.clone(), task.clone());
@@ -494,12 +457,11 @@ fn stop_registry(registry: &Mutex<TaskRegistry>, close: bool) -> Result<()> {
 
 /// Background task thread: shares the same embedded execution core as the foreground path but has no
 /// fixed deadline.
-fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
-    let Some(pipes) = lock(&task.pipes).as_ref().cloned() else {
-        // The run has already been reclaimed (only possible on the startup-failure path); do not start the
-        // interpreter.
-        return;
-    };
+fn background_worker(
+    task: &BackgroundTask,
+    run: &BackgroundRun,
+    observer: Arc<observation::Observer>,
+) {
     let result = host::run_host(
         host::HostConfig {
             cwd: &run.cwd,
@@ -511,22 +473,19 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
             cancellation: &run.cancellation,
             stop: &task.stop,
             umask: run.umask,
-            pipes: &pipes,
+            observer: &observer,
             sandbox: run.sandbox.as_ref(),
         },
         run.sink.clone(),
         None,
     );
-    // The execution core has already sealed this run; copy the bounded metadata and publish it to the
-    // state first, then release the task's strong reference to the run. A snapshot therefore always reads
-    // either the live run or the final metadata, never the intermediate "state done but metadata missing".
-    let final_pipes = pipes.pipes_json();
     let mut state = lock(&task.state);
     // The normal path already sealed in the execution core; this covers the startup-failure path.
     lock(state.output.as_ref()).finish();
     state.duration_ms = Some(task.started.elapsed().as_millis() as u64);
-    state.final_pipes = Some(final_pipes);
-    state.final_shell = pipes.shell_snapshot();
+    state.final_failures = observer.failures();
+    state.observer = None;
+    state.final_shell = observer.shell.snapshot();
     match result {
         Ok(outcome) => {
             state.exit_code = outcome.exit_code;
@@ -568,11 +527,6 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
             }
         }
     }
-    drop(state);
-    // Metadata is now frozen into the final snapshot; only after this can registry eviction really release
-    // the ring buffers.
-    drop(pipes);
-    lock(&task.pipes).take();
 }
 
 #[cfg(test)]
@@ -791,100 +745,5 @@ mod integration {
                     .starts_with(".pp-tmp-")
             }));
         }
-    }
-
-    #[test]
-    fn background_completed_tasks_release_evicted_pipe_bodies() {
-        // Each task pushes more than 1 MiB of body per stream through the pipe; completed runs are kept
-        // only up to the registry limit.
-        const RUNS: usize = super::streams::MAX_COMPLETED_RUNS + 2;
-        const CHUNK: u64 = 65536;
-        const CHUNKS: usize = 24;
-
-        let dir = tempfile::tempdir().unwrap();
-        let store = PipeStore::new();
-        let manager = TaskManager::default();
-        let mut tasks = Vec::new();
-        for index in 0..RUNS {
-            let snapshot = manager
-                .start_with_output(
-                    dir.path(),
-                    dir.path(),
-                    "for ((i=0; i<24; i++)); do printf '%65536s' ''; done | cat > /dev/null",
-                    "test-background-pipes",
-                    &CancellationToken::new(),
-                    pp_workspace::host_defaults::HostDefaults::test_default(),
-                    &store,
-                    OutputSink::new(Default::default(), Default::default()),
-                    None,
-                )
-                .unwrap();
-            let id = snapshot["task_id"].as_str().unwrap().to_owned();
-            let task = manager.task(&id).unwrap();
-            // While running, the live run provides the same metadata.
-            assert!(
-                snapshot["pipes"]["run_id"]
-                    .as_str()
-                    .is_some_and(|run_id| run_id.len() == 32),
-                "running task {index} lost its pipeline run"
-            );
-            let watch = lock(&task.pipes)
-                .as_ref()
-                .expect("running task must own its run handle")
-                .watch();
-            task.join().unwrap();
-            tasks.push((id, watch));
-        }
-
-        // Only the latest MAX_COMPLETED_RUNS completed runs are kept; older URIs are already invalid.
-        assert_eq!(store.list().len(), super::streams::MAX_COMPLETED_RUNS);
-        for (index, (id, watch)) in tasks.iter().enumerate() {
-            let task = manager.task(id).unwrap();
-            let snapshot = task.snapshot(id).unwrap();
-            assert_eq!(snapshot["status"], "exited", "task {index}");
-            let pipes = &snapshot["pipes"];
-            assert_eq!(
-                pipes["streams"].as_array().unwrap().len(),
-                1,
-                "task {index}"
-            );
-            assert_eq!(
-                pipes["streams"][0]["total_bytes"].as_u64().unwrap(),
-                CHUNK * CHUNKS as u64,
-                "task {index}"
-            );
-            let retained = pipes["streams"][0]["retained_end"].as_u64().unwrap()
-                - pipes["streams"][0]["retained_start"].as_u64().unwrap();
-            assert_eq!(
-                retained,
-                super::streams::STREAM_RING_CAP as u64,
-                "task {index} must hold one capped ring body"
-            );
-            let run_id = pipes["run_id"].as_str().unwrap();
-            // After completion the task handle no longer strongly references the live run.
-            assert!(
-                lock(&task.pipes).is_none(),
-                "task {index} kept a live run handle"
-            );
-            if index < RUNS - super::streams::MAX_COMPLETED_RUNS {
-                assert!(
-                    store.snapshot(run_id).is_err(),
-                    "old run {index} must be evicted from the store"
-                );
-                // If the task still held the PipeRun after eviction, the Ring body would outlive the quota
-                // forever.
-                assert!(
-                    !watch.is_alive(),
-                    "task {index} still owns the evicted run body"
-                );
-            } else {
-                assert!(
-                    store.snapshot(run_id).is_ok(),
-                    "recent run {index} must remain readable"
-                );
-                assert!(watch.is_alive(), "recent run {index} must stay alive");
-            }
-        }
-        manager.stop_all().unwrap();
     }
 }

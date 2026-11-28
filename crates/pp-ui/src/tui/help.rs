@@ -80,7 +80,6 @@ const KEYBINDING_GROUPS: &[(&str, &[(&str, &str)])] = &[
         "Panels",
         &[
             ("F1", "help"),
-            ("F8", "pipe streams"),
             ("Esc Esc", "session tree"),
             ("Ctrl + O", "tool output"),
             (platform_text("⌥ + A", "Alt + A"), "Agent Hub"),

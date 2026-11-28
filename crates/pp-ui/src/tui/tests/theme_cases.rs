@@ -257,7 +257,6 @@ fn mock_test_snapshot_restores_current_source_and_override_selection() {
             threshold_percent: 80,
         },
         subagent_control: Arc::new(Mutex::new(None)),
-        pipe_store: pp_bash::PipeStore::default(),
     });
     assert_eq!(app.override_selection, None);
     app.finish_mock_test(

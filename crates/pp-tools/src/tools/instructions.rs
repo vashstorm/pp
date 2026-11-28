@@ -111,7 +111,7 @@ impl Tools {
             _ => return Ok(None),
         };
         if self.subagent.is_some() && crate::is_subagent_uri(&path)
-            || read::is_pipe_uri(&path)
+            || path.starts_with(super::LEGACY_PIPE_URI)
             || path.starts_with("artifact://")
         {
             return Ok(None);

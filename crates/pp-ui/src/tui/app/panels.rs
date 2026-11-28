@@ -144,7 +144,6 @@ impl App {
         }
         if self.skills_pending
             || self.skill_panel.is_some()
-            || self.pipes_panel.is_some()
             || self.context_panel.is_some()
             || self.model_panel.is_some()
         {
@@ -252,15 +251,6 @@ impl App {
                     format!("Finish or cancel the current task before using {name}."),
                 );
             }
-            return false;
-        }
-        // /pipes is a purely local panel: it opens while running, cancelling or idle and never
-        // enters steering.
-        if let Some(Command::Pipes(run)) = &command {
-            let run = *run;
-            self.remember_input();
-            self.clear_input();
-            self.open_pipes(run);
             return false;
         }
         let model_text = match &command {
@@ -559,7 +549,6 @@ impl App {
                     self.open_roles();
                 }
                 Some(Command::Agents | Command::Setting(_)) => unreachable!("handled above"),
-                Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 #[cfg(debug_assertions)]
                 Some(
@@ -864,7 +853,6 @@ impl App {
         if let Some(worker) = self.mock_worker.as_ref() {
             worker.cancel();
         }
-        self.close_pipes();
         self.plan_list_panel = None;
         self.plan_list_pending = None;
         self.plan_reenter_standby = false;

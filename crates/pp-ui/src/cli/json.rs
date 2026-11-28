@@ -388,7 +388,6 @@ fn process_event(
         | AgentEvent::ModelOutputProgress { .. }
         | AgentEvent::ToolOutputSnapshot { .. }
         | AgentEvent::ToolShellSnapshot { .. }
-        | AgentEvent::ToolPipelineSnapshot { .. }
         | AgentEvent::ProjectInstructionsLoaded { .. }
         | AgentEvent::PlanProgressUpdated { .. }
         | AgentEvent::TodoStateUpdated { .. }

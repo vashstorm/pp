@@ -102,25 +102,11 @@ impl TranscriptEntry {
         } else if self.status == EntryStatus::Failed {
             parts.push("failed".into());
         }
-        if let Some(badge) = &self.pipes_badge {
-            parts.push("Pipes: /pipes (F8)".into());
-            if badge.restored {
-                parts.push("temporary pipe bodies unavailable".into());
-            }
-        }
-        let footer_warning = self.pipes_badge.as_ref().map_or_else(String::new, |badge| {
-            let mut warnings = Vec::new();
-            if badge.status.nonzero_stages > 0 {
-                warnings.push(format!(
-                    "Non-zero stage results: {}",
-                    badge.status.nonzero_stages
-                ));
-            }
-            if badge.status.incomplete {
-                warnings.push("stage output incomplete".into());
-            }
-            warnings.join(" · ")
-        });
+        let footer_warning = self
+            .result
+            .as_ref()
+            .and_then(pp_workspace::output::pipeline_failure_notice)
+            .unwrap_or_default();
         self.apply_footer(parts.join(" · "), footer_warning)
     }
 
@@ -178,16 +164,6 @@ impl TranscriptEntry {
             String::new()
         };
         self.apply_footer(parts.join(" · "), footer_warning)
-    }
-
-    /// Rebuild the `/pipes` entry from the final `result.pipes`; clear it when there is no real pipeline.
-    pub(super) fn sync_pipes_badge(&mut self, restored: bool) {
-        self.pipes_badge = self
-            .result
-            .as_ref()
-            .and_then(|result| result.get("pipes"))
-            .and_then(pp_workspace::output::pipes_status)
-            .map(|status| super::PipesBadge { status, restored });
     }
 
     pub(super) fn is_file_read(&self) -> bool {

@@ -228,14 +228,6 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Browse current history and rewind to an earlier point (TUI)",
     },
     CommandSpec {
-        name: "/pipes",
-        display_label: None,
-        aliases: &[],
-        category: CommandCategory::Workflow,
-        usage: "/pipes [run-id]",
-        description: "Browse temporary pipeline stage streams for a bash run (TUI)",
-    },
-    CommandSpec {
         name: "/plan-list",
         display_label: None,
         aliases: &[],
@@ -479,7 +471,6 @@ pub(crate) enum Command<'a> {
     Dump(pp_runtime::agent::DumpMode),
     Resume,
     Tree,
-    Pipes(Option<&'a str>),
     Setting(SettingTab),
     Roles,
     Agents,
@@ -554,19 +545,6 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         }
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
-        "/pipes" => {
-            ensure!(
-                argument.is_empty()
-                    || argument.len() == 32
-                        && argument
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-                "usage: /pipes [run-id]"
-            );
-            return Ok(Some(Command::Pipes(
-                (!argument.is_empty()).then_some(argument),
-            )));
-        }
         "/setting" | "/settings" | "/config" => {
             let tab = match argument {
                 "" | "general" => SettingTab::General,
@@ -760,7 +738,6 @@ fn spec_order(name: &str) -> usize {
         "/plan" => 0,
         "/plan-list" => 1,
         "/agents" => 2,
-        "/pipes" => 3,
         "/setting" => 0,
         "/themes" => 1,
         "/skills" => 2,
