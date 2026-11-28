@@ -322,7 +322,7 @@ fn split_entry_selector(cwd: &Path, entry: &str) -> Result<(String, Vec<(usize, 
 
 /// 预解析 `rg` 参数指向的搜索根路径，供权限门在执行遍历前分类并审批会话/外部路径。
 pub(in crate::tools) fn inspect_roots(cwd: &Path, arguments: &str) -> Result<Vec<PathBuf>> {
-    let Ok(args) = serde_json::from_str::<super::Args>(arguments) else {
+    let Ok(args) = super::Args::parse(arguments) else {
         return Ok(Vec::new());
     };
     if args
@@ -355,6 +355,100 @@ pub(in crate::tools) fn inspect_roots(cwd: &Path, arguments: &str) -> Result<Vec
         }
     }
     Ok(roots)
+}
+
+/// 缺失路径的纠错候选上限与遍历预算：只在报错路径上运行，必须有界。
+const SUGGEST_LIMIT: usize = 3;
+const SUGGEST_SCAN: usize = 20_000;
+
+/// 为不存在的工作区内路径找同名（或同 stem）的文件/目录，按与原路径的公共前缀深度排序。
+/// 尽力而为：遍历遵守 ignore 文件与沙盒读拒绝，超出预算、取消或超时即返回已有结果。
+fn suggest_paths(
+    cwd: &Path,
+    entry: &str,
+    respect: bool,
+    policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
+    token: &CancellationToken,
+    deadline: Instant,
+) -> Vec<String> {
+    let (raw, _) = split_entry_selector(cwd, entry).unwrap_or_else(|_| (entry.to_owned(), vec![]));
+    let wanted = Path::new(&raw);
+    if glob_path(&raw)
+        || wanted
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        || !cwd.join(wanted).starts_with(cwd)
+        || policy
+            .as_deref()
+            .is_some_and(|policy| policy.check_read(cwd).is_err())
+    {
+        return Vec::new();
+    }
+    let Some(name) = wanted.file_name().and_then(|name| name.to_str()) else {
+        return Vec::new();
+    };
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(name);
+    let wanted_parts: Vec<_> = wanted
+        .strip_prefix(cwd)
+        .unwrap_or(wanted)
+        .components()
+        .filter(|part| !matches!(part, std::path::Component::CurDir))
+        .collect();
+    let can_contain_denied = policy
+        .as_deref()
+        .is_some_and(|p| p.can_contain_denied_read(cwd));
+    let walk = ignore::WalkBuilder::new(cwd)
+        .hidden(false)
+        .follow_links(false)
+        .git_ignore(respect)
+        .git_global(respect)
+        .git_exclude(respect)
+        .ignore(respect)
+        .require_git(false)
+        .filter_entry(move |item| {
+            item.depth() == 0
+                || (item.file_name() != ".git"
+                    && !sandbox_denied_entry(policy.as_deref(), can_contain_denied, item))
+        })
+        .build();
+    let mut found: Vec<(usize, PathBuf)> = Vec::new();
+    for item in walk.take(SUGGEST_SCAN) {
+        if check(token, deadline).is_err() {
+            break;
+        }
+        let Ok(item) = item else { continue };
+        if item.depth() == 0 {
+            continue;
+        }
+        let candidate = item.file_name().to_string_lossy();
+        let candidate_stem = Path::new(candidate.as_ref())
+            .file_stem()
+            .map(|stem| stem.to_string_lossy());
+        if candidate != name && candidate != stem && candidate_stem.as_deref() != Some(name) {
+            continue;
+        }
+        let rel = item.path().strip_prefix(cwd).unwrap_or(item.path());
+        let shared = rel
+            .components()
+            .zip(&wanted_parts)
+            .take_while(|(a, b)| a == *b)
+            .count();
+        found.push((shared, rel.to_owned()));
+    }
+    found.sort_by(|(a_shared, a), (b_shared, b)| {
+        b_shared
+            .cmp(a_shared)
+            .then_with(|| a.as_os_str().len().cmp(&b.as_os_str().len()))
+            .then_with(|| a.cmp(b))
+    });
+    found
+        .into_iter()
+        .take(SUGGEST_LIMIT)
+        .map(|(_, path)| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -530,11 +624,20 @@ pub(super) fn parse_paths(
     if let Some(walk) = lazy_walk {
         return Ok((TargetIter::Walk(Box::new(walk)), false, missing));
     }
-    ensure!(
-        !targets.is_empty() || missing.is_empty(),
-        "Path not found: {}",
-        missing.join(", ")
-    );
+    if targets.is_empty() && !missing.is_empty() {
+        let described: Vec<String> = missing
+            .iter()
+            .map(|entry| {
+                let hints = suggest_paths(cwd, entry, respect, policy.clone(), token, deadline);
+                if hints.is_empty() {
+                    entry.clone()
+                } else {
+                    format!("{entry} (did you mean: {}?)", hints.join(", "))
+                }
+            })
+            .collect();
+        anyhow::bail!("Path not found: {}", described.join(", "));
+    }
     let single = one_entry
         && targets.len() == 1
         && targets

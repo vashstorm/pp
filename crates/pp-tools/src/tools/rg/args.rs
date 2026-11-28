@@ -1,9 +1,9 @@
-//! `rg` 的工具 schema、参数结构与筛选参数构造。
-use anyhow::{Result, ensure};
+//! `rg` 的工具 schema、参数结构、宽容归一化与筛选参数构造。
+use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use pp_config::config::{EditMode, RgSettings};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 pub(in crate::tools) fn definition(edit_mode: EditMode, sandbox_active: bool) -> FunctionObject {
     let content_mode = match edit_mode {
@@ -42,7 +42,8 @@ pub(in crate::tools) fn definition(edit_mode: EditMode, sandbox_active: bool) ->
                     "description": "Result format (default `content`)."
                 },
                 "gitignore": {"type": "boolean", "description": "Respect ignore files (default true)."},
-                "skip": {"type": "integer", "minimum": 0, "description": "Skip first N matching files for pagination."}
+                "skip": {"type": "integer", "minimum": 0, "description": "Skip first N matching files for pagination."},
+                "head_limit": {"type": "integer", "minimum": 0, "description": "Max output lines (`content`) or entries (other modes); 0 = unlimited."}
             },
             "required": ["pattern"],
             "additionalProperties": false
@@ -111,6 +112,89 @@ pub(super) struct Args {
     pub(super) max_count: Option<f64>,
     #[serde(default)]
     pub(super) max_output_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) head_limit: Option<f64>,
+    /// 归一化时丢弃的未知参数名，结果里以提示返回给模型。
+    #[serde(skip)]
+    pub(super) ignored: Vec<String>,
+}
+
+/// 规范参数名；不在此列表（也不是别名）的键会被忽略并提示。
+const KNOWN_KEYS: &[&str] = &[
+    "pattern",
+    "path",
+    "case",
+    "-i",
+    "-n",
+    "context",
+    "-C",
+    "-A",
+    "-B",
+    "output_mode",
+    "gitignore",
+    "skip",
+    "-F",
+    "-w",
+    "-t",
+    "-g",
+    "glob",
+    "max_count",
+    "max_output_tokens",
+    "head_limit",
+];
+/// 模型常按 ripgrep CLI 或其他 Grep 工具的习惯起名：别名 → 规范名。
+const KEY_ALIASES: &[(&str, &str)] = &[
+    ("A", "-A"),
+    ("B", "-B"),
+    ("C", "-C"),
+    ("i", "-i"),
+    ("n", "-n"),
+    ("F", "-F"),
+    ("w", "-w"),
+    ("t", "-t"),
+    ("g", "-g"),
+    ("type", "-t"),
+    ("ignore_case", "-i"),
+    ("case_insensitive", "-i"),
+    ("fixed_strings", "-F"),
+    ("mode", "output_mode"),
+    ("offset", "skip"),
+    ("max_tokens", "max_output_tokens"),
+    ("head", "head_limit"),
+    ("limit", "head_limit"),
+    ("max_lines", "head_limit"),
+    ("max_results", "head_limit"),
+];
+/// 布尔开关形式的输出模式：`-c` → count，`-l` → files_with_matches。
+const MODE_FLAGS: &[(&str, &str)] = &[("-c", "count"), ("-l", "files_with_matches")];
+const BOOL_KEYS: &[&str] = &["case", "-i", "-n", "-F", "-w", "gitignore"];
+const NUMBER_KEYS: &[&str] = &[
+    "context",
+    "-C",
+    "-A",
+    "-B",
+    "skip",
+    "max_count",
+    "max_output_tokens",
+    "head_limit",
+];
+
+/// 把字符串形式的布尔（`"true"`/`"false"`）还原为 JSON 布尔，其余值原样返回。
+fn coerce_bool(value: Value) -> Value {
+    match &value {
+        Value::String(text) if text.trim().eq_ignore_ascii_case("true") => Value::Bool(true),
+        Value::String(text) if text.trim().eq_ignore_ascii_case("false") => Value::Bool(false),
+        _ => value,
+    }
+}
+/// 把数字字符串（`"40"`）还原为 JSON 数字，其余值原样返回，交给后续类型校验报错。
+fn coerce_number(value: Value) -> Value {
+    match &value {
+        Value::String(text) => serde_json::from_str::<serde_json::Number>(text.trim())
+            .map(Value::Number)
+            .unwrap_or(value),
+        _ => value,
+    }
 }
 /// 可重复的 rg 参数：单个字符串或字符串数组。
 #[derive(Deserialize)]
@@ -128,6 +212,69 @@ impl Many {
     }
 }
 impl Args {
+    /// 执行与权限预检共用的唯一解析入口：先归一化模型常见的参数偏差
+    /// （null、别名、字符串化的布尔/数字、`-c`/`-l` 模式开关、未知键），再严格反序列化。
+    pub(super) fn parse(arguments: &str) -> Result<Self> {
+        let input: Value = serde_json::from_str(arguments).context("invalid rg arguments")?;
+        let Value::Object(input) = input else {
+            bail!("invalid rg arguments: expected a JSON object");
+        };
+        let mut map = Map::new();
+        let mut ignored = Vec::new();
+        let mut modes = Vec::new();
+        for (key, value) in input {
+            if value.is_null() {
+                continue;
+            }
+            if let Some(&(flag, mode)) = MODE_FLAGS.iter().find(|(flag, _)| *flag == key) {
+                match coerce_bool(value) {
+                    Value::Bool(true) => modes.push((flag, mode)),
+                    Value::Bool(false) => {}
+                    _ => bail!("invalid rg arguments: `{flag}` must be a boolean"),
+                }
+                continue;
+            }
+            let canonical = KEY_ALIASES
+                .iter()
+                .find(|(alias, _)| *alias == key)
+                .map_or(key.as_str(), |(_, canonical)| canonical);
+            let Some(&canonical) = KNOWN_KEYS.iter().find(|known| **known == canonical) else {
+                ignored.push(key);
+                continue;
+            };
+            let value = if BOOL_KEYS.contains(&canonical) {
+                coerce_bool(value)
+            } else if NUMBER_KEYS.contains(&canonical) {
+                coerce_number(value)
+            } else {
+                value
+            };
+            if let Some(previous) = map.get(canonical) {
+                ensure!(
+                    *previous == value,
+                    "invalid rg arguments: `{key}` conflicts with `{canonical}`"
+                );
+                continue;
+            }
+            map.insert(canonical.to_owned(), value);
+        }
+        for (flag, mode) in modes {
+            match map.get("output_mode") {
+                Some(existing) => ensure!(
+                    existing == mode,
+                    "invalid rg arguments: `{flag}` conflicts with output_mode"
+                ),
+                None => {
+                    map.insert("output_mode".into(), Value::from(mode));
+                }
+            }
+        }
+        let mut args: Self =
+            serde_json::from_value(Value::Object(map)).context("invalid rg arguments")?;
+        ignored.sort_unstable();
+        args.ignored = ignored;
+        Ok(args)
+    }
     pub(super) fn settings(&self, defaults: RgSettings) -> Result<RgSettings> {
         if let (Some(context), Some(alias)) = (self.context, self.context_alias) {
             ensure!(context == alias, "context and -C must agree");

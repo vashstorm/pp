@@ -94,16 +94,17 @@ fn rg_context_case_fixed_word_and_validation() {
             json!({"case":true,"-i":true}),
             json!({"case":false,"-i":false}),
             json!({"output_mode":"unknown"}),
-            json!({"output_mode":null}),
-            json!({"-i":"true"}),
-            json!({"-n":"true"}),
-            json!({"unexpected":true}),
+            json!({"-i":"yes"}),
+            json!({"-c":"maybe"}),
+            json!({"-c":true,"output_mode":"content"}),
+            json!({"head":5,"head_limit":6}),
             json!({"max_output_tokens":0}),
             json!({"max_output_tokens":-1}),
             json!({"max_output_tokens":1.5}),
             json!({"max_output_tokens":1e100}),
-            json!({"max_output_tokens":"100"}),
+            json!({"max_output_tokens":"0"}),
             json!({"max_output_tokens":true}),
+            json!({"head_limit":-1}),
         ]
         .into_iter()
         .chain(
@@ -604,4 +605,155 @@ fn rg_hashline_isolation_types_and_override_globs() {
             "{merged}"
         );
     }
+}
+
+/// 模型常见的参数偏差（取自真实会话失败记录）必须被归一化而不是报错：
+/// 字符串化的布尔/数字、ripgrep CLI 风格别名、`-c`/`-l` 模式开关与 null 值；
+/// 未知键被忽略并在结果中提示。
+#[test]
+fn rg_normalizes_common_model_argument_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("file"),
+        "one\nNeedle\nthree\nneedle\nfive\n",
+    )
+    .unwrap();
+    let run = |args: Value| {
+        let mut args = args;
+        args["pattern"] = json!("needle");
+        args["path"] = json!("file");
+        query(dir.path(), args, &mut hashline::Store::default()).unwrap()
+    };
+    for (drifted, canonical) in [
+        (json!({"-n":"true","-C":"1"}), json!({"-C":1})),
+        (
+            json!({"-i":"TRUE","A":"0","B":0}),
+            json!({"-i":true,"-A":0,"-B":0}),
+        ),
+        (
+            json!({"i":true,"context":"0"}),
+            json!({"-i":true,"context":0}),
+        ),
+        (json!({"-c":"true"}), json!({"output_mode":"count"})),
+        (
+            json!({"-l":true}),
+            json!({"output_mode":"files_with_matches"}),
+        ),
+        (json!({"mode":"count"}), json!({"output_mode":"count"})),
+        (
+            json!({"output_mode":null,"max_output_tokens":null}),
+            json!({}),
+        ),
+        (
+            json!({"max_tokens":"4000"}),
+            json!({"max_output_tokens":4000}),
+        ),
+        (
+            json!({"case_insensitive":"true","context":0}),
+            json!({"-i":true,"context":0}),
+        ),
+        (json!({"offset":"1"}), json!({"skip":1})),
+        (json!({"gitignore":"false"}), json!({"gitignore":false})),
+    ] {
+        assert_eq!(run(drifted.clone()), run(canonical), "{drifted}");
+    }
+    let ignored = run(json!({"head_file":"x","-v":true}));
+    let text = ignored["content"].as_str().unwrap();
+    assert!(text.contains("*4:needle"), "{ignored}");
+    assert!(
+        text.contains("Ignored unsupported arguments") && text.contains("head_file"),
+        "{ignored}"
+    );
+    assert_eq!(
+        ignored["details"]["ignoredArguments"],
+        json!(["-v", "head_file"])
+    );
+}
+
+#[test]
+fn rg_head_limit_caps_lines_and_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("file"),
+        "needle 1\nneedle 2\nneedle 3\nneedle 4\n",
+    )
+    .unwrap();
+    for i in 0..5 {
+        fs::write(dir.path().join(format!("{i}.txt")), "needle\n").unwrap();
+    }
+    let run = |args: Value| query(dir.path(), args, &mut hashline::Store::default()).unwrap();
+    // content：按正文行计数（含上下文行），别名 `head_limit`/`head`/`limit` 等价。
+    for key in ["head_limit", "head", "limit", "max_lines"] {
+        let capped = run(json!({"pattern":"needle","path":"file","context":0,key:"2"}));
+        let text = capped["content"].as_str().unwrap();
+        assert!(
+            text.contains("needle 2") && !text.contains("needle 3"),
+            "{capped}"
+        );
+        assert!(text.contains("head_limit=2"), "{capped}");
+        assert_eq!(capped["details"]["headLimitReached"], true, "{capped}");
+        assert_eq!(capped["details"]["truncated"], true, "{capped}");
+    }
+    let unlimited = run(json!({"pattern":"needle","path":"file","context":0,"head_limit":0}));
+    assert_eq!(unlimited["details"]["matchCount"], 4, "{unlimited}");
+    let exact = run(json!({"pattern":"needle","path":"file","context":0,"head_limit":4}));
+    assert_eq!(exact["details"]["headLimitReached"], false, "{exact}");
+    // 其余模式按条目计数，并给出逐条续页的 skip。
+    let files = run(json!({"pattern":"needle","-g":"*.txt","-l":true,"head_limit":2}));
+    let text = files["content"].as_str().unwrap();
+    assert!(
+        text.starts_with("0.txt\n1.txt\n\n") && !text.contains("2.txt"),
+        "{files}"
+    );
+    assert!(text.contains("head_limit=2 entries. Use skip=2"), "{files}");
+    let next = run(json!({"pattern":"needle","-g":"*.txt","-l":true,"head_limit":2,"skip":2}));
+    assert!(
+        next["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("2.txt\n3.txt\n"),
+        "{next}"
+    );
+    let counted = run(json!({"pattern":"needle","-g":"*.txt","-c":true,"head_limit":1}));
+    assert_eq!(counted["details"]["totalMatchCount"], 5, "{counted}");
+    assert_eq!(counted["details"]["fileCount"], 1, "{counted}");
+    assert_eq!(counted["details"]["truncated"], true, "{counted}");
+}
+
+#[test]
+fn rg_missing_path_suggests_workspace_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("crates/pp-config/src")).unwrap();
+    fs::create_dir_all(dir.path().join("crates/pp-runtime/src")).unwrap();
+    fs::write(dir.path().join("crates/pp-config/src/auth.rs"), "x\n").unwrap();
+    fs::write(
+        dir.path().join("crates/pp-runtime/src/system_prompt.rs"),
+        "x\n",
+    )
+    .unwrap();
+    let error = |path: &str| {
+        query(
+            dir.path(),
+            json!({"pattern":"x","path":path}),
+            &mut hashline::Store::default(),
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let moved = error("./crates/pp-llm/src/auth.rs");
+    assert!(
+        moved.contains("Path not found: ./crates/pp-llm/src/auth.rs")
+            && moved.contains("crates/pp-config/src/auth.rs"),
+        "{moved}"
+    );
+    // 无扩展名的名字匹配同 stem 文件；行区间选择器不影响纠错。
+    let stem = error("crates/pp-runtime/src/system_prompt:3");
+    assert!(
+        stem.contains("did you mean: crates/pp-runtime/src/system_prompt.rs?"),
+        "{stem}"
+    );
+    let bare = error("crates/pp-runtime/src/system_promp");
+    assert!(!bare.contains("did you mean"), "{bare}");
+    let outside = error("../elsewhere/auth.rs");
+    assert!(!outside.contains("did you mean"), "{outside}");
 }

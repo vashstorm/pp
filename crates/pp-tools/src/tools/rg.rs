@@ -93,11 +93,13 @@ pub(in crate::tools) fn run_with_policy(
     artifacts: Option<&pp_workspace::output::Store>,
     policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
 ) -> Result<Value> {
-    let mut args: Args = serde_json::from_str(arguments).context("invalid rg arguments")?;
+    let mut args = Args::parse(arguments)?;
     let mut budget = Budget::new(args.max_output_tokens)?;
     let settings = args.settings(settings)?;
     let insensitive = args.insensitive()?;
     let output_mode = args.output_mode;
+    let head_limit = Some(count(args.head_limit, "head_limit")?).filter(|n| *n > 0);
+    let ignored = std::mem::take(&mut args.ignored);
     if args.path.as_deref().is_some_and(super::read::is_pipe_uri) {
         anyhow::bail!("Temporary pipe streams support read only; use read with a pipe:// URI.");
     }
@@ -271,7 +273,14 @@ pub(in crate::tools) fn run_with_policy(
         );
     }
     let mut previous_dirs = Vec::new();
+    // `head_limit`：content 模式按正文行计数，其余模式按条目计数。
+    let mut emitted = 0usize;
+    let mut head_cut = false;
     for file in page {
+        if head_limit.is_some_and(|limit| emitted >= limit) {
+            head_cut = true;
+            break;
+        }
         if output_mode != OutputMode::Content {
             let text = if output_mode == OutputMode::Count {
                 format!("{}:{}\n", file.target.display, file.matches)
@@ -286,6 +295,7 @@ pub(in crate::tools) fn run_with_policy(
                 break;
             }
             content.push_str(&text);
+            emitted += 1;
             if output_mode == OutputMode::Count {
                 visible_matches += file.matches;
                 file_details.push(json!({"path":file.target.display,"count":file.matches}));
@@ -350,6 +360,10 @@ pub(in crate::tools) fn run_with_policy(
         let mut seen = Vec::new();
         let mut last = None;
         for row in &file.rows {
+            if head_limit.is_some_and(|limit| emitted >= limit) {
+                head_cut = true;
+                break;
+            }
             let sep = if last.is_some_and(|n| row.number > n + 1) {
                 "...\n"
             } else {
@@ -373,6 +387,7 @@ pub(in crate::tools) fn run_with_policy(
                 break;
             }
             content.push_str(&text);
+            emitted += 1;
             if !row.truncated {
                 seen.push(row.number..row.number + 1);
             }
@@ -386,13 +401,21 @@ pub(in crate::tools) fn run_with_policy(
             snapshots.extend_seen(key, seen);
         }
         file_details.push(json!({"path":file.target.display,"count":file.matches}));
-        if byte_cut || budget.reached {
+        if byte_cut || budget.reached || head_cut {
             break;
         }
     }
     let count_complete = warnings.is_empty() && missing.is_empty();
     let mut notes = Vec::new();
-    if file_limit {
+    if !ignored.is_empty() {
+        notes.push(format!(
+            "Ignored unsupported arguments: {}.",
+            ignored.join(", ")
+        ));
+    }
+    // head_limit 截断时不输出按整页计算的 skip，避免提示跳过尚未展示的文件。
+    let entry_head_cut = head_cut && output_mode != OutputMode::Content;
+    if file_limit && !head_cut {
         notes.push(format!(
             "Showing files {}-{} of {}{}. Use skip={} for the next page, or narrow paths/pattern.",
             start + 1,
@@ -404,6 +427,18 @@ pub(in crate::tools) fn run_with_policy(
     }
     if internal_limit {
         notes.push("Internal search match limit reached; narrow paths or pattern.".into());
+    }
+    if let Some(limit) = head_limit.filter(|_| head_cut) {
+        notes.push(if entry_head_cut {
+            format!(
+                "Output capped at head_limit={limit} entries. Use skip={} for more.",
+                start + emitted
+            )
+        } else {
+            format!(
+                "Output capped at head_limit={limit} lines; raise head_limit or narrow paths/pattern."
+            )
+        });
     }
     for f in page.iter().filter(|f| f.capped) {
         notes.push(format!(
@@ -473,7 +508,13 @@ pub(in crate::tools) fn run_with_policy(
         content.push_str(&notice);
     }
     budget.finish(&mut content)?;
-    let mut result = json!({"ok":true,"content":content,"details":{"matchCount":visible_matches,"fileCount":file_details.len(),"fileMatches":file_details,"fileLimitReached":file_limit,"perFileLimitReached":page.iter().any(|f|f.capped),"linesTruncated":line_cut,"truncated":file_limit || internal_limit || byte_cut || line_cut || page.iter().any(|f|f.capped),"scopePath":uri.or(args.path).unwrap_or_else(||".".into())}});
+    let mut result = json!({"ok":true,"content":content,"details":{"matchCount":visible_matches,"fileCount":file_details.len(),"fileMatches":file_details,"fileLimitReached":file_limit,"perFileLimitReached":page.iter().any(|f|f.capped),"linesTruncated":line_cut,"truncated":file_limit || internal_limit || byte_cut || line_cut || head_cut || page.iter().any(|f|f.capped),"scopePath":uri.or(args.path).unwrap_or_else(||".".into())}});
+    if head_limit.is_some() {
+        result["details"]["headLimitReached"] = json!(head_cut);
+    }
+    if !ignored.is_empty() {
+        result["details"]["ignoredArguments"] = json!(ignored);
+    }
     if output_mode != OutputMode::Content {
         result["details"]["outputMode"] = json!(output_mode.as_str());
     }
@@ -485,7 +526,8 @@ pub(in crate::tools) fn run_with_policy(
     } else if output_mode == OutputMode::Count {
         result["details"]["totalMatchCount"] = json!(total);
         result["details"]["countComplete"] = json!(count_complete);
-        result["details"]["truncated"] = json!(file_limit || byte_cut || !count_complete);
+        result["details"]["truncated"] =
+            json!(file_limit || byte_cut || head_cut || !count_complete);
     }
     if budget.enabled() {
         result["details"]["tokenLimitReached"] = json!(budget.reached);
