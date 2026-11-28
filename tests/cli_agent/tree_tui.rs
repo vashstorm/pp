@@ -223,7 +223,7 @@ fn tree_tui_rewind_immediately_invalidates_abandoned_messages_after_restart_both
 }
 
 #[test]
-fn slow_tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
+fn tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     let server = TestServer::start().unwrap();
     let (_home, mut pty) = context_tui_start(&server, "completion", 100_000, 80);
     pty.input("tree-seed\r");

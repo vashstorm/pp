@@ -48,7 +48,7 @@ fn statusline_reply_usage(request: CapturedRequest, protocol: &str, text: &str) 
 }
 
 #[test]
-fn slow_statusline_out_accumulates_session_usage_across_requests_both_protocols() {
+fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
     let protocol = "response";
         let fixture = server();
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);

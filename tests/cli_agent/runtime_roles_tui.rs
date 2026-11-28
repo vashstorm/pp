@@ -20,7 +20,7 @@ fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
 }
 
 #[test]
-fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
+fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
     let protocol = "response";
         let fixture = server();
         let home = tempfile::tempdir().unwrap();

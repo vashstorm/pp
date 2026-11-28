@@ -1320,7 +1320,7 @@ fi"#,
     }
 
     #[test]
-    fn slow_hooks_stop_continuation_limit_fails_the_task() {
+    fn hooks_stop_continuation_limit_fails_the_task() {
         for protocol in ["completion", "response"] {
             let dir = tempfile::tempdir().unwrap();
             let script = hook_script(

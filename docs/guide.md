@@ -1261,13 +1261,12 @@ pp gc [天数]
 
 ### 验证命令
 
-本地验证使用 cargo-nextest，可用 `cargo install cargo-nextest --locked` 安装。完整验证包括默认档、`slow_test` 档和文档测试。默认档与慢测试档都会收集全部失败。
+本地验证使用 cargo-nextest，可用 `cargo install cargo-nextest --locked` 安装。完整验证包括覆盖全部四层测试的默认档，以及单独运行的文档测试。默认档会收集全部失败。
 
 ```sh
 cargo build --locked
 cargo check --locked --workspace --all-targets
 cargo nextest run --locked --workspace
-cargo nextest run --locked --workspace --profile slow_test
 cargo test --locked --workspace --doc
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all --check
@@ -1282,15 +1281,14 @@ TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo nextest run --locked --workspace  #
 TMPDIR=/tmp cargo nextest run --locked --workspace                             # Linux
 ```
 
-默认档按逻辑 CPU 数分配调度名额，每个测试占两个名额，实际并发为逻辑 CPU 数的一半，向下取整且至少为一。工作区按依赖与启动开销分成四层 profile，外加 `quick`、`slow_test` 与 `no_pty`：
+默认档按逻辑 CPU 数分配调度名额，每个测试占两个名额，实际并发为逻辑 CPU 数的一半，向下取整且至少为一。使用固定工作目录 `/tmp/pp-test-write` 的 mock 用例在同一轮测试中依次访问该目录。工作区按依赖与启动开销分成四层 profile，并提供 `quick` 与 `no_pty`。
 
 - `unit`（L1）：crate 内纯内存单元测试，不启子进程、HTTP 或 PTY。
-- `integration`（L2）：crate 内 `::integration::` 子模块集成测试（TestServer、REPL、LSP、MCP、Bash、Sandbox 等）。
+- `integration`（L2）：crate 内 `integration` 模块的组件集成测试（TestServer、REPL、LSP、MCP、Bash、Sandbox 等）。
 - `e2e-cli`（L3）：根 `cli_agent` 非 `tui::` 的真实二进制 headless 端到端用例。
 - `e2e-pty`（L4）：根 `cli_agent` 下 `tui::` 的真实 PTY / TUI 端到端用例。
-- `quick`：全量 L1 纯单测 + 核心 L3/L4 冒烟（跳过全部 `slow_`）。
-- `slow_test`：按函数名 `slow_` 前缀隔离的重场景与并发敏感用例，最多同时运行两个用例。
-- `no_pty`：禁用 `openpty` 的环境专用（包含非 PTY 单测/集成/L3 及非 PTY 慢用例，排除 `tui::` 与显式用到 PTY 的 `lsp` 用例）；回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。
+- `quick`：全量 L1 纯单测 + 核心 L3/L4 冒烟。
+- `no_pty`：禁用 `openpty` 的环境专用，覆盖 L1–L3 中无需 PTY 的用例。回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。
 
 ```sh
 cargo nextest run --locked --workspace --profile quick

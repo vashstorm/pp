@@ -155,7 +155,7 @@ fn tui_runtime_input_followup_fifo_and_draft_both_protocols() {
 // 场景 8b：被 UserPromptSubmit 拒绝的补充输入显示拒绝原因与原文（不是成功的 You
 // 卡片）；全部被拒绝时没有新增输入，不得再发一次模型请求。
 #[test]
-fn slow_hooks_tui_rejected_steering_card_needs_no_extra_request() {
+fn hooks_tui_rejected_steering_card_needs_no_extra_request() {
     let protocol = "response";
         let server = server();
         let home = tempfile::tempdir().unwrap();

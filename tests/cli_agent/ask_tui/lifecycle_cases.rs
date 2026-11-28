@@ -1,7 +1,7 @@
 // —— 验证项：草稿/光标/粘贴保留，Esc 取消跳过同批 write 且历史成对 ——
 
 #[test]
-fn slow_ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
+fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
     let protocol = "response";
         let server = server();
         let home = tempfile::tempdir().unwrap();

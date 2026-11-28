@@ -115,7 +115,7 @@ mod integration {
     }
 
     #[test]
-    fn slow_artifact_background_live_read_is_stable_and_stop_seals_once() {
+    fn artifact_background_live_read_is_stable_and_stop_seals_once() {
         let dir = tempfile::tempdir().unwrap();
         let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         tools.artifacts.bind(dir.path(), "root").unwrap();

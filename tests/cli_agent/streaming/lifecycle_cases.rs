@@ -93,7 +93,7 @@ fn streaming_invalid_later_call_rejects_entire_batch_and_repl_history() {
 }
 
 #[test]
-fn slow_streaming_failures_keep_partial_and_never_commit_when_retries_disabled() {
+fn streaming_failures_keep_partial_and_never_commit_when_retries_disabled() {
     let protocol = Protocol::Responses;
     let failures: &[Broken] = match protocol {
         Protocol::Chat => &[

@@ -198,7 +198,7 @@ fn stats_models(home: &Path) -> Vec<(String, String)> {
 }
 
 #[test]
-fn slow_mock_test_normal_agent_session_roles_and_stats_survive_each_scenario() {
+fn mock_test_normal_agent_session_roles_and_stats_survive_each_scenario() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

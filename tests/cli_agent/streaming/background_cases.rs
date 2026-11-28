@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn slow_background_task_cleanup_at_run_boundaries() {
+fn background_task_cleanup_at_run_boundaries() {
     let protocol = Protocol::Responses;
     for boundary in [RunBoundary::FinalAnswer, RunBoundary::ModelError] {
         let server = server();

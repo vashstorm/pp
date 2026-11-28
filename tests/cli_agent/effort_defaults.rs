@@ -105,7 +105,7 @@ fn picker_selected(screen: &vt100::Screen) -> Option<&'static str> {
 }
 
 #[test]
-fn slow_sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
+fn sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
     let protocol = "response";
         let server = server();
         let home = tempfile::tempdir().unwrap();

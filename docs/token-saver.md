@@ -174,4 +174,4 @@ MCP 结果不参与该投影。
 | MCP 双工具代理 | `crates/pp-tools/src/tools/mcp_proxy.rs` |
 | 子 Agent 结果截断与预算 | `crates/pp-runtime/src/subagent/worker.rs`、`agent/turn_loop.rs` |
 
-相关回归面：`cargo test --locked -p pp-runtime --lib context`（含 `prune`／`calibrated` 用例）、`cargo test --locked -p pp-tools --lib artifact`（`slow_artifact_` 用 `--test-threads=1` 串行）、根 `tests/cli_agent` 的 `context_` 端到端用例。
+相关回归面包括 `cargo test --locked -p pp-runtime --lib context`（含 `prune`／`calibrated` 用例）、`cargo nextest run --locked -p pp-tools --lib artifact`（含后台产物用例）和根 `tests/cli_agent` 的 `context_` 端到端用例。

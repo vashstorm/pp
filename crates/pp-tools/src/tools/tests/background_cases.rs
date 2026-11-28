@@ -164,7 +164,7 @@ mod integration {
     }
 
     #[test]
-    fn slow_background_output_is_bounded_without_blocking_progress() {
+    fn background_output_is_bounded_without_blocking_progress() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         tools.artifacts.bind(dir.path(), "background").unwrap();

@@ -58,14 +58,13 @@ cargo nextest run --locked --workspace -E 'test(frame_clock) | test(stream_buffe
 cargo nextest run --locked --workspace -E 'test(tui::render_worker::) | test(tui::transcript::) | test(tui::surface::) | test(streaming_frame_batches) | test(stream_buffer) | test(tui_runtime_responsiveness) | test(tui_scrolled_stream_) | test(native_tui_)'
 PP_TUI_PERF_ASSERT=1 cargo nextest run --release --locked -p pp --test cli_agent tui_runtime_responsiveness --success-output immediate
 cargo nextest run --locked --workspace
-cargo nextest run --locked --workspace --profile slow_test
 cargo test --locked --workspace --doc
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-完整回归需运行默认档、慢测试档和文档测试。`--profile quick` 只保留少量真实 PTY 冒烟用例，性能回归使用上面的定向命令。
+完整回归需运行默认档和文档测试。`--profile quick` 只保留少量真实 PTY 冒烟用例，性能回归使用上面的定向命令。
 
 全量并行回归运行 1437 项，1436 项通过，`tui_menu_overlay_keeps_input_cursor_and_history_anchored` 失败；该用例随后单独串行通过，与持续输出用例组成的小集合并行运行也通过。尚未确定首次失败原因，不能将本轮验证表述为全量通过。全量之后新增的分块工作量对照用例已单独通过；最后的缓冲阈值调整也通过流式与 PTY 定向验证，未重复全量回归。
 

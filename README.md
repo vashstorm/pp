@@ -305,12 +305,11 @@ The repository is a Cargo workspace with thirteen packages (plus `pp-test-suppor
 
 `cargo run`, `cargo build`, and tests without a package selector apply only to the root default member. Use `--workspace` for full verification across every crate, and `-p <package>` for one library.
 
-Install cargo-nextest with `cargo install cargo-nextest --locked` if needed. The default profile runs up to half the logical CPU count in parallel, rounded down with a minimum of one. The `slow_test` profile runs test functions whose names start with `slow_`, up to two at a time. Run both profiles and the separate doctest command for full verification. [Installation guide](https://nexte.st/docs/installation/)
+Install cargo-nextest with `cargo install cargo-nextest --locked` if needed. The default profile covers all four test layers and runs up to half the logical CPU count in parallel, rounded down with a minimum of one. Run the default profile and the separate doctest command for full verification. [Installation guide](https://nexte.st/docs/installation/)
 
 ```sh
 cargo nextest run --locked --workspace context_
 cargo nextest run --locked --workspace
-cargo nextest run --locked --workspace --profile slow_test
 cargo test --locked --workspace --doc
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings

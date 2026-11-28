@@ -269,7 +269,7 @@ mod integration {
     }
 
     #[test]
-    fn slow_pipeline_occurrences_cover_loops_functions_and_substitutions() {
+    fn pipeline_occurrences_cover_loops_functions_and_substitutions() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
 
@@ -325,7 +325,7 @@ printf b | cat & wait
     }
 
     #[test]
-    fn slow_pipeline_metadata_stays_bounded_for_many_occurrences() {
+    fn pipeline_metadata_stays_bounded_for_many_occurrences() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
 
