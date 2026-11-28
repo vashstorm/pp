@@ -11,8 +11,8 @@ fn tui_mock_task_shows_subagent_activity_and_returns_three_lane_markers() {
         "Task card and three subagent sessions appear while the batch runs",
         |screen| {
             let text = screen.contents();
-            text.contains("Subagents:")
-                && text.contains("3 sessions")
+            text.contains("\u{f0c0} 3")
+                && !text.contains("Subagents:")
                 && text
                     .lines()
                     .any(|line| line.contains("Task") && line.contains("Dispatched"))

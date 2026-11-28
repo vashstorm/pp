@@ -23,7 +23,9 @@ mod speed;
 mod subagent;
 mod workspace;
 
-pub(super) use metric::{Metrics, abbreviate_tokens, context_field, has_data, metric_fields};
+pub(super) use metric::{
+    Metrics, abbreviate_tokens, context_field, has_data, metric_fields, subagent_counts_line,
+};
 pub(super) use speed::TokenSpeed;
 pub(super) use subagent::{SubagentUsage, subagent_metrics, subagent_status};
 pub(super) use workspace::{StatusContext, WorkspaceStatus, workdir_label};

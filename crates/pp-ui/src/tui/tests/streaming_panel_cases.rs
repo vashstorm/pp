@@ -214,6 +214,18 @@ fn status_duration_and_token_speed_updates() {
             .collect::<String>()
     };
     assert!(render_status(&app, 100).trim().is_empty());
+    let usage = app.usage.take();
+    app.subagent_status = Some((
+        1,
+        pp_runtime::subagent::SubagentCounts {
+            running: 0,
+            sessions: 21,
+        },
+    ));
+    assert_eq!(render_status(&app, 6).trim(), "\u{f0c0} 21");
+    assert!(render_status(&app, 5).trim().is_empty());
+    app.subagent_status = None;
+    app.usage = usage;
 
     app.conversation.begin_run();
     app.conversation

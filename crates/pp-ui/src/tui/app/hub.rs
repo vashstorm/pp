@@ -461,16 +461,16 @@ impl App {
     /// Per tick: clock, the once-per-second refresh and worker replies.
     pub(in crate::tui) fn hub_tick(&mut self) -> bool {
         let mut changed = self.receive_hub();
-        let previous_count = self.subagent_status.map_or(0, |(_, count)| count);
+        let previous_counts = self.subagent_status.map(|(_, counts)| counts);
         changed |= self.hub_sync_root();
         self.subagent_status = self.hub_bound.as_ref().map(|binding| {
             let revision = binding.hub_revision();
             match self.subagent_status {
                 Some(snapshot) if snapshot.0 == revision => snapshot,
-                _ => (revision, binding.running_subagent_count()),
+                _ => (revision, binding.subagent_counts()),
             }
         });
-        changed |= self.subagent_status.map_or(0, |(_, count)| count) != previous_count;
+        changed |= self.subagent_status.map(|(_, counts)| counts) != previous_counts;
         let now = Instant::now();
         if let Some(panel) = &mut self.subagent_panel {
             changed |= panel.tick(subagents::now(), now, self.hub_bound.as_ref());

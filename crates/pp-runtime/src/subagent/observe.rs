@@ -761,37 +761,29 @@ fn has_complete_line(file: &File, offset: u64, length: u64) -> Result<bool> {
     Ok(false)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SubagentCounts {
+    pub running: usize,
+    pub sessions: usize,
+}
+
 impl Binding {
     /// Whether the current session has registered any subagent (read-only in-memory check).
     pub fn has_agents(&self) -> bool {
         !lock(&self.inner.state).disk.agents.is_empty()
     }
 
-    /// Number of currently running subagents; queued and finished runs are not counted.
-    pub fn running_subagent_count(&self) -> usize {
-        lock(&self.inner.state)
-            .disk
-            .agents
-            .values()
-            .filter(|agent| agent.status == "running")
-            .count()
-    }
-
-    pub fn summary(&self) -> String {
+    /// In-memory snapshot of registered sessions and the subset currently running.
+    pub fn subagent_counts(&self) -> SubagentCounts {
         let state = lock(&self.inner.state);
-        if state.disk.agents.is_empty() {
-            return String::new();
+        let agents = &state.disk.agents;
+        SubagentCounts {
+            running: agents
+                .values()
+                .filter(|agent| agent.status == "running")
+                .count(),
+            sessions: agents.len(),
         }
-        let active = state
-            .disk
-            .runs
-            .values()
-            .filter(|r| matches!(r.status.as_str(), "queued" | "running"))
-            .count();
-        format!(
-            "Subagents: {active} running/queued · {} sessions · use /agents",
-            state.disk.agents.len()
-        )
     }
     /// JSON shape read by the line-mode CLI and existing consumers: agents keep the flat Record fields.
     pub fn snapshots(&self) -> Value {

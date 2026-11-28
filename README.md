@@ -173,7 +173,7 @@ Use `/roles` (or `/setting roles`) to save role-specific models and effort. Ever
 
 Only Main can dispatch subagents. Children, including restored ones and custom definitions with `spawns: ["*"]`, have no `task` tool or automatically generated delegation guidance and cannot delegate recursively. Subagent runs share a default concurrency limit of 4; set `task.max_concurrency` to 1–32 in `~/.pp/agent/settings.yml` and restart `pp` to change it. Each run acquires a slot before initialization and holds it across model requests, tools, and waits until its result cleanup finishes; runs waiting for a slot stay queued. Main does not occupy a slot. See the [subagent guide](docs/subagents.md).
 
-Open Agent Hub with `/agents`. Configure model roles with `/roles`. The TUI shows the number of running subagents in gold before `tok/s`. The icon shows one person for one subagent, two for two, and three for any larger count. The badge disappears when no subagents are running.
+Open Agent Hub with `/agents`. Configure model roles with `/roles`. Before `tok/s`, the TUI shows the running subagent count in gold, followed by the total number of subagent sessions in gray. Each badge uses a one-, two-, or three-person icon according to its count and is hidden at zero.
 
 Each role supports one fallback with its own thinking level. The primary and fallback may use the same model. In `/roles`, use ↑/↓ to select primary or fallback rows, Enter to pick a model, `f` to set a fallback, `x` to clear the selected row, and `t` (`e` also works) to adjust thinking. Clearing the primary disables the role while retaining its fallback; selecting a new primary keeps it disabled until you enable it. Delete/Backspace removes the whole role.
 

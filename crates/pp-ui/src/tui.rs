@@ -333,7 +333,6 @@ impl Drop for TerminalGuard {
 pub(in crate::tui) struct MainLayout {
     pub(in crate::tui) conversation: Rect,
     todo: Rect,
-    subagents: Rect,
     ask: Rect,
     activity: Rect,
     // Automatic-retry notice box; always above the input box and never inside the
@@ -652,8 +651,8 @@ struct App {
     context_snapshot: Option<pp_runtime::agent::context_diagnosis::Snapshot>,
     subagent_panel: Option<subagents::Panel>,
     subagent_autowake: bool,
-    // Observation revision of the current root and the number of running subagents.
-    subagent_status: Option<(u64, usize)>,
+    // Observation revision and subagent counts for the current root.
+    subagent_status: Option<(u64, pp_runtime::subagent::SubagentCounts)>,
     subagent_control: std::sync::Arc<std::sync::Mutex<Option<pp_runtime::subagent::Binding>>>,
     // Hub observer thread plus the root/view epoch; drafts live only inside the
     // current root.

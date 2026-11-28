@@ -68,17 +68,8 @@ impl App {
         } else {
             0
         };
-        let has_agents = self
-            .subagent_control
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|b| !b.summary().is_empty());
-        let subagent_height = u16::from(has_agents && panel_budget > todo_height);
-        let todo_spacing =
-            u16::from(todo_height > 0 && panel_budget > todo_height + subagent_height);
-        let conversation_budget =
-            remaining.saturating_sub(todo_height + subagent_height + todo_spacing);
+        let todo_spacing = u16::from(todo_height > 0 && panel_budget > todo_height);
+        let conversation_budget = remaining.saturating_sub(todo_height + todo_spacing);
         let completion_height =
             slash_menu.map_or(0, |menu| menu.height(conversation_budget.saturating_sub(1)));
         let conversation_height = conversation_budget - completion_height;
@@ -90,8 +81,7 @@ impl App {
             ask_height,
         );
         let todo = Rect::new(area.x, ask.bottom() + todo_spacing, area.width, todo_height);
-        let subagents = Rect::new(area.x, todo.bottom(), area.width, subagent_height);
-        let attachments = Rect::new(area.x, subagents.bottom(), area.width, attachments_height);
+        let attachments = Rect::new(area.x, todo.bottom(), area.width, attachments_height);
         let retry = Rect::new(area.x, attachments.bottom(), area.width, retry_height);
         let activity = Rect::new(
             area.x,
@@ -111,7 +101,6 @@ impl App {
         MainLayout {
             conversation,
             todo,
-            subagents,
             ask,
             activity,
             retry,
@@ -332,7 +321,6 @@ impl App {
         let MainLayout {
             conversation,
             todo,
-            subagents,
             ask: ask_area,
             activity,
             retry,
@@ -367,15 +355,6 @@ impl App {
             ),
             &images,
         );
-        if subagents.height > 0
-            && let Some(binding) = self
-                .subagent_control
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_ref()
-        {
-            frame.render_widget(Line::from(binding.summary()), subagents);
-        }
         // File completion and the pending queue still draw their overlays inside the
         // conversation area.
         let menu_overlay_height = if self.native_render || slash_completion.is_some() {
@@ -564,7 +543,10 @@ impl App {
         let usage_style = Style::default().bg(statusline::input_status_bg());
         let mut right = area.right();
         let speed = self.token_speed.value();
-        let running_subagents = self.subagent_status.map_or(0, |(_, count)| count);
+        let subagents = self
+            .subagent_status
+            .map(|(_, counts)| counts)
+            .unwrap_or_default();
         let live_output = self.token_speed.live_output_tokens();
         let task = self
             .task_status
@@ -575,7 +557,7 @@ impl App {
             statusline::has_data(
                 usage,
                 speed,
-                running_subagents,
+                subagents.running,
                 live_output,
                 task,
                 elapsed.as_deref(),
@@ -627,23 +609,30 @@ impl App {
             frame.render_widget(line, Rect::new(left, area.y, width, 1));
             left += width;
         }
-        if let Some(usage) = usage {
-            let metrics = statusline::metric_fields(
+        let metric_width = (right - left).saturating_sub(extra_width);
+        let metrics = if let Some(usage) = usage {
+            statusline::metric_fields(
                 statusline::Metrics {
                     usage,
                     context: context.expect("ctx field is built alongside usage"),
                 },
                 speed,
-                running_subagents,
+                subagents,
                 live_output,
                 task,
                 elapsed.as_deref(),
-                (right - left).saturating_sub(extra_width),
+                metric_width,
             )
-            .style(usage_style);
+        } else {
+            statusline::subagent_counts_line(subagents, metric_width)
+        };
+        if !metrics.spans.is_empty() {
             let width = u16::try_from(metrics.width()).unwrap_or(u16::MAX);
             right -= width;
-            frame.render_widget(metrics, Rect::new(right, area.y, width, 1));
+            frame.render_widget(
+                metrics.style(usage_style),
+                Rect::new(right, area.y, width, 1),
+            );
         }
         if let Some(extra) = extra {
             right -= extra_width;

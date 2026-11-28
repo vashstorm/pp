@@ -1,6 +1,7 @@
 //! Construction of metric fields and group-wide degradation by width.
 
 use super::*;
+use pp_runtime::subagent::SubagentCounts;
 
 /// K from a thousand, M from a million, dropping a meaningless .0; the CLI still uses full integers.
 pub(in crate::tui) fn abbreviate_tokens(tokens: u64) -> String {
@@ -165,8 +166,7 @@ pub(in crate::tui) struct Metrics<'a> {
     pub context: Line<'static>,
 }
 
-pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'static> {
-    let icons = themes::current_icons();
+pub(super) fn speed_field(rate: Option<f64>) -> Line<'static> {
     let speed_text = rate.map_or_else(
         || "— tok/s".into(),
         |rate| {
@@ -180,21 +180,50 @@ pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'
             format!("{rate} tok/s")
         },
     );
-    let speed = field(speed_icon(rate), speed_text, speed_color());
-    let icon = match running_subagents {
-        0 => return speed,
-        1 => subagent_one_icon(icons),
-        2 => subagent_two_icon(icons),
-        _ => subagent_group_icon(icons),
-    };
-    // Subagent count and speed degrade together as one group on narrow screens.
-    let mut line = field(icon, running_subagents.to_string(), subagents_color());
-    line.spans.push(metric_separator());
-    line.spans.extend(speed.spans);
-    line
+    field(speed_icon(rate), speed_text, speed_color())
 }
 
-/// Whether the metric row has anything displayable (the ctx baseline does not count; the row hides when everything is absent).
+fn subagent_fields(counts: SubagentCounts) -> [Option<Line<'static>>; 2] {
+    let icons = themes::current_icons();
+    let badge = |count: usize, color| {
+        let icon = match count {
+            0 => return None,
+            1 => subagent_one_icon(icons),
+            2 => subagent_two_icon(icons),
+            _ => subagent_group_icon(icons),
+        };
+        Some(field(icon, count.to_string(), color))
+    };
+    [
+        badge(counts.running, subagents_color()),
+        badge(counts.sessions, Color::DarkGray),
+    ]
+}
+
+pub(in crate::tui) fn subagent_counts_line(counts: SubagentCounts, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let mut fields = subagent_fields(counts);
+    if fields[0].is_some() && joined_width(&fields) > width {
+        fields[1] = None;
+    }
+    if joined_width(&fields) > width {
+        return Line::default();
+    }
+    join_fields(&fields)
+}
+
+fn activity_field(rate: Option<f64>, counts: SubagentCounts) -> Line<'static> {
+    // Subagent counts and speed share the existing group-wide width budget.
+    let mut spans = Vec::new();
+    for badge in subagent_fields(counts).into_iter().flatten() {
+        spans.extend(badge.spans);
+        spans.push(metric_separator());
+    }
+    spans.extend(speed_field(rate).spans);
+    Line::from(spans)
+}
+
+/// Whether to show usage metrics alongside the badges. The context baseline alone is hidden.
 pub(in crate::tui) fn has_data(
     usage: &ContextUsage,
     speed: Option<(f64, bool)>,
@@ -219,7 +248,7 @@ pub(in crate::tui) fn has_data(
 pub(in crate::tui) fn metric_fields(
     metrics: Metrics<'_>,
     speed: Option<(f64, bool)>,
-    running_subagents: usize,
+    subagents: SubagentCounts,
     live_output: Option<u64>,
     task: Option<(
         &pp_config::task_status::Snapshot,
@@ -241,7 +270,7 @@ pub(in crate::tui) fn metric_fields(
         None => None,
     };
     let mut fields = [
-        Some(speed_field(speed.map(|(rate, _)| rate), running_subagents)),
+        Some(activity_field(speed.map(|(rate, _)| rate), subagents)),
         task.and_then(|(t, _)| t.title.as_ref())
             .map(|title| title_field(title, 32)),
         Some(metrics.context),
@@ -329,7 +358,7 @@ mod tests {
             let line = metric_fields(
                 metrics(&usage),
                 Some((30.2, true)),
-                0,
+                SubagentCounts::default(),
                 None,
                 Some((&task, &Default::default())),
                 Some("1m 25s"),
@@ -379,7 +408,7 @@ mod tests {
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
-                0,
+                SubagentCounts::default(),
                 None,
                 None,
                 None,
@@ -392,7 +421,7 @@ mod tests {
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
-                0,
+                SubagentCounts::default(),
                 None,
                 None,
                 None,
@@ -415,7 +444,7 @@ mod tests {
                 let text = line_text(&metric_fields(
                     metrics(&usage),
                     None,
-                    0,
+                    SubagentCounts::default(),
                     None,
                     None,
                     None,
@@ -432,7 +461,7 @@ mod tests {
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
-                0,
+                SubagentCounts::default(),
                 Some(4200),
                 None,
                 None,
@@ -444,7 +473,7 @@ mod tests {
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
-                0,
+                SubagentCounts::default(),
                 None,
                 None,
                 None,
@@ -460,7 +489,7 @@ mod tests {
             let text = line_text(&metric_fields(
                 metrics(&first),
                 None,
-                0,
+                SubagentCounts::default(),
                 Some(260),
                 None,
                 None,
@@ -493,7 +522,7 @@ mod tests {
         let text = line_text(&metric_fields(
             metrics(&status_usage()),
             Some((61.5, true)),
-            0,
+            SubagentCounts::default(),
             None,
             None,
             None,
@@ -512,7 +541,7 @@ mod tests {
                 line_text(&metric_fields(
                     metrics(&usage),
                     Some((rate, false)),
-                    0,
+                    SubagentCounts::default(),
                     None,
                     None,
                     None,
@@ -632,7 +661,10 @@ mod tests {
             metric_fields(
                 metrics(&usage),
                 Some((rate, false)),
-                3,
+                SubagentCounts {
+                    running: 3,
+                    sessions: 12,
+                },
                 None,
                 Some((task, &Default::default())),
                 Some("1m 25s"),
@@ -640,6 +672,7 @@ mod tests {
             )
         };
         let full = render(240, &task);
+        assert!(line_text(&full).starts_with(&format!(" {group} 3 · {group} 12 · ")));
         let full_width = full.width() as u16;
         assert_eq!(render(full_width, &task), full);
         let shrunk = render(full_width - 2, &task);
@@ -660,6 +693,10 @@ mod tests {
             assert!(line.width() <= usize::from(width));
             let text = line_text(&line);
             assert_eq!(text.contains(group), text.contains("tok/s"));
+            assert_eq!(
+                text.contains(&format!("{group} 12")),
+                text.contains("tok/s")
+            );
             let missing = removal_order
                 .iter()
                 .take_while(|icon| !text.contains(**icon))

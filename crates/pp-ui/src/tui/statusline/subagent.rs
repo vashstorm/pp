@@ -32,7 +32,7 @@ pub(in crate::tui) fn subagent_metrics(
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let mut fields = [
         Some(subagent_badge()),
-        Some(speed_field(usage.speed, 0)),
+        Some(speed_field(usage.speed)),
         None,
         None,
         None,
