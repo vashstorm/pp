@@ -132,7 +132,9 @@ impl Agent {
                         super::lowest_think_level(&config.thinking, selection.effort)
                     };
                     session.set_think_level(title_effort);
-                    session.set_max_output_tokens(64);
+                    if let Session::Completion(request) = &mut session {
+                        request.max_completion_tokens = Some(64);
+                    }
                     append_user_to(&mut session, &prompt);
                     let mut fallback = selection.fallback.filter(|_| selection.enabled);
                     loop {

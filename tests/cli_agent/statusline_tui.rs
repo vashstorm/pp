@@ -54,7 +54,8 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
         let fixture = server();
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);
         pty.input("live out task\r");
-        let ((main, _), (title, _)) = statusline_requests(&fixture);
+        let ((main, _), (title, title_body)) = statusline_requests(&fixture);
+        assert!(title_body.get("max_output_tokens").is_none());
         statusline_reply_usage(title, protocol, "live output");
         let mut stream = main.start_sse().unwrap();
         // A 19-byte body; while this request has not terminated, out can only come from the byte estimate.
@@ -104,6 +105,7 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
         };
         assert_eq!(body["model"], "main-model");
         assert_eq!(title_body["model"], "title-model");
+        assert_eq!(title_body["max_completion_tokens"], 64);
         assert!(title_body["tools"].is_null());
         assert!(title_body["tool_choice"].is_null());
         assert_eq!(title.target(), api_path(title_protocol));
