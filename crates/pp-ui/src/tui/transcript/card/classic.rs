@@ -84,6 +84,8 @@ pub(super) fn text_target(
     line: &LayoutLine,
     inset: u16,
     area_width: u16,
+    before_divider: bool,
+    style: ToolStyle,
 ) -> Option<(u16, u16)> {
     let bash = entry.kind == EntryKind::Bash;
     let eval = entry.kind == EntryKind::Eval;
@@ -109,6 +111,9 @@ pub(super) fn text_target(
     }
     let x_offset = if file_read || framed {
         0
+    } else if bash && before_divider && style == ToolStyle::Classic2 {
+        // Start the command gutter next to the left border.
+        inset.saturating_sub(1)
     } else if edit && !matches!(line.source(), Some(Source::Title)) {
         1
     } else {

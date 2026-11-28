@@ -561,6 +561,11 @@ impl TranscriptEntry {
             card::CardSurface::Bash
         };
         let style = card::surface_style(bash_surface, palette::tool_command());
+        let prompt = if card::current_style() == pp_config::config::ToolStyle::Classic2 {
+            "  "
+        } else {
+            "$ "
+        };
         let mut command = tool_display::command(&self.title, self.expanded, self.display);
         if self.tool.as_deref() != Some("bash")
             && !self.expanded
@@ -579,7 +584,7 @@ impl TranscriptEntry {
                 .flat_map(|command| {
                     let line = if let Some(text) = command.strip_prefix("$ ") {
                         Line::from(vec![
-                            Span::styled("$ ", style.fg(self.tool_accent())),
+                            Span::styled(prompt, style.fg(self.tool_accent())),
                             Span::styled(text.to_owned(), style),
                         ])
                         .style(style)

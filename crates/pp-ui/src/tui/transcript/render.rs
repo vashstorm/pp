@@ -147,11 +147,12 @@ impl Transcript {
             }
             let total = layout.len();
             let mut seen_body = false;
+            let mut before_divider = true;
             for (line_idx, line) in layout.iter().enumerate() {
-                let is_chrome = matches!(
-                    line.source(),
-                    Some(Source::Top | Source::Divider | Source::Bottom)
-                );
+                let source = line.source();
+                before_divider &= !matches!(source, Some(Source::Divider));
+                let is_chrome =
+                    matches!(source, Some(Source::Top | Source::Divider | Source::Bottom));
                 let is_first_body = !is_chrome && !seen_body;
                 if !is_chrome {
                     seen_body = true;
@@ -193,13 +194,9 @@ impl Transcript {
                     card::paint_chrome(entry, line, row_ctx, row, area, buffer);
                 }
                 let target_dims = if compact {
-                    (!matches!(
-                        line.source(),
-                        Some(Source::Top | Source::Divider | Source::Bottom)
-                    ))
-                    .then_some((0, area.width))
+                    (!is_chrome).then_some((0, area.width))
                 } else {
-                    card::text_target(entry, line, inset, area.width)
+                    card::text_target(entry, line, inset, area.width, before_divider)
                 };
                 if let Some((x_offset, target_width)) = target_dims {
                     let target = Rect::new(area.x + x_offset, y, target_width, height);

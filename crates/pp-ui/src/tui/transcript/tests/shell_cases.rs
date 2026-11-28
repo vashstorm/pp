@@ -1,4 +1,6 @@
 use super::*;
+use crate::tui::themes;
+use pp_config::config::{IconMode, Theme, ToolStyle};
 use pp_core::shell_display::{
     ShellPresentation, ShellRow, ShellSegment, ShellState, ShellStyle, VERSION,
 };
@@ -103,6 +105,41 @@ fn shell_display_tui_live_final_and_replay_share_command_layout() {
         buffer[(column as u16, position as u16)].fg,
         palette::removed()
     );
+}
+
+#[test]
+fn classic2_shell_command_aligns_with_title_icon() {
+    themes::set_active_appearance(Theme::Default, IconMode::Nerd, ToolStyle::Classic2);
+
+    for shell in [Some(presentation(false)), None] {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "shell",
+            "bash",
+            json!({"command": "ls -la"}),
+        );
+        let mut result = json!({"ok": true, "exit_code": 0, "stdout": "output\n", "stderr": ""});
+        if let Some(mut shell) = shell {
+            shell.rows.truncate(1);
+            result["shell"] = json!(shell);
+        }
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "shell".into(),
+            result,
+        });
+
+        let buffer = render(&mut transcript, 80, 20);
+        let out = screen(&buffer);
+        let mut rows = out.lines();
+        let title = rows.find(|line| line.contains(" Bash ")).unwrap();
+        let command = rows.next().unwrap();
+        assert!(command.starts_with("│  ls -la"), "{out}");
+        let icon_column = title.find(palette::tool_icon("bash")).unwrap();
+        assert_eq!(Line::raw(&title[..icon_column]).width(), 3, "{out}");
+    }
+
+    themes::set_active_appearance(Theme::Default, IconMode::Nerd, ToolStyle::Classic);
 }
 
 #[test]

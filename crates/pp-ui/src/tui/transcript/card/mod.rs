@@ -164,10 +164,11 @@ pub(super) fn text_target(
     line: &LayoutLine,
     inset: u16,
     area_width: u16,
+    before_divider: bool,
 ) -> Option<(u16, u16)> {
     let style = current_style();
     if !is_tool_card(entry) || is_classic(style) {
-        return classic::text_target(entry, line, inset, area_width);
+        return classic::text_target(entry, line, inset, area_width, before_divider, style);
     }
     styled::text_target(style, line, area_width)
 }
