@@ -391,7 +391,12 @@ pub(in crate::tui) fn request_permission(
         persistent_grant,
         ..
     } = request;
-    let answers = crate::tui::request_ask(events, permission_prompt(request), token)?;
+    let answers = crate::tui::request_ask(
+        events,
+        crate::tui::worker_bridge::DialogOrigin::Permission,
+        permission_prompt(request),
+        token,
+    )?;
     let selected = answers
         .first()
         .and_then(|answer| answer.selected_options.first());

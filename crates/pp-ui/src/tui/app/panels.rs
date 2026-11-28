@@ -896,6 +896,7 @@ impl App {
 
     pub(in crate::tui) fn close_ask_on_exit(&mut self) {
         if self.ask_panel.is_some() || self.ask_reply.is_some() {
+            self.desktop_notifications.dialog_closed();
             let child = self
                 .ask_id
                 .as_ref()

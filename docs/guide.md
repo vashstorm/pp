@@ -123,6 +123,7 @@ stats:
 # 所有正常画面的最大帧率，整数 1..=120；修改后重启生效
 tui:
   max_fps: 60
+  desktop_notifications: background # background、always 或 off，重启后生效
 # 相对路径以 ~/.pp/agent 为基准；空列表关闭自定义目录扫描
 skill_dirs:
   - ~/.pp/agent/skills
@@ -360,6 +361,15 @@ chmod 600 ~/.pp/agent/models.yml
 流式输出期间保持输入光标的可见状态，正文更新后恢复其输入位置；普通帧的画面与光标均未变化时不写终端。原生历史提交后，根据实际滚动后的屏幕增量刷新仍需更新的单元格。
 
 成功执行 `/new` 会清理主屏幕与原生滚动历史，并恢复欢迎页；成功恢复会话、会话树回退及 Plan Fresh 交接会清理后重建有效历史。取消或失败不清理，也不删除原始会话文件。普通窗口缩放仅重排当前尾部与面板，已提交历史交由终端保留。
+
+### 桌面通知
+
+任务完成或失败、计划待审阅，以及主 Agent 或子 Agent 的 `ask` 和权限审批等待用户时，pp 可以通过本机桌面提醒。通知只显示事件类型，返回 pp 后可查看结果、回答或审批。
+
+`~/.pp/agent/settings.yml` 中的 `tui.desktop_notifications` 默认是 `background`，只有终端明确报告失焦时才提醒。`always` 也覆盖前台和焦点未知的情况，`off` 关闭通知，修改后重启生效。终端需要支持焦点上报；使用 tmux 时启用 `set -g focus-events on` 并重新连接客户端。
+
+- macOS 在「系统设置 → 通知」中允许发送应用的通知，发送应用可能显示为「脚本编辑器」。横幅是否出现取决于系统的通知和专注模式设置。
+- Linux 需要可用的桌面通知服务，以及 `notify-send`（Ubuntu 的 `libnotify-bin` 或 Fedora 的 `libnotify`）。发行包将这两个软件包分别列为推荐依赖。
 
 ### 工具输出折叠
 

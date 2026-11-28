@@ -9,6 +9,9 @@ use crate::tui::{
 
 impl App {
     pub(in crate::tui) fn handle(&mut self, event: Event, dirty: &mut bool) -> bool {
+        if self.desktop_notifications.update_focus(&event) {
+            return false;
+        }
         match &event {
             Event::Mouse(mouse) if self.resource_input_available() && self.menu.is_none() => {
                 let (handled, changed) = self.image_view.mouse(*mouse, Instant::now());

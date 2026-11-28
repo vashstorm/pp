@@ -363,6 +363,7 @@ fn start_review(app: &mut App, requests: &mpsc::Receiver<WorkerCommand>) -> Work
 
 mod ask_cases;
 mod command_cases;
+mod desktop_notification_cases;
 mod dump_cases;
 mod file_picker_cases;
 mod hub_cases;

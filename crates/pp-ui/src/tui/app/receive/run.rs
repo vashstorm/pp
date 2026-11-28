@@ -1,6 +1,8 @@
 //! 运行终态事件：shell、mock、任务完成、压缩与重置。
 
-use crate::tui::{App, CompactionOutcome, Level, RunOutcome, State, WorkerEvent};
+use crate::tui::{
+    App, CompactionOutcome, Level, RunOutcome, State, WorkerEvent, desktop_notifications::Kind,
+};
 
 impl App {
     /// 运行事件族；`MockPrepared`／`MockCompleted` 只在 dev/test 构建存在。
@@ -57,6 +59,7 @@ impl App {
                 }
                 self.ask_reply = None;
                 self.ask_panel = None;
+                self.desktop_notifications.dialog_closed();
                 self.active_cancellation = None;
                 self.retry_finished();
                 self.subagent_autowake = false;
@@ -67,8 +70,14 @@ impl App {
                 }
                 let awaiting_review = matches!(&result, Ok(RunOutcome::AwaitingPlanReview));
                 let label = match result {
-                    Ok(RunOutcome::Completed) => "Completed",
-                    Ok(RunOutcome::AwaitingPlanReview) => "Plan ready",
+                    Ok(RunOutcome::Completed) => {
+                        self.desktop_notifications.task_finished(Kind::Completed);
+                        "Completed"
+                    }
+                    Ok(RunOutcome::AwaitingPlanReview) => {
+                        self.desktop_notifications.task_finished(Kind::PlanReady);
+                        "Plan ready"
+                    }
                     Ok(RunOutcome::Cancelled) => {
                         self.conversation.cancel();
                         "Cancelled"
@@ -76,6 +85,7 @@ impl App {
                     Err(error) => {
                         self.conversation.fail();
                         self.notify(Level::Error, format!("{error:#}"));
+                        self.desktop_notifications.task_finished(Kind::Failed);
                         "Failed"
                     }
                 };

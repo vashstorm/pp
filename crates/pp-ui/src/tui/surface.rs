@@ -4,8 +4,9 @@ use crossterm::{
     SynchronizedUpdate,
     cursor::{Hide, MoveTo, Show},
     event::{
-        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute, queue,
     style::{Attribute, Print, ResetColor, SetAttribute},
@@ -116,6 +117,10 @@ pub(super) fn initialize() -> io::Result<()> {
     )
 }
 
+pub(super) fn enable_focus_reporting() -> io::Result<()> {
+    execute!(io::stdout(), EnableFocusChange)
+}
+
 pub(super) fn restore() {
     // 先把真实终端还给 fd 0，raw mode 关闭与终端恢复才能作用在原始终端。
     super::input_shim::restore();
@@ -134,6 +139,7 @@ pub(super) fn restore() {
         PopKeyboardEnhancementFlags,
         DisableMouseCapture,
         DisableBracketedPaste,
+        DisableFocusChange,
         ResetColor,
         SetAttribute(Attribute::Reset),
         Show

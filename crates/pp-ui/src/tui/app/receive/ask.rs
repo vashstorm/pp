@@ -1,6 +1,8 @@
 //! worker `Ask`／`DialogFinished` 事件：打开交互面板并登记回复通道。
 
-use crate::tui::{App, State, WorkerEvent, dialog};
+use crate::tui::{
+    App, State, WorkerEvent, desktop_notifications, dialog, worker_bridge::DialogOrigin,
+};
 
 impl App {
     pub(in crate::tui) fn apply_ask_action(&mut self, action: dialog::Action) {
@@ -25,6 +27,7 @@ impl App {
                     .as_ref()
                     .is_some_and(|id| id.starts_with("subagent-"));
                 self.ask_panel = None;
+                self.desktop_notifications.dialog_closed();
                 self.ask_cancellation = None;
                 self.ask_id = None;
                 if let Some(reply) = self.ask_reply.take()
@@ -47,6 +50,7 @@ impl App {
         match event {
             WorkerEvent::DialogFinished { call_id } => {
                 if self.ask_id.as_deref() == Some(call_id.as_str()) {
+                    self.desktop_notifications.dialog_closed();
                     self.ask_panel = None;
                     self.ask_reply = None;
                     self.ask_id = None;
@@ -56,6 +60,7 @@ impl App {
             }
 
             WorkerEvent::Ask {
+                origin,
                 request,
                 reply,
                 cancellation,
@@ -65,6 +70,7 @@ impl App {
                     .as_ref()
                     .is_some_and(|token| token.is_cancelled())
                 {
+                    self.desktop_notifications.dialog_closed();
                     self.ask_panel = None;
                     self.ask_reply = None;
                     self.ask_id = None;
@@ -90,6 +96,14 @@ impl App {
                     // 交互面板需要优先接收键盘输入。
                     self.plan_panel = None;
                     self.ask_id = Some(request.call_id.clone());
+                    let kind = match origin {
+                        DialogOrigin::Ask => Some(desktop_notifications::Kind::Ask),
+                        DialogOrigin::Permission => Some(desktop_notifications::Kind::Permission),
+                        #[cfg(debug_assertions)]
+                        DialogOrigin::Mock => None,
+                    };
+                    self.desktop_notifications
+                        .dialog_opened(kind, &cancellation);
                     self.ask_cancellation = Some(cancellation);
                     self.ask_panel = Some(dialog::Panel::new(request));
                     self.ask_reply = Some(reply);

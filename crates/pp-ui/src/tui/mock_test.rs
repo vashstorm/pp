@@ -74,7 +74,12 @@ impl Worker {
                 let ask_events = sender_events.clone();
                 let ask: SharedAskHandler = Arc::new(move |request, cancellation| {
                     let _guard = dialog_guard(&dialog, cancellation)?;
-                    request_ask(&ask_events, request, cancellation)
+                    request_ask(
+                        &ask_events,
+                        super::worker_bridge::DialogOrigin::Mock,
+                        request,
+                        cancellation,
+                    )
                 });
                 let result = run_test(test, endpoint, Some(ask), &token, &mut |event| {
                     let event = match event {

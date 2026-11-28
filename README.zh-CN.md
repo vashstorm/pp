@@ -101,7 +101,12 @@ tui:
   theme: default      # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light | onedark | solarized-dark | monokai | rose-pine | rose-pine-dawn | kanagawa | everforest | gruvbox-light | catppuccin-latte | github-dark | github-light | ayu-dark | night-owl
   icons: nerd         # nerd | ascii
   tool_style: classic # classic | rail | slab | badge | hanging | ledger
+  desktop_notifications: background # background | always | off
 ```
+
+任务完成或失败、计划待审阅、`ask` 等待回答或权限请求等待审批时，TUI 可以发送本机桌面通知。默认仅在终端明确报告失焦时提醒。`always` 也覆盖前台和焦点未知的情况，`off` 关闭通知，修改后重启 pp 生效。
+
+macOS 需要在「系统设置 → 通知」中允许发送应用的通知，发送应用可能显示为「脚本编辑器」。Linux 需要桌面会话的通知服务和 `notify-send`（Ubuntu 安装 `libnotify-bin`，Fedora 安装 `libnotify`）。使用 tmux 时，启用 `set -g focus-events on` 后重新连接客户端。
 
 模型请求不限制总耗时。`request_timeout_seconds` 默认 300 秒，限制建连及连续无数据的闲置等待；收到正文、思考或 SSE 心跳后重新计时，已有显式配置值仍生效。
 

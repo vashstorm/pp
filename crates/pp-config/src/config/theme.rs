@@ -237,6 +237,15 @@ impl<'de> Deserialize<'de> for Theme {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopNotifications {
+    #[default]
+    Background,
+    Always,
+    Off,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TuiSettings {
@@ -246,6 +255,7 @@ pub struct TuiSettings {
     pub icons: IconMode,
     #[serde(alias = "toolStyle", alias = "tools")]
     pub tool_style: ToolStyle,
+    pub desktop_notifications: DesktopNotifications,
 }
 
 impl Default for TuiSettings {
@@ -255,6 +265,7 @@ impl Default for TuiSettings {
             theme: Theme::Default,
             icons: IconMode::Nerd,
             tool_style: ToolStyle::Classic,
+            desktop_notifications: DesktopNotifications::Background,
         }
     }
 }
@@ -283,6 +294,38 @@ impl TuiSettings {
 mod tests {
     use super::*;
     use crate::config::read_settings;
+
+    #[test]
+    fn desktop_notification_modes_default_and_survive_appearance_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.yml");
+        for (field, expected) in [
+            ("", DesktopNotifications::Background),
+            (
+                "  desktop_notifications: background\n",
+                DesktopNotifications::Background,
+            ),
+            (
+                "  desktop_notifications: always\n",
+                DesktopNotifications::Always,
+            ),
+            ("  desktop_notifications: off\n", DesktopNotifications::Off),
+        ] {
+            std::fs::write(&path, format!("tui:\n  max_fps: 60\n{field}")).unwrap();
+            assert_eq!(
+                read_settings(&path).unwrap().tui.desktop_notifications,
+                expected
+            );
+            TuiSettings::save_appearance(&path, Theme::Nord, IconMode::Ascii, ToolStyle::Rail)
+                .unwrap();
+            assert_eq!(
+                read_settings(&path).unwrap().tui.desktop_notifications,
+                expected
+            );
+        }
+        std::fs::write(&path, "tui: {desktop_notifications: 'sometimes'}\n").unwrap();
+        assert!(read_settings(&path).is_err());
+    }
 
     #[test]
     fn tui_theme_and_icons_default_and_persist_without_models() {

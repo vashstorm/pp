@@ -93,6 +93,7 @@ impl App {
             queue_snapshot: None,
             ask_panel: None,
             ask_reply: None,
+            desktop_notifications: Default::default(),
             ask_id: None,
             ask_cancellation: None,
             commands: None,
@@ -269,7 +270,12 @@ impl App {
         let ask_events = sender.clone();
         agent.set_ask_handler(Box::new(move |request, cancellation| {
             let _guard = crate::tui::dialog_guard(&ask_lock, cancellation)?;
-            request_ask(&ask_events, request, cancellation)
+            request_ask(
+                &ask_events,
+                crate::tui::worker_bridge::DialogOrigin::Ask,
+                request,
+                cancellation,
+            )
         }));
         let permission_events = sender.clone();
         agent.set_permission_handler(Box::new(move |request, token| {

@@ -9,6 +9,7 @@ URL:            https://github.com/vashstorm/pp
 Source0:        pp
 Requires:       bash, ca-certificates
 Recommends:     bubblewrap >= 0.5
+Recommends:     libnotify
 
 %description
 pp runs interactive and one-shot coding tasks in the terminal.

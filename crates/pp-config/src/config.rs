@@ -38,7 +38,7 @@ mod stats;
 pub use stats::{StatsSettings, StatsStyle};
 
 mod theme;
-pub use theme::{IconMode, Theme, TuiSettings};
+pub use theme::{DesktopNotifications, IconMode, Theme, TuiSettings};
 
 mod tool_style;
 pub use tool_style::ToolStyle;

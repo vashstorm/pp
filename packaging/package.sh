@@ -70,7 +70,7 @@ Maintainer: pp maintainers
 Section: devel
 Priority: optional
 Depends: bash, ca-certificates, $dependencies
-Recommends: bubblewrap (>= 0.5)
+Recommends: bubblewrap (>= 0.5), libnotify-bin
 Homepage: https://github.com/vashstorm/pp
 Description: Terminal coding agent
  pp runs interactive and one-shot coding tasks in the terminal.

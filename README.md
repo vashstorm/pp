@@ -110,7 +110,12 @@ tui:
   theme: default      # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light | onedark | solarized-dark | monokai | rose-pine | rose-pine-dawn | kanagawa | everforest | gruvbox-light | catppuccin-latte | github-dark | github-light | ayu-dark | night-owl
   icons: nerd         # nerd | ascii
   tool_style: classic # classic | rail | slab | badge | hanging | ledger
+  desktop_notifications: background # background | always | off
 ```
+
+The TUI sends local desktop notifications for task completion or failure, plans ready for review, questions, and permission requests. By default, pp sends them only when the terminal reports that it has lost focus. Use `always` to include foreground sessions and terminals that do not report focus, or `off` to disable notifications. Changes take effect on restart.
+
+On macOS, allow notifications from the sending app in System Settings under Notifications. This may be listed as Script Editor. On Linux, notifications require a desktop session with a notification service and `notify-send` (`libnotify-bin` on Ubuntu, `libnotify` on Fedora). If you use tmux, enable `set -g focus-events on` and reattach the client.
 
 Model requests have no total time limit. `request_timeout_seconds` defaults to 300 seconds and limits connection setup and idle reads; incoming text, reasoning, and SSE heartbeats reset the idle timer. Explicitly configured values still apply.
 

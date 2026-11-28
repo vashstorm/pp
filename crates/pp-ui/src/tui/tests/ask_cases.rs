@@ -1,4 +1,5 @@
 use super::*;
+use crate::tui::worker_bridge::DialogOrigin;
 
 #[cfg(debug_assertions)]
 #[test]
@@ -52,6 +53,7 @@ fn permission_preview_and_real_override() {
     )
     .unwrap();
     override_app.receive_event_for_test(WorkerEvent::Ask {
+        origin: DialogOrigin::Permission,
         request: AskRequest {
             call_id: "permission-dialog".into(),
             args: std::sync::Arc::new(args),
@@ -81,6 +83,7 @@ fn ask_roundtrip_disconnect_and_cancelled_answer_return_typed_cancelled() {
             .unwrap();
             request_ask(
                 &events,
+                DialogOrigin::Ask,
                 pp_core::interaction::AskRequest {
                     call_id: "race".into(),
                     args: std::sync::Arc::new(args),
@@ -262,6 +265,7 @@ fn ask_layout_focus_submit_cancel_and_late_requests() {
         late_app.events = Some(receiver);
         events
             .send(WorkerEvent::Ask {
+                origin: DialogOrigin::Ask,
                 cancellation: CancellationToken::new(),
                 request: pp_core::interaction::AskRequest {
                     call_id: "late".into(),

@@ -5,6 +5,7 @@ mod auth;
 #[cfg(test)]
 mod auth_tests;
 mod context_panel;
+mod desktop_notifications;
 mod dialog;
 mod edit_diff;
 mod files;
@@ -137,6 +138,7 @@ pub fn run(
     // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
     // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
     input_shim::install(pending_reply).context("installing input translator")?;
+    surface::enable_focus_reporting().context("enabling terminal focus reporting")?;
     themes::set_active_appearance(options.theme, options.icons, options.tool_style);
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
@@ -148,6 +150,8 @@ pub fn run(
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("settings.yml"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
+    let notification_mode = options.desktop_notifications;
+    let desktop_notifier = desktop_notifications::Worker::start(notification_mode);
     pp_core::logging::perf::mark("app_ready");
     app.apply_appearance(themes::Appearance {
         theme: options.theme,
@@ -220,6 +224,14 @@ pub fn run(
         }
         dirty |= input_changed;
         dirty |= app.receive();
+        // 使用这一批终端输入更新后的焦点，丢弃同批已关闭的对话。
+        if !quit {
+            app.flush_desktop_notifications(notification_mode, |notice| {
+                if let Some(worker) = &desktop_notifier {
+                    worker.send(notice);
+                }
+            });
+        }
         if let Some(fps) = app.pending_max_fps.take() {
             clock = frame_clock::FrameClock::new(fps);
         }
@@ -235,6 +247,7 @@ pub fn run(
         dirty |= app.retry_tick(Instant::now());
         dirty |= app.mcp_tip_tick();
         if quit {
+            drop(desktop_notifier);
             app.flush_stream();
             app.conversation.finish_markdown_streams();
             if let Some(cancellation) = &app.active_cancellation {
@@ -566,6 +579,7 @@ struct App {
     queue_snapshot: Option<QueueSnapshot>,
     ask_panel: Option<dialog::Panel>,
     ask_reply: Option<mpsc::SyncSender<Vec<pp_core::interaction::AskAnswer>>>,
+    desktop_notifications: desktop_notifications::Pending,
     ask_id: Option<String>,
     ask_cancellation: Option<CancellationToken>,
     commands: Option<Sender<WorkerCommand>>,

@@ -132,6 +132,14 @@ pub(super) enum WorkerCommand {
         input: InputQueue,
     },
 }
+
+#[derive(Clone, Copy)]
+pub(super) enum DialogOrigin {
+    Ask,
+    Permission,
+    #[cfg(debug_assertions)]
+    Mock,
+}
 pub(super) enum WorkerEvent {
     McpManaged {
         result: Result<()>,
@@ -144,6 +152,7 @@ pub(super) enum WorkerEvent {
     },
     ModelsReloaded(Result<ModelListing>),
     Ask {
+        origin: DialogOrigin,
         request: pp_core::interaction::AskRequest,
         reply: mpsc::SyncSender<Vec<pp_core::interaction::AskAnswer>>,
         cancellation: CancellationToken,
@@ -311,6 +320,7 @@ pub(super) fn publish_prepared(
 
 pub(super) fn request_ask(
     events: &mpsc::SyncSender<WorkerEvent>,
+    origin: DialogOrigin,
     request: pp_core::interaction::AskRequest,
     cancellation: &CancellationToken,
 ) -> Result<Vec<pp_core::interaction::AskAnswer>> {
@@ -319,6 +329,7 @@ pub(super) fn request_ask(
     let answers = send_and_wait_ack(
         events,
         |reply| WorkerEvent::Ask {
+            origin,
             request,
             reply,
             cancellation: cancellation.clone(),
